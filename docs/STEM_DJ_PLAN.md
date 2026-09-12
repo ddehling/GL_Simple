@@ -554,7 +554,57 @@ underrun at START in the user's log). "Prefer zoom to pan on the scroll; more so
 wheel zooms around the pointer (Ctrl / Shift + wheel pans), the vocals lane carries the singing map (green)
 under its section strip, and a SONG MAP sits under NOW and under NEXT: the whole record's sections by
 colour and energy, its drops, its hook in gold, where it sings, and the playhead - the shape of the song at
-hand without touching the picture's zoom (the tooltip lists the sections with times).
+hand without touching the picture's zoom (the tooltip lists the sections with times). "I want a few
+controls that will orchestrate over the next few songs" → PROGRAMS (NEXT SONGS row above the moments; on
+the web page too): BUILD (energy up song by song, the tempo leaning faster, a big moment on the last), COOL,
+PEAK (amped, short, moments and fx on, bass up - for these songs only), VOCALS UP (instrumentals → singers),
+BREATHE (long plays, long seams, nothing added), BRIGHTEN, DARKEN - over 2, 3 or 4 songs; a program steps
+the dials it names at every song change (layered: every bed change), the other dials stay yours, the
+baseline returns when it ends or on stop; the intent line says "BUILD song 2 of 3 (next: energy amp, tempo
+faster)", the row under it lists the steps with the current one marked, and the story row carries the
+coming steps as dashed marks where the next songs will start.
+
+**Performance (2026-09-12, night): "we need to make some big performance improvements."** Two underruns
+in the user's log ("the render thread cannot keep up"), one at START and one at the conductor's arrival,
+against a 1.2 s render-ahead ring - so something held the GIL for over a second. Measured, not guessed:
+steady-state calls (status, rank, the picture's record, the conductor's step) are all under 10 ms; the
+autoDJ alone costs ~3 ms per 100 ms block; layered, the mixer costs 35-42 ms per 100 ms block with spikes
+past real time (R3 keylock on each slave ~14 % of real time, the deck EQ 28 % of the mixer, the PLL small).
+The one-off hogs: `load_library` 1.5 s (run again by every DJSystem.start - at START and at every handover
+back to one song), the conductor's pick re-running the brain's full scoring up to eight times (0.35-0.8 s
+each), a song's decode (~4.3 s of PyAV for four stems + 0.4 s for the mix) plus 0.9 s of numpy over the
+stems, all in threads of the show process. Done: DJSystem takes the Director's already-loaded library
+(`library=`); the pick applies its cheap gates (tempo wall, runway, key fit) to the whole library first and
+scores ONCE; the stem measurements are one vectorized pass (0.57 s, identical numbers); the deck EQ takes a
+one-cascade shortcut when only the low or only the high band moves (the carve, BASS, TONE); decoding moved
+to a helper PROCESS (`lib/dj/stemload.py`: a warm spawn worker started at Director start, 90 s timeout and
+an in-process fallback that also fires when a spawn cannot import `__main__` and hangs) for the conductor's
+songs, the autoDJ's decodes and the handover pre-decodes. The tab starts the engine after the Director and
+the standby engine waits 30 s. Still to do if underruns persist: R2 ("faster") keylock for the conductor's
+slaves under load, or varispeed for slaves within ±1 %, and the Spectro computation's placement.
+Also this night: "why does the Director keep changing its mind about when to start a new song?" - the
+record's exit is fixed once per record, but the seam's START moves with the style each re-plan picks (a
+64-beat blend begins a minute before a cut) and re-plans follow every steering change; NEXT now anchors on
+"this record ends in N s" with the seam's style, length and start as the detail. And the picker rows went
+back to ONE line (tempo/key, an energy word, sings or inst, two moods, the hook; a ✗ row adds its reason) -
+"flooding me with details" - with everything else in the tooltip; "hotter" / "calmer" mean a step (0.04-0.30
+from the reference) and fall back to "same" with a note when nothing fits, because an open-ended "hotter"
+against a reference that climbs with the queue dried the list up in three picks.
+*Later that night, live:* "the Director is really doing some weird stuff… it just fades things in and out
+for no reason. It left the bass track empty for minutes." A hole, not a tuning: only the `other` lane had a
+"come back" rule; a drums or bass lane emptied by a break whose song left before the break ended, an
+eviction with no target or a landing that never came stayed empty for good. Now THE BED IS NEVER EMPTY
+(the first housekeeping rule: an empty drums / bass lane goes back to the bed at the next move, or the song
+holding most lanes takes the bed), a break restores to whatever is the bed now, a bed change in flight
+cannot freeze the room past four phrases, and the four-bar strip is only for MIXING cut. "Things seem a lot
+less loud when multiple songs are playing" - every deck is loudness-compensated, but a bed with resting
+voice lanes plus a carved, ducked voice measures several dB under a whole record: the Director now walks
+the conductor's bus gain up (never down, at most +6 dB, slowly) until the layered output measures like the
+autoDJ's did. Also found: the steering cache was keyed by the engine's id(), which a new engine after a
+handover can inherit - it now lives on the engine. And an interference of my own making: the headless
+smokes and gates run on the same machine, log to the same dj_*.jsonl and write to the same play_history as
+the user's live session; while the user listens, runs go at idle priority, one at a time, and the log
+cannot tell the sessions apart (open: a session id in the log rows).
 
 ## Rules carried over (they were earned)
 

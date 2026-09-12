@@ -1241,7 +1241,7 @@ class WebController:
                       # THE DIRECTOR (lib/dj/director.py on the show's engine):
                       # dials, moments, verdicts, the arc.
                       'director_start', 'director_dial', 'director_act',
-                      'director_rate', 'director_arc'}
+                      'director_rate', 'director_arc', 'director_program'}
         REMIX_ACTS = ('next', 'hold', 'unhold', 'drop', 'break', 'loop4',
                       'loop8', 'unloop', 'save', 'recall')
         DIRECTOR_ACTS = ('next', 'hold', 'drop', 'break')
@@ -1363,6 +1363,16 @@ class WebController:
                 try:
                     arg = max(0.0, min(0.999, float(arg)))
                 except (TypeError, ValueError):
+                    return False
+            elif action == 'director_program':
+                # {key, n} to start (key "stop" ends the running one)
+                try:
+                    from lib.dj.director import PROGRAMS as _PP
+                    key = str(arg.get('key'))
+                    if key != 'stop' and key not in _PP:
+                        return False
+                    arg = {'key': key, 'n': max(2, min(6, int(arg.get('n') or 3)))}
+                except Exception:
                     return False
             elif action == 'flavor':
                 # Sanitize: known sections only, str tags, weights 0..1.

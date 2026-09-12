@@ -386,8 +386,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.filter_groups[name] = grp
             frow.addSpacing(8)
         fgroup("voice", ("any", "inst", "vocal"), ("any song", "instrumentals only", "songs that sing"))
-        fgroup("energy", ("any", "calmer", "same", "hotter"), ("any energy", "calmer than the reference song", "about the same energy", "hotter than the reference song"))
-        fgroup("tempo", ("any", "slower", "same", "faster"), ("any tempo", "slower than the reference", "within 2 bpm", "faster than the reference"))
+        fgroup("energy", ("any", "calmer", "same", "hotter"),
+               ("any energy", "a step calmer than the reference (the last queued song, else the playing one): 0.04-0.30 below",
+                "about the same energy as the reference", "a step hotter than the reference: 0.04-0.30 above (a chain of these is a build; "
+                "when nothing hotter fits, the list falls back to the same energy and says so)"))
+        fgroup("tempo", ("any", "slower", "same", "faster"), ("any tempo", "slower than the reference", "within 2 bpm of the reference", "faster than the reference"))
         self.f_hook = QPushButton("hook")
         self.f_hook.setCheckable(True)
         self.f_hook.setProperty("kind", "small")
@@ -483,6 +486,55 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.mood_chips = {}
         right.addLayout(self.mood_row)
         QTimer.singleShot(1500, self._fill_tags)
+        # OVER THE NEXT SONGS: programs that step the dials at every song change (a bed change when layered)
+        from lib.dj.director import PROGRAMS
+        prow = QHBoxLayout()
+        prow.setSpacing(4)
+        ph = QLabel("NEXT SONGS")
+        ph.setProperty("dim", "true")
+        ph.setToolTip("a program over the next few songs: the dials it names step at every song change (layered: every bed change), "
+                      "the rest stay yours, and your dials come back when it ends; pick how many songs, then the program")
+        prow.addWidget(ph)
+        self.prog_n = QButtonGroup(self)
+        self.prog_n.setExclusive(True)
+        for n in (2, 3, 4):
+            b = QPushButton(str(n))
+            b.setCheckable(True)
+            b.setChecked(n == 3)
+            b.setProperty("kind", "small")
+            b.setMinimumHeight(20)
+            b.setMaximumHeight(22)
+            b.setMaximumWidth(30)
+            b.setToolTip(f"over {n} songs")
+            self.prog_n.addButton(b, n)
+            prow.addWidget(b)
+        prow.addSpacing(6)
+        self.prog_btns = {}
+        for key, (label, tip, _fn) in PROGRAMS.items():
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setProperty("kind", "small")
+            b.setMinimumHeight(20)
+            b.setMaximumHeight(22)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _c, k=key: self._program(k))
+            self.prog_btns[key] = b
+            prow.addWidget(b)
+        self.prog_cancel = QPushButton("stop")
+        self.prog_cancel.setProperty("kind", "small")
+        self.prog_cancel.setMinimumHeight(20)
+        self.prog_cancel.setMaximumHeight(22)
+        self.prog_cancel.setMaximumWidth(44)
+        self.prog_cancel.setToolTip("end the program now: your dials come back")
+        self.prog_cancel.clicked.connect(lambda: self.director and self.director.cancel_program())
+        self.prog_cancel.setVisible(False)
+        prow.addWidget(self.prog_cancel)
+        prow.addStretch(1)
+        right.addLayout(prow)
+        self.prog_lbl = QLabel("")
+        self.prog_lbl.setProperty("dim", "true")
+        self.prog_lbl.setWordWrap(True)
+        right.addWidget(self.prog_lbl)
         mom = QGridLayout()
         mom.setSpacing(6)
         self.buttons = {}
@@ -840,6 +892,18 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if self.director is not None:
             self.director.set_dial(name, opt)
 
+    def _program(self, key):
+        if self.director is None:
+            self.err_lbl.setText("press START first")
+            for b in self.prog_btns.values():
+                b.setChecked(False)
+            return
+        p = self.director.program
+        if p is not None and p["key"] == key:
+            self.director.cancel_program()            # the lit program pressed again = stop
+            return
+        self.director.start_program(key, n=self.prog_n.checkedId() or 3)
+
     def _next(self):
         if self.director is not None:
             self.director.next()
@@ -912,23 +976,33 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 # words, not glyphs: a block or music-note glyph pulls in a fallback font that breaks the
                 # item's multi-line layout (the third line vanished)
                 eword = "calm" if e < 0.35 else ("warm" if e < 0.55 else ("hot" if e < 0.75 else "peak"))
-                bits = [f"{(r['bpm'] or 0):.0f} {r['camelot'] or ''}".strip(), f"energy {e:.2f} {eword}", "sings" if r.get("sings") else "instrumental"]
-                if r.get("valence"):
-                    bits.append(r["valence"])
-                if r.get("genre"):
-                    bits.append(r["genre"])
-                if r.get("year"):
-                    bits.append(str(r["year"]))
+                # ONE line, the few facts that decide a pick (user: "flooding me with details"): tempo and
+                # key, the energy word, sings or not, two moods, the hook; everything else in the tooltip
+                short = [f"{(r['bpm'] or 0):.0f} {r['camelot'] or ''}".strip(), eword, "sings" if r.get("sings") else "inst"]
                 if r.get("tags"):
-                    bits.append(", ".join(r["tags"][:4]))
+                    short.append(", ".join(r["tags"][:2]))
                 if r.get("hook_s") is not None:
-                    bits.append(f"hook {int(r['hook_s']) // 60}:{int(r['hook_s']) % 60:02d}")
+                    short.append(f"hook {int(r['hook_s']) // 60}:{int(r['hook_s']) % 60:02d}")
+                line = f"{mark}{r['title'][:34]}  ·  {r['artist'][:18]}   " + " · ".join(short)
+                if r["ok"] is False and r.get("why"):
+                    reason = r["why"].split(", ")[0] if r["why"].startswith(("played", "already", "no stems")) else next(
+                        (w for w in r["why"].split(", ") if "out of reach" in w or "clash" in w or "loose" in w or "outside" in w), r["why"][:40])
+                    line += f"   —  {reason}"
+                it = QListWidgetItem(line)
+                full = [f"{(r['bpm'] or 0):.0f} bpm {r['camelot'] or ''}".strip(), f"energy {e:.2f} ({eword})", "sings" if r.get("sings") else "instrumental"]
+                if r.get("valence"):
+                    full.append(r["valence"])
+                if r.get("genre"):
+                    full.append(r["genre"])
+                if r.get("year"):
+                    full.append(str(r["year"]))
+                if r.get("tags"):
+                    full.append(", ".join(r["tags"][:5]))
                 if r.get("duration_s"):
-                    bits.append(_mmss(r["duration_s"]))
-                line1 = f"{mark}{r['title'][:40]}  ·  {r['artist'][:24]}"
-                line2 = "      " + "  ·  ".join(bits)
-                it = QListWidgetItem(line1 + "\n" + line2 + (f"\n      {r['why']}" if r.get("why") else ""))
-                tip = [f"{r['title']} — {r['artist']}", "  ·  ".join(bits)]
+                    full.append(_mmss(r["duration_s"]))
+                tip = [f"{r['title']} — {r['artist']}", "  ·  ".join(full)]
+                if r.get("hook_s") is not None:
+                    tip.append(f"hook at {int(r['hook_s']) // 60}:{int(r['hook_s']) % 60:02d}")
                 if r.get("shape"):
                     tip.append(f"shape: {r['shape']}")
                 if r.get("why"):
@@ -946,8 +1020,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             if r["id"] == cur:
                 self.found.setCurrentItem(it)
         ref = getattr(self.director, "rank_ref", None) if self.director is not None else None
+        note = getattr(self.director, "rank_note", None) if self.director is not None else None
         self.found_h.setText(f"SONGS  {len(rows)}" + ((f"   ✓ fits after {ref[:22]} (last in UP NEXT)  ✗ would be rejected" if ref
-                                                     else "   ✓ fits  ✗ would be rejected") if self.director is not None else ""))
+                                                     else "   ✓ fits  ✗ would be rejected") if self.director is not None else "")
+                             + (f"   ·   {note}" if note else ""))
 
     def _queue(self, tid):
         if self.director is not None:
@@ -996,6 +1072,19 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                + (f"   ·   ⚠ DOUBLED: {', '.join(doubled)} (two songs' {'stems' if doubled != ['mix'] else 'mixes'} at once)" if doubled else "")
                                + (f"   ·   {last[:60]}" if last else "")
                                + (f"   ·   {self._midi_note}" if getattr(self, "_midi_note", "") else ""))
+        # the program over the next songs: which is lit, where it stands
+        ps = st.get("program")
+        for k, b in self.prog_btns.items():
+            want = bool(ps and ps.get("key") == k)
+            if b.isChecked() != want:
+                b.setChecked(want)
+        self.prog_cancel.setVisible(bool(ps))
+        if ps:
+            steps = ps.get("steps") or []
+            words = "  →  ".join((("▶ " if s["now"] else ("✓ " if s["done"] else "")) + f"song {s['i'] + 1}: {s['text']}") for s in steps)
+            self.prog_lbl.setText(f"{ps['label']} over {ps['n']} songs:  {words}")
+        else:
+            self.prog_lbl.setText("")
         lv = st.get("last_verdict")
         if lv:
             age = time.time() - lv.get("t", 0)
@@ -1017,9 +1106,19 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.now_sub.setText("")
         if nxt:
             eta = nxt.get("eta_s")
+            exit_in = nxt.get("exit_in_s")
             self.next_lbl.setText("NEXT  " + (nxt.get("title") or ""))
-            self.next_sub.setText(f"{nxt.get('artist') or ''}   " + (f"in about {eta:.0f} s" if eta is not None else "when the exit comes")
-                                  + (f"   ·   {nxt.get('how')}" if nxt.get("how") else "") + (f" {nxt['beats']} beats" if nxt.get("beats") else ""))
+            if exit_in is not None:
+                # the record's exit is the fixed point; the seam's own length says how much earlier it begins
+                when = f"this record ends in {exit_in:.0f} s"
+                if nxt.get("how"):
+                    when += f"   ·   {nxt['how']}" + (f", {nxt['beats']:.0f} beats" if nxt.get("beats") else "") + (f", begins in about {eta:.0f} s" if eta is not None else "")
+                else:
+                    when += "   ·   the seam is planned when the exit comes into range"
+            else:
+                when = (f"in about {eta:.0f} s" if eta is not None else "when the exit comes") + (f"   ·   {nxt.get('how')}" if nxt.get("how") else "") \
+                    + (f" {nxt['beats']} beats" if nxt.get("beats") else "")
+            self.next_sub.setText(f"{nxt.get('artist') or ''}   " + when)
         else:
             self.next_lbl.setText("NEXT  not chosen yet")
             self.next_sub.setText("")

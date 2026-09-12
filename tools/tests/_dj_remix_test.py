@@ -116,6 +116,11 @@ def main():
                                                    sec.get("vocalness"), rc.move_log[-1]["text"][:70] if rc.move_log else "-"))
             else:
                 hyg["vocal_run"] = 0
+            # THE BED IS NEVER EMPTY: drums or bass with nobody while songs play (outside a break / recall)
+            if rc._break is None and rc._recall is None and any(s.entered and not s.leaving for s in rc.songs.values()):
+                hyg["bed_blocks"] = hyg.get("bed_blocks", 0) + 1
+                if rc.lanes.get("bass") is None or rc.lanes.get("drums") is None:
+                    hyg["bed_empty"] = hyg.get("bed_empty", 0) + 1
             # the opposite failure ("large sections of vocal rest"): the vocal lane RESTING while the bed sings
             bed_d = rc.lanes.get("drums")
             if rc._break is None and rc._recall is None and bed_d in rc.songs and rc.songs[bed_d].entered:
@@ -298,11 +303,17 @@ def main():
     if hyg.get("bed_sings"):
         fr = hyg.get("bed_sings_rested", 0) / hyg["bed_sings"]
         check(fr < 0.15, f"vocal lane resting while the bed sings: {100 * fr:.0f}% of {hyg['bed_sings']} singing blocks")
+    if hyg.get("bed_blocks"):
+        fr = hyg.get("bed_empty", 0) / hyg["bed_blocks"]
+        check(fr < 0.03, f"drums or bass lane with nobody: {100 * fr:.1f}% of {hyg['bed_blocks']} playing blocks (outside breaks)")
     if hyg["carve_blocks"]:
         frac = hyg["carve_open"] / hyg["carve_blocks"]
         check(frac < 0.15, f"low carve: lows still open on {100 * frac:.0f}% of {hyg['carve_blocks']} blocks where a song held neither bass nor drums")
     shapes = [m for m in rc.move_log if m.get("shape")]
-    check(len(shapes) >= 1, f"shaped moves: {len(shapes)} ({', '.join(sorted({m['shape'] for m in shapes}))})")
+    # a shape rides a song's LAST lane leaving (the dice, at fx_level); with the calmer arrangement a five-minute
+    # run has only a handful of such exits, so no shape at all is only a failure when there were exits to shape
+    exits = [m for m in rc.move_log if m["kind"] in ("voice_out", "leave", "evict")]
+    check(len(shapes) >= 1 or len(exits) < 6, f"shaped moves: {len(shapes)} ({', '.join(sorted({m['shape'] for m in shapes}))}) of {len(exits)} exits")
     staged_lm = [line for line in rc.log if "landmark" in line]
     check(len(staged_lm) >= 1, f"{len(staged_lm)} songs staged on a landmark, e.g. {staged_lm[0][-60:] if staged_lm else '-'}")
     blk_per_bar = bars * RATE / block

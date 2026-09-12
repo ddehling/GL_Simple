@@ -53,6 +53,54 @@ DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "tempo": "hold"
 ARC_SHAPE = {"theme": None, "steady": "flat", "build": "rise", "waves": "peak_wave", "down": "wind_down", "yours": "yours"}
 ARC_LEN_S = {"45m": 45 * 60.0, "90m": 90 * 60.0, "3h": 3 * 3600.0, "night": 6 * 3600.0}
 ARC_POINTS = 13                                                      # a chosen shape is handed to the engines as this many waypoints
+
+# PROGRAMS: orchestration over the next few songs. Each is a function (i, n) -> the dials for song i of n
+# (0-based); the dials it does not name keep their baseline; when the program ends the baseline returns.
+def _prog_build(i, n):
+    f = (i + 1) / n
+    d = {"energy": "hold" if f < 0.5 else "amp", "tempo": "hold" if f < 0.67 else "faster", "pace": "normal"}
+    if i == n - 1:
+        d.update({"moments": "lots", "fx": "lots"})
+    return d
+
+
+def _prog_cool(i, n):
+    f = (i + 1) / n
+    return {"energy": "hold" if f < 0.34 else "cool", "tempo": "hold" if f < 0.67 else "slower", "moments": "rare", "pace": "long" if f >= 0.67 else "normal"}
+
+
+def _prog_peak(i, n):
+    return {"energy": "amp", "moments": "lots", "fx": "lots", "pace": "short" if n >= 3 else "normal", "bass": "boost"}
+
+
+def _prog_vocals_up(i, n):
+    f = (i + 1) / n
+    return {"vocals": "none" if f < 0.34 else ("some" if f < 0.67 else "lots")}
+
+
+def _prog_breathe(i, n):
+    return {"energy": "hold", "pace": "long", "moments": "rare", "loops": "off", "fx": "none", "seams": "long"}
+
+
+def _prog_brighten(i, n):
+    f = (i + 1) / n
+    return {"tone": "dark" if f < 0.34 else ("neutral" if f < 0.67 else "bright"), "energy": "hold" if f < 0.67 else "amp"}
+
+
+def _prog_darken(i, n):
+    f = (i + 1) / n
+    return {"tone": "bright" if f < 0.34 else ("neutral" if f < 0.67 else "dark"), "energy": "hold" if f < 0.67 else "cool"}
+
+
+PROGRAMS = {
+    "build": ("BUILD", "energy up song by song, the tempo leaning faster, a big moment on the last", _prog_build),
+    "cool": ("COOL", "energy down song by song, longer plays, no moments, the tempo easing", _prog_cool),
+    "peak": ("PEAK", "amped, short plays, moments and fx on, the bass up - for these songs only", _prog_peak),
+    "vocals": ("VOCALS UP", "from instrumentals to singers across these songs", _prog_vocals_up),
+    "breathe": ("BREATHE", "long plays, long seams, nothing added: let the records be records", _prog_breathe),
+    "brighten": ("BRIGHTEN", "the tone from dark to bright across these songs, warming up at the end", _prog_brighten),
+    "darken": ("DARKEN", "the tone from bright to dark across these songs, cooling at the end", _prog_darken),
+}
 BASS_LOW = {"flat": 1.0, "boost": 1.3, "heavy": 1.6}                # the mix bus EQ, low band (< 200 Hz)
 TONE_HIGH = {"dark": 0.7, "neutral": 1.0, "bright": 1.3}             # the mix bus EQ, high band (> 2.5 kHz)
 LEVEL_GAIN = {"quiet": 0.6, "normal": 0.85, "loud": 1.0}             # the mix bus gain
@@ -133,6 +181,8 @@ class Director:
         self._arc_jump = None
         self._sent = {}                  # per engine: the steering values it already has (see _send)
         self._dial_seam_t = 0.0          # when a dial turn last brought a seam forward
+        self.program = None              # {"key", "n", "i", "baseline", "started"} while a program runs over the next songs
+        self._song_seq = 0               # song changes seen (one song: a new record; layered: a new bed)
         # THE STORY on the picture: per-lane levels bar by bar, and marks - what happened where (a seam, a
         # song arriving as a voice, the bed passing, a breakdown before it lands) and what is planned ahead
         self._gains = {ln: {} for ln in ("drums", "bass", "other", "vocals")}
@@ -156,6 +206,11 @@ class Director:
         self.mode = want
         self.running = True
         self._t_start = time.time()
+        try:
+            from lib.dj.stemload import warm
+            warm()                                    # the decode helper process: spawned now, not at the first song
+        except Exception:
+            pass
         self._event(f"started: {self.describe_dials()}")
         if threaded:
             self._thread = threading.Thread(target=self._run, daemon=True, name="director")
@@ -193,7 +248,7 @@ class Director:
         unthreaded so the Director can fire its first step - the opener - on the chosen bar, then its
         thread is spawned and it runs exactly as live from there (see _spawn)."""
         from lib.dj.system import DJSystem
-        sysm = DJSystem(self.music_root, engine=None, theme=self.theme, threaded=opener is None)
+        sysm = DJSystem(self.music_root, engine=None, theme=self.theme, threaded=opener is None, library=self.library)
         if opener is not None:
             sysm.set_opener(*opener)
         sysm._loop_bias = LOOP_LEVEL[self.dials["loops"]]
@@ -227,7 +282,15 @@ class Director:
         The autoDJ drops its planned NEXT and picks again on flavor / persona / arc / pin changes; re-sending
         the same values on every dial turn or verdict made it change its mind constantly (user 2026-09-12:
         "it can't make up its mind")."""
-        sent = self._sent.setdefault(id(eng), {})
+        # the cache lives ON the engine: keyed by id() a new engine after a handover could inherit a freed
+        # engine's id and be told it already had everything
+        sent = getattr(eng, "_director_sent", None)
+        if sent is None:
+            sent = {}
+            try:
+                eng._director_sent = sent
+            except Exception:
+                sent = self._sent.setdefault(id(eng), {})
         key = repr(value)
         if sent.get(name) == key:
             return False
@@ -282,7 +345,9 @@ class Director:
         rc.fx_level = FX_LEVEL[d["fx"]]
         # the bed changes with a four-bar breakdown first (tension, then the new drums and bass land) when
         # moments are allowed and the mixing is not a blend or a morph (those cross the bed gradually)
-        rc.strip_before_bed = d["moments"] != "rare" and d["mixing"] in ("auto", "cut")
+        # only when you asked for cuts: the four-bar drop-out before a bed lands read as "fading things out
+        # for no reason" under auto mixing
+        rc.strip_before_bed = d["moments"] != "rare" and d["mixing"] == "cut"
         rc.set_arc_waypoints(self._arc_points())
         rc.set_arc_length(ARC_LEN_S[d["length"]])
         try:
@@ -432,6 +497,82 @@ class Director:
                 "word": word, "curve": curve, "played": played,
                 "peak_in_s": ((peak[0] - p) * length if peak else None), "peak_energy": (peak[1] if peak else None),
                 "heard": (played[-1][1] if played else None)}
+
+    # -- programs: orchestration over the next few songs ------------------------------------------------------
+    def start_program(self, key, n=3):
+        """Run `key` over this song and the next n-1 (a bed change counts as a song when layered). The dials
+        the program names are stepped at every song change; the others stay yours; the baseline returns at
+        the end (or on cancel)."""
+        if key not in PROGRAMS:
+            return False
+        n = int(max(2, min(6, n)))
+        if self.program is not None:
+            self.cancel_program(quiet=True)
+        label, _tip, fn = PROGRAMS[key]
+        touched = set()
+        for i in range(n):
+            touched |= set(fn(i, n))
+        self.program = {"key": key, "label": label, "n": n, "i": 0, "baseline": {k: self.dials[k] for k in touched},
+                        "started": time.time(), "seq0": self._song_seq}
+        self._apply_program_step()
+        self._event(f"program {label} over {n} songs")
+        return True
+
+    def cancel_program(self, quiet=False):
+        p = self.program
+        if p is None:
+            return
+        self.program = None
+        for k, v in p["baseline"].items():
+            if self.dials.get(k) != v:
+                self.dials[k] = v
+        if self.system is not None:
+            self._apply_to_system(self.system)
+        if self.rc is not None:
+            self._apply_to_conductor(self.rc)
+        if not quiet:
+            self._event(f"program {p['label']} {'done' if p['i'] >= p['n'] else 'cancelled'}: your dials are back")
+
+    def _apply_program_step(self):
+        p = self.program
+        if p is None:
+            return
+        _label, _tip, fn = PROGRAMS[p["key"]]
+        step = fn(p["i"], p["n"])
+        changed = []
+        for k, v in step.items():
+            if self.dials.get(k) != v:
+                self.dials[k] = v
+                changed.append(f"{k} {v}")
+        if changed:
+            if self.system is not None:
+                self._apply_to_system(self.system)
+            if self.rc is not None:
+                self._apply_to_conductor(self.rc)
+        self._event(f"{p['label']} song {p['i'] + 1} of {p['n']}: " + (", ".join(changed) if changed else "as set"))
+
+    def _song_changed(self):
+        """A new record (one song) or a new bed (layered): the program's next step."""
+        self._song_seq += 1
+        p = self.program
+        if p is None:
+            return
+        p["i"] += 1
+        if p["i"] >= p["n"]:
+            self.cancel_program()
+            return
+        self._apply_program_step()
+
+    def program_status(self):
+        p = self.program
+        if p is None:
+            return None
+        _label, tip, fn = PROGRAMS[p["key"]]
+        steps = []
+        for i in range(p["n"]):
+            s = fn(i, p["n"])
+            steps.append({"i": i, "dials": s, "text": ", ".join(f"{k} {v}" for k, v in s.items()), "now": i == p["i"], "done": i < p["i"]})
+        return {"key": p["key"], "label": p["label"], "n": p["n"], "i": p["i"], "steps": steps, "tip": tip}
 
     # -- the dials ------------------------------------------------------------------------------------------
     def set_dial(self, name, value):
@@ -708,6 +849,10 @@ class Director:
         self._handover()
         self._warm_step()
         try:
+            self._loudness_step()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"loudness: {type(e).__name__}: {e}"
+        try:
             self._auto_moments()
         except Exception as e:  # noqa: BLE001
             self.last_error = f"moments: {type(e).__name__}: {e}"
@@ -959,7 +1104,45 @@ class Director:
         d = self.dials
         sub.post({"cmd": "master_eq", "low": BASS_LOW[d["bass"]], "mid": 1.0, "high": TONE_HIGH[d["tone"]], "ramp_s": 0.5})
         if self._switch is None:
-            sub.post({"cmd": "mix_gain", "value": self.level_gain, "ramp_s": 0.4})
+            sub.post({"cmd": "mix_gain", "value": self.level_gain * getattr(self, "_loud_trim", 1.0), "ramp_s": 0.4})
+
+    def _loudness_step(self):
+        """LOUDNESS MATCH across the engines. A layered room - a bed with its voice lanes resting, a voice
+        with its lows carved and its melody ducked under a singer - measures several dB under a whole record
+        even with every deck loudness-compensated (user: "things seem a lot less loud when multiple songs
+        are playing"). The autoDJ's output RMS is the night's reference (a slow average while it plays);
+        layered, the conductor's bus gain is trimmed UP toward it - never down, at most +6 dB, a slow ramp."""
+        now = time.time()
+        if now - getattr(self, "_loud_t", 0.0) < 0.5:
+            return
+        self._loud_t = now
+        src = self.system if self.system is not None else self.rc
+        if src is None or self._switch is not None:
+            return
+        try:
+            rms = float((src.submix.telemetry or {}).get("rms") or 0.0)
+        except Exception:
+            return
+        if rms < 1e-4:
+            return
+        # the measurement is the bus OUTPUT (after the gain), so this is a closed loop: the trim walks until
+        # the layered output measures like the autoDJ's did
+        cur_trim = getattr(self, "_loud_trim", 1.0)
+        if self.system is not None:
+            self._ref_rms = rms if getattr(self, "_ref_rms", None) is None else 0.97 * self._ref_rms + 0.03 * rms
+            if abs(cur_trim - 1.0) > 0.01:
+                self._loud_trim = 1.0
+                self._apply_bus(self.system.submix)
+            return
+        ref = getattr(self, "_ref_rms", None)
+        if ref is None:
+            return
+        self._lay_rms = rms if getattr(self, "_lay_rms", None) is None else 0.9 * self._lay_rms + 0.1 * rms
+        want = max(1.0, min(2.0, ref / max(self._lay_rms, 1e-6)))
+        trim = cur_trim + 0.25 * (want - cur_trim)          # a slow walk, no pumping
+        if abs(trim - cur_trim) > 0.02:
+            self._loud_trim = trim
+            self._apply_bus(self.rc.submix)
 
     def _auto_moments(self):
         """The MOMENTS dial: the DJ makes its own moments. One song: a double-drop into the next song
@@ -1085,6 +1268,8 @@ class Director:
                 first = self._cur_song is None
                 self._cur_song = cur.id
                 self._note_played(cur.id)
+                if not first:
+                    self._song_changed()
                 self.tl.add(cur.id, list(LANES), b, max(0.0, pos - (self.bar() - b) * self._bar_len(cur.id)))
                 self._lane_snap = {ln: cur.id for ln in LANES}
                 # the seam that just happened: its style and length, as a band ending here
@@ -1145,6 +1330,7 @@ class Director:
                 if k == "voice_in":
                     mark(f"{to_t[:22]} arrives as a voice ({m.get('lane')})", k, lanes=[m.get("lane")])
                 elif k == "bed_to":
+                    self._song_changed()
                     strip = "drop out for" in (m.get("text") or "")
                     land = (rc._land_k - rc.bar_n) if rc._land_k is not None else 0
                     why = "at its hook" if "at its hook" in m["text"] else ("at its drop" if "at its drop" in m["text"] else "after its phrases")
@@ -1232,7 +1418,19 @@ class Director:
         return self._gains
 
     def all_marks(self):
-        return list(self.marks) + list(self.plan_marks)
+        out = list(self.marks) + list(self.plan_marks)
+        # the program's coming steps, roughly where the next songs will start (a song ≈ 64 bars; the next
+        # one at its ghost when there is one)
+        p = self.program
+        if p is not None:
+            b = int(self._bar)
+            nxt = min((c.bar for c in self.tl.clips if c.ghost), default=b + 48)
+            _label, _tip, fn = PROGRAMS[p["key"]]
+            for j, i in enumerate(range(p["i"] + 1, p["n"])):
+                s = fn(i, p["n"])
+                out.append({"bar": int(nxt + j * 64), "end_bar": None, "lanes": None, "ghost": True, "kind": "program",
+                            "text": f"{p['label']} {i + 1}/{p['n']}: " + ", ".join(f"{k} {v}" for k, v in s.items())})
+        return out
 
     # -- the song list: what fits from HERE, and what would be rejected -------------------------------------------------
     def rank(self, query="", n=40, filters=None, sort="fit"):
@@ -1314,7 +1512,10 @@ class Director:
                     e_ref = float(brain._arc_energy(cur)) if brain else cur.energy_proxy()
                 except Exception:
                     e_ref = 0.5
-                if (fe == "calmer" and e > e_ref - 0.04) or (fe == "hotter" and e < e_ref + 0.04) or (fe == "same" and abs(e - e_ref) > 0.12):
+                # a STEP, not a leap: hotter / calmer means 0.04 .. 0.30 away from the reference (open-ended,
+                # with the reference walking up the queue, the list ran out of hotter songs fast)
+                if (fe == "calmer" and not (e_ref - 0.30 <= e <= e_ref - 0.04)) or (fe == "hotter" and not (e_ref + 0.04 <= e <= e_ref + 0.30)) \
+                        or (fe == "same" and abs(e - e_ref) > 0.12):
                     continue
             ft = filters.get("tempo")
             if ft and bpm and t.bpm:
@@ -1386,6 +1587,19 @@ class Director:
                 "title": lambda x: (not x["ok"], x["title"].lower()),
                 "hook": lambda x: (not x["ok"], x["hook_s"] is None, x["hook_s"] or 0)}
         rows.sort(key=keys.get(sort, keys["fit"]))
+        # a relative filter that leaves almost nothing falls back to "same", and says so
+        self.rank_note = None
+        n_ok = sum(1 for r in rows if r["ok"])
+        if n_ok < 5 and filters.get("energy") in ("calmer", "hotter") and not filters.get("_fallback"):
+            f2 = dict(filters, energy="same", _fallback=True)
+            rows2 = self.rank(query, n=n, filters=f2, sort=sort)
+            self.rank_note = f"nothing {filters['energy']} than {(self.rank_ref or (cur.title if cur is not None else 'the room'))[:22]} fits: showing the same energy"
+            return rows2
+        if n_ok < 5 and filters.get("tempo") in ("slower", "faster") and not filters.get("_fallback"):
+            f2 = dict(filters, tempo="same", _fallback=True)
+            rows2 = self.rank(query, n=n, filters=f2, sort=sort)
+            self.rank_note = f"nothing {filters['tempo']} than {(self.rank_ref or (cur.title if cur is not None else 'the room'))[:22]} fits: showing the same tempo"
+            return rows2
         return rows[:n]
 
     # -- what the operator sees ---------------------------------------------------------------------------------------
@@ -1408,8 +1622,18 @@ class Director:
                     out["now"] = {"title": cur.get("title"), "artist": cur.get("artist"), "pos_s": cur.get("pos_s"),
                                   "duration_s": cur.get("duration_s"), "bpm": cur.get("bpm"), "camelot": cur.get("camelot")}
                 if nxt:
+                    # the STABLE anchor is the record's exit (drawn once per record); the seam's start moves
+                    # with the style each re-plan picks (a 64-beat blend starts a minute before a cut) - the
+                    # user saw that as "changing its mind about when to start a new song"
+                    exit_in = None
+                    try:
+                        ep = getattr(self.system, "_exit_played", None)
+                        if ep:
+                            exit_in = max(0.0, float(ep) - self._played_s())
+                    except Exception:
+                        exit_in = None
                     out["next"] = {"title": nxt.get("title"), "artist": nxt.get("artist"), "eta_s": st.get("blend_in_s"),
-                                   "how": plan.get("style"), "beats": plan.get("beats")}
+                                   "exit_in_s": exit_in, "how": plan.get("style"), "beats": plan.get("beats")}
                 bits = [f"one song at a time", f"{self.dials['mixing']} mixing" if self.dials["mixing"] != "auto" else "mixing as the dice fall",
                         f"energy {self.dials['energy']}", f"{self.dials['pace']} plays"]
                 try:
@@ -1508,6 +1732,12 @@ class Director:
             out["arc"] = self.arc_status()
         except Exception as e:  # noqa: BLE001
             out["arc"] = {"error": f"{type(e).__name__}: {e}"}
+        out["program"] = self.program_status()
+        out["programs"] = {k: (v[0], v[1]) for k, v in PROGRAMS.items()}
+        if out["program"]:
+            ps = out["program"]
+            nxt_steps = [s for s in ps["steps"] if not s["done"] and not s["now"]]
+            out["intent"] = (out.get("intent") or "") + f", {ps['label']} song {ps['i'] + 1} of {ps['n']}" + (f" (next: {nxt_steps[0]['text']})" if nxt_steps else " (last)")
         lv = self.last_verdict
         if lv is not None:
             lv = dict(lv)

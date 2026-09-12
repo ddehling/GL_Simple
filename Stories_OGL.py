@@ -2735,6 +2735,11 @@ class EnvironmentalSystem:
                         d.rate(bool(arg))
                     elif action == 'director_arc':
                         d.arc_jump(float(arg))
+                    elif action == 'director_program':
+                        if arg.get('key') == 'stop':
+                            d.cancel_program()
+                        else:
+                            d.start_program(arg['key'], n=int(arg.get('n') or 3))
                 elif action.startswith('remix_'):
                     rc = getattr(self, '_remix', None)
                     if rc is None:

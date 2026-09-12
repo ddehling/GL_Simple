@@ -337,23 +337,31 @@ class RemixConductor:
         busy |= set(getattr(self, "avoid_ids", ()) or ())        # the Director's played list: no repeats across engines
         saved = set(self.brain.veto_ids)
         try:
-            self.brain.veto_ids |= busy
-            for _ in range(8):
-                cand, meta = self.brain.choose_next(ms.track, self.energy_target(), self.master_bpm)
-                if cand is None:
-                    return None
-                rate = self.master_bpm / max(cand.bpm, 1e-6)
-                runway = (cand.duration_s - self._body_start(cand)) / rate
-                # the room's key: a song that cannot be shifted (two semitones at most) to fit the key centre
-                # better than ENTRY_FIT is not picked - it could only clash ("some clashing", user 2026-09-12)
-                _shift, fit = self._key_fit(cand)
-                key_ok = fit is None or fit >= ENTRY_FIT
-                if RATE_MIN <= rate <= RATE_MAX and cand.id not in busy and runway >= MIN_RUNWAY_S and key_ok:
-                    return cand
-                self.brain.veto_ids.add(cand.id)
+            # the cheap gates go FIRST, for the whole library, so the brain scores once: a candidate must be
+            # inside the tempo wall, have runway from its entry, and be shiftable (two semitones at most) to
+            # fit the room's key at ENTRY_FIT. (Re-running choose_next up to eight times - a full scoring pass
+            # each - held the GIL for seconds and starved the audio thread; the user heard the underrun.)
+            veto = set(busy)
+            for t in self.brain.library:
+                if t.id in veto or not t.bpm:
+                    continue
+                rate = self.master_bpm / max(t.bpm, 1e-6)
+                if not (RATE_MIN <= rate <= RATE_MAX):
+                    veto.add(t.id)
+                    continue
+                if (t.duration_s - self._body_start(t)) / rate < MIN_RUNWAY_S:
+                    veto.add(t.id)
+                    continue
+                _shift, fit = self._key_fit(t)
+                if fit is not None and fit < ENTRY_FIT:
+                    veto.add(t.id)
+            self.brain.veto_ids |= veto
+            cand, meta = self.brain.choose_next(ms.track, self.energy_target(), self.master_bpm)
+            if cand is None or cand.id in veto:
+                return None
+            return cand
         finally:
             self.brain.veto_ids = saved
-        return None
 
     # -- decoding (off the conductor thread) ----------------------------------------------------
     def _decode(self, track, deck):
@@ -363,13 +371,11 @@ class RemixConductor:
 
         def work():
             try:
-                from lib.dj.features import decode_file_stereo
-                from lib.dj.stems import load_stems
-                samples = decode_file_stereo(self.db.abs(track.path))
-                stems = load_stems(self.music_root, track.id, expected_len=len(samples))
-                if not stems:
-                    raise ValueError("no stems on disk")
-                rms = self._stem_levels(track, stems)
+                # decoded and measured in the helper PROCESS (lib/dj/stemload): five seconds of PyAV and
+                # numpy that starved the audio producer when done in this process
+                from lib.dj.stemload import decode_song
+                samples, stems, rms = decode_song(self.db.abs(track.path), self.music_root, track.id,
+                                                  self._body_start(track), track.sections)
                 with self._lock:
                     self._pending[deck] = (track, samples, stems, rms)
             except Exception as e:  # noqa: BLE001
@@ -383,55 +389,10 @@ class RemixConductor:
         """Per-stem RMS over up to 120 s of the body (chunked: stems are float16, whole tracks), plus the
         vocals stem's RMS per SECTION - the measured singing map (the ML vocal pass covers only part of the
         library; the stem itself never lies). Returned under the key "_vox_sections"."""
-        i0 = int(self._body_start(track) * RATE)
-        out = {}
-        for name, arr in stems.items():
-            a = np.asarray(arr)
-            n = len(a)
-            i1 = min(n, i0 + 120 * RATE)
-            if i1 - i0 < RATE:
-                i0, i1 = 0, min(n, 120 * RATE)
-            acc, cnt = 0.0, 0
-            for j in range(i0, i1, 10 * RATE):
-                blk = a[j:min(i1, j + 10 * RATE)].astype(np.float32)
-                acc += float(np.sum(blk * blk))
-                cnt += blk.size
-            out[name] = math.sqrt(acc / max(cnt, 1))
-        # per-stem ENVELOPES at half-second resolution (RMS per 0.5 s, each stem scaled by its own 95th
-        # percentile): the strips' stem-level picture - where each stem is present, finer than sections
-        env = {}
-        hop = RATE // 2
-        for name, arr in stems.items():
-            a = np.asarray(arr)
-            n = len(a) // hop
-            if n <= 0:
-                continue
-            vals = np.empty(n, dtype=np.float32)
-            for j in range(0, n, 200):
-                j1 = min(n, j + 200)
-                blk = a[j * hop:j1 * hop].astype(np.float32)
-                blk = blk.reshape(j1 - j, hop, -1)
-                vals[j:j1] = np.sqrt(np.mean(blk * blk, axis=(1, 2)))
-            top = float(np.percentile(vals, 95)) or 1e-6
-            env[name] = np.clip(vals / top, 0.0, 1.0).astype(np.float16)
-        out["_env"] = env
-        vox = stems.get("vocals")
-        if vox is not None and track.sections:
-            a = np.asarray(vox)
-            per = []
-            for s in track.sections:
-                j0, j1 = int(s["start_s"] * RATE), min(len(a), int(s["end_s"] * RATE))
-                if j1 - j0 < RATE // 2:
-                    per.append(0.0)
-                    continue
-                acc, cnt = 0.0, 0
-                for j in range(j0, j1, 10 * RATE):
-                    blk = a[j:min(j1, j + 10 * RATE)].astype(np.float32)
-                    acc += float(np.sum(blk * blk))
-                    cnt += blk.size
-                per.append(math.sqrt(acc / max(cnt, 1)))
-            out["_vox_sections"] = per
-        return out
+        # one pass per stem (lib/dj/stemload.stem_levels, shared with the helper process): the mean square
+        # per half-second hop, from which the body RMS, the envelope and the singing map all derive
+        from lib.dj.stemload import stem_levels
+        return stem_levels(stems, self._body_start(track), track.sections or [])
 
     def _mount(self, deck):
         with self._lock:
@@ -930,11 +891,16 @@ class RemixConductor:
         for d, s in list(self.songs.items()):
             if s.leaving and s.leave_clock is not None and clock >= s.leave_clock:
                 self.songs.pop(d, None)
-        # a BREAK ends: the lanes are back where they were
+        # a BREAK ends: the lanes are back where they were - or, when that song has left meanwhile, on the
+        # song that holds the drums now (a lane must never come back to nobody)
         if self._break is not None and clock >= self._break[0]:
+            fallback = self.lanes.get("drums") or self.master
+            at_back = clock + int(LEAD_S * RATE)
             for lane, d in self._break[1].items():
                 if d in self.songs and not self.songs[d].leaving:
                     self.lanes[lane] = d
+                elif fallback in self.songs and not self.songs[fallback].leaving and self._lane_ok(fallback, lane, at_back):
+                    self._cross(lane, fallback, at_back, beats=1.0, shape=False)
             self._break = None
             self._hygiene(clock + int(LEAD_S * RATE))
         # decoded songs come in silently at once; the brain's next pick decodes onto a free deck
@@ -1214,20 +1180,43 @@ class RemixConductor:
         voices = {d for ln in ("other", "vocals") for d in [self.lanes.get(ln)] if d is not None and d != bed}
         max_voices = 2 if self.blend >= 0.5 else 1
         bar = self.bar_n
-        # 0. housekeeping first: a rested `other` of the bed comes back after a phrase (the bed is whole again);
-        #    the VOCAL lane is kept bar by bar in _vocal_tick, not here
-        if bed is not None:
+        # a bed change in flight (the strip, then the landing) owns the arrangement until it lands - and never
+        # for longer than four phrases (a stuck landing froze the room once)
+        if self._land_k is not None:
+            if bar < self._land_k and self._land_k - bar <= 4 * self.change_bars:
+                self.wait_why = "the bed is changing: the breakdown, then the new drums and bass land"
+                return None
+            self._land_k = None
+        # 0. housekeeping first. THE BED IS NEVER EMPTY: a drums or bass lane left with nobody (a break whose
+        #    song left before it ended, an eviction with no target, a landing that never came - the user heard
+        #    "the bass track empty for minutes") goes back to the bed song at once, or to the song holding most
+        #    lanes / the clock when there is no bed; a rested `other` of the bed comes back after a phrase; the
+        #    VOCAL lane is kept bar by bar in _vocal_tick
+        if bed is None:
+            holders = {}
+            for ln, dd in self.lanes.items():
+                if dd is not None and dd in self.songs and self.songs[dd].entered and not self.songs[dd].leaving:
+                    holders[dd] = holders.get(dd, 0) + 1
+            cand = max(holders, key=holders.get) if holders else (self.master if self.master in self.songs else None)
+            if cand is not None:
+                tag = None
+                for ln in ("drums", "bass"):
+                    if self.lanes.get(ln) != cand and self._lane_ok(cand, ln, at):
+                        tag = self._cross(ln, cand, at) or tag
+                self.songs[cand].bed_since = bar
+                self._move("return", "drums", None, self._song_id(cand), f"{self.songs[cand].track.title} takes the bed (drums and bass had nobody)", shape=tag)
+                return tag
+        else:
+            for ln in ("bass", "drums"):
+                if self.lanes.get(ln) is None and self._lane_ok(bed, ln, at):
+                    tag = self._cross(ln, bed, at)
+                    self._move("return", ln, None, self._song_id(bed), f"{ln} back on {self.songs[bed].track.title} (the bed is never empty)", shape=tag)
+                    return tag
             ln = "other"
             if self.lanes.get(ln) is None and bar - self.lane_k.get(ln, -10 ** 6) >= self.change_bars and self._lane_ok(bed, ln, at):
                 tag = self._cross(ln, bed, at)
                 self._move("return", ln, None, self._song_id(bed), f"{ln} returns on {self.songs[bed].track.title} (the bed is whole again)", shape=tag)
                 return tag
-        # a bed change in flight (the strip, then the landing) owns the arrangement until it lands
-        if self._land_k is not None:
-            if bar < self._land_k:
-                self.wait_why = "the bed is changing: the breakdown, then the new drums and bass land"
-                return None
-            self._land_k = None
         # 1. the old bed song, now only a voice, leaves after a phrase
         for d in list(voices):
             s = self.songs[d]

@@ -89,9 +89,12 @@ class DJSystem:
     def __init__(self, music_root, engine=None, theme="groove",
                  night_hours=6.0, autopilot=True, seed=None,
                  stretch_max=1.10, log_dir=None, threaded=True,
-                 record=False, persona="auto"):
+                 record=False, persona="auto", library=None):
         self.music_root = music_root
         self.engine = engine
+        # An already-loaded library (the Director's): start() then skips load_library - 1.5 s of GIL that
+        # starved the audio thread on every handover back to one song (user's log, 2026-09-12).
+        self._preloaded_library = library
         self.night_hours = night_hours
         # Arc cycle for non-all-night themes. Starts at the classic 90
         # minutes; the operator picks longer sets live via
@@ -203,7 +206,10 @@ class DJSystem:
         """Open the library, attach the submix, begin conducting."""
         self.db = LibraryDB(self.music_root)     # planner-thread connection
         # 'do not use' tracks (DB v11) are never grabbed by the autoDJ.
-        lib = [t for t in load_library(self.db) if not t.excluded]
+        if self._preloaded_library is not None:
+            lib = [t for t in self._preloaded_library if not t.excluded]
+        else:
+            lib = [t for t in load_library(self.db) if not t.excluded]
         if not lib:
             self.last_error = "library is empty - run tools/dj/dj_scan.py"
             print(f"[DJ] {self.last_error}")
@@ -3497,6 +3503,11 @@ class DJSystem:
 
     def _decode(self, track):
         try:
+            # in the helper process when threaded (the decode's GIL time starved the audio producer);
+            # inline offline so tests stay deterministic
+            if self.threaded:
+                from lib.dj.stemload import decode_mix
+                return decode_mix(self.db.abs(track.path))
             from lib.dj.features import decode_file_stereo
             return decode_file_stereo(self.db.abs(track.path))
         except Exception as e:

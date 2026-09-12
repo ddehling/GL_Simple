@@ -329,6 +329,8 @@
                 <button class="btn" id="dj-dr-bad">👎 BAD</button>
                 <span class="now-sub" id="dj-dr-verdict" style="align-self:center;line-height:1.3"></span>
             </div>
+            <div id="dj-dr-programs" class="transport" style="margin-top:8px;flex-wrap:wrap"></div>
+            <div class="now-sub" id="dj-dr-program"></div>
             <div id="dj-dr-dials" style="margin-top:8px"></div>
         </div>
 
@@ -1337,8 +1339,27 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             }
             for (const b of document.querySelectorAll("#dj-dr-dials .theme-btn[data-dial]"))
                 b.classList.toggle("on", dials[b.dataset.dial] === b.dataset.opt);
+            // programs over the next songs
+            const progs = d.programs || {};
+            const psig = JSON.stringify(Object.keys(progs));
+            if (psig !== drProgSig) {
+                drProgSig = psig;
+                $("dj-dr-programs").innerHTML = `<span class="now-sub" style="align-self:center">next songs</span>`
+                    + [2, 3, 4].map((n) => `<button class="theme-btn" data-pn="${n}">${n}</button>`).join("")
+                    + Object.entries(progs).map(([k, [label, tip]]) => `<button class="theme-btn" data-prog="${k}" title="${tip}">${label}</button>`).join("")
+                    + `<button class="btn" data-prog="stop">stop</button>`;
+                for (const b of document.querySelectorAll("#dj-dr-programs [data-pn]"))
+                    b.onclick = () => { drProgN = parseInt(b.dataset.pn, 10); for (const x of document.querySelectorAll("#dj-dr-programs [data-pn]")) x.classList.toggle("on", x === b); };
+                for (const b of document.querySelectorAll("#dj-dr-programs [data-prog]"))
+                    b.onclick = () => emit("director_program", {key: b.dataset.prog, n: drProgN});
+            }
+            const pr = d.program;
+            for (const b of document.querySelectorAll("#dj-dr-programs [data-prog]"))
+                b.classList.toggle("on", !!pr && pr.key === b.dataset.prog);
+            $("dj-dr-program").textContent = pr ? `${pr.label} over ${pr.n} songs: ` + (pr.steps || []).map((s) => (s.now ? "▶ " : (s.done ? "✓ " : "")) + `song ${s.i + 1}: ${s.text}`).join("  →  ") : "";
             drawDirectorArc(d.arc || {});
         }
+        let drProgSig = "", drProgN = 3;
         function drawDirectorArc(a) {
             const c = $("dj-dr-arc"), ctx = c.getContext("2d");
             const W = c.width = c.clientWidth || 600, H = c.height, pad = 10;

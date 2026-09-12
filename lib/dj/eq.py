@@ -85,14 +85,26 @@ class ThreeBandEQ:
         if flat and not active:
             return block                                  # true bypass
         x = block.astype(np.float64)
-        low = self._run("low", x)
-        mid = self._run("mid", x)
-        high = self._run("high", x)
         ramp = np.linspace(0.0, 1.0, n, endpoint=False)[:, None]
         gl = g0[0] + (g1[0] - g0[0]) * ramp
         gm = g0[1] + (g1[1] - g0[1]) * ramp
         gh = g0[2] + (g1[2] - g0[2]) * ramp
-        y = low * gl + mid * gm + high * gh
+        # ONE-BAND SHORTCUT: when only the low (or only the high) band moves - the low carve on a layered
+        # voice, the Director's BASS or TONE - the other two bands are the input minus that band, so a
+        # single cascade does it: y = x + (g - 1) * band. Three cascades cost 28 % of the layered mixer
+        # (profile 2026-09-12); this is a third of that. The LR4 sum is an allpass, so the shortcut differs
+        # from the full split only by that allpass's phase near the crossover - inaudible at carve depths.
+        only_low = np.all(g0[1:] == 1.0) and np.all(g1[1:] == 1.0)
+        only_high = np.all(g0[:2] == 1.0) and np.all(g1[:2] == 1.0)
+        if only_low:
+            y = x + (gl - 1.0) * self._run("low", x)
+        elif only_high:
+            y = x + (gh - 1.0) * self._run("high", x)
+        else:
+            low = self._run("low", x)
+            mid = self._run("mid", x)
+            high = self._run("high", x)
+            y = low * gl + mid * gm + high * gh
         if not active:                                    # fade processed in
             y = x + (y - x) * ramp
             self._active = True
