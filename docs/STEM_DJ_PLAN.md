@@ -322,6 +322,25 @@ first time, cached after. Not yet heard by the user. Open next: entry / exit han
 and adds; clip trimming at the left edge; a lane's own fader only as an exception; the offline moment
 finder feeding the material; autopilot drawing ghost clips ahead of the playhead.
 
+**The live layer on the Timeline (2026-09-12, user: "once again this is getting way too complicated for
+spontaneous live shows"):** placing clips by hand is preparation, not performance. Live, the SYSTEM writes
+the timeline and you approve or override in a glance: the player's **autopilot** (0–100 %, the `auto`
+slider) plans the conductor's next move for each coming phrase two phrases ahead of the playhead and
+writes it as a **ghost clip** (dashed, "auto ·") - a new song in through one lane (the brain's pick,
+from its landmark), a lane crossing toward the newest song or freely, a rest - which plays like any clip
+unless you delete or move it; a bar you placed something on yourself is left alone; an EMPTY timeline
+with the autopilot up opens on the conductor's own pick. Four **gestures** write clips the same way:
+NEXT SONG (the chosen song in the way the conductor would - a lane a phrase in the morph order from the
+next phrase), DROP (every lane to the chosen or newest song on the next bar), BREAK (every lane but the
+most melodic rests four bars), HOLD (no new plans; what is placed still plays); keys N / D / B / H.
+Precedence on a lane is now IMPLICIT (the latest-starting clip that covers a bar is heard; an earlier clip
+resumes when a bounded one ends; dragging a clip away leaves nothing trimmed - the first drag crashed on a
+clip object the move had replaced, and the trim-on-place rule left holes), the canvas draws the heard
+segments, and RESTS are clips of silence. Headless: an empty timeline at autopilot 100 opened on a pick,
+planned "Kirghiz in through drums at bar 4, Look Of Today in through bass at 8, drums → Look Of Today at
+12, Need You Now in through other at 16…" and the plan became the music; DROP put every lane on one song;
+BREAK rested three lanes and they came back; HOLD stopped new plans. Not yet heard by the user.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

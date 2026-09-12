@@ -124,52 +124,65 @@ class TimelineCanvas(QWidget):
             p.drawLine(QPointF(x, self.RULER_H), QPointF(x, H))
             p.setPen(DIM)
             p.drawText(QRectF(x + 3, 2, 60, self.RULER_H - 4), Qt.AlignmentFlag.AlignVCenter, str(b))
-        # clips
+        # clips, as HEARD: per lane the segments where each clip is the one in charge (latest start wins,
+        # an earlier clip resumes when a bounded one ends); ghosts (the autopilot's plan) dashed, rests dark
         spec = self.tab.spectro
-        for c in sorted(tl.clips, key=lambda c: c.bar):
-            end = c.end_bar if c.end_bar is not None else max(self.first_bar + vb, c.bar + 1)
-            x0, x1 = self.x_of(c.bar), self.x_of(end)
-            if x1 < self.LEFT or x0 > W:
-                continue
-            x0 = max(x0, self.LEFT)
-            y = self.lane_y(c.lane)
-            col = self.tab.color(c.track_id)
-            rect = QRectF(x0, y + 3, max(2.0, x1 - x0), self.LANE_H - 6)
-            sp = spec.get(c.track_id)
-            drawn = False
-            if sp is not None and sp["stems"].get(c.lane) is not None and rect.width() > 4:
-                bar_s = self.tab.bar_s(c.track_id)
-                t0 = c.song_time_at(self.bar_at(x0), bar_s)
-                t1 = c.song_time_at(self.bar_at(min(x1, W)), bar_s)
-                key = (c.id, round(t0, 1), round(t1, 1), int(rect.width()), int(rect.height()))
-                img = self._img_cache.get(key)
-                if img is None:
-                    img = _spec_image(sp["stems"][c.lane], col, max(0.0, t0), max(0.0, t1), int(rect.width()), int(rect.height()), sp["hop_s"])
-                    if len(self._img_cache) > 200:
-                        self._img_cache.clear()
-                    self._img_cache[key] = img
-                if img is not None:
-                    p.drawImage(rect, img)
-                    drawn = True
-            if not drawn:
-                fill = QColor(col)
-                fill.setAlpha(70)
-                p.fillRect(rect, fill)
-            p.setPen(QPen(col if c is not self.selected else QColor(255, 255, 255), 2 if c is self.selected else 1))
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRect(rect)
-            if c.end_bar is None:
-                p.setPen(QPen(col, 1, Qt.PenStyle.DotLine))
-                p.drawLine(QPointF(rect.right(), rect.top()), QPointF(rect.right(), rect.bottom()))
-            t = self.tab.track(c.track_id)
-            if t is not None and rect.width() > 40:
-                p.setPen(QColor(255, 255, 255))
-                f = QFont(self.font())
-                f.setPointSizeF(9)
-                f.setBold(True)
-                p.setFont(f)
-                p.drawText(QRectF(rect.left() + 4, rect.top() + 1, rect.width() - 8, 16), Qt.AlignmentFlag.AlignVCenter,
-                           f"{t.title[:36]}  @{_mmss(c.start_s)}" + ("" if c.end_bar is None else f"  {c.end_bar - c.bar} bars"))
+        for ln in LANES:
+            y = self.lane_y(ln)
+            for c, s0, s1 in tl.segments(ln, int(self.first_bar), int(self.first_bar) + vb):
+                x0, x1 = max(self.x_of(s0), self.LEFT), self.x_of(s1)
+                if x1 < self.LEFT or x0 > W:
+                    continue
+                col = self.tab.color(c.track_id)
+                rect = QRectF(x0, y + 3, max(2.0, x1 - x0), self.LANE_H - 6)
+                if c.rest:
+                    p.fillRect(rect, QColor(10, 10, 12))
+                    p.setPen(QPen(QColor(70, 70, 80), 1, Qt.PenStyle.DashLine if c.ghost else Qt.PenStyle.SolidLine))
+                    p.setBrush(Qt.BrushStyle.NoBrush)
+                    p.drawRect(rect)
+                    p.setPen(DIM)
+                    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "rest" if rect.width() > 30 else "")
+                    continue
+                sp = spec.get(c.track_id)
+                drawn = False
+                if sp is not None and sp["stems"].get(ln) is not None and rect.width() > 4:
+                    bar_s = self.tab.bar_s(c.track_id)
+                    t0 = c.song_time_at(self.bar_at(x0), bar_s)
+                    t1 = c.song_time_at(self.bar_at(min(x1, W)), bar_s)
+                    key = (c.id, round(t0, 1), round(t1, 1), int(rect.width()), int(rect.height()))
+                    img = self._img_cache.get(key)
+                    if img is None:
+                        img = _spec_image(sp["stems"][ln], col, max(0.0, t0), max(0.0, t1), int(rect.width()), int(rect.height()), sp["hop_s"])
+                        if len(self._img_cache) > 300:
+                            self._img_cache.clear()
+                        self._img_cache[key] = img
+                    if img is not None:
+                        p.setOpacity(0.55 if c.ghost else 1.0)
+                        p.drawImage(rect, img)
+                        p.setOpacity(1.0)
+                        drawn = True
+                if not drawn:
+                    fill = QColor(col)
+                    fill.setAlpha(40 if c.ghost else 70)
+                    p.fillRect(rect, fill)
+                pen = QPen(col if c is not self.selected else QColor(255, 255, 255), 2 if c is self.selected else 1)
+                if c.ghost:
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRect(rect)
+                if c.bar == s0 and c.end_bar is None:
+                    p.setPen(QPen(col, 1, Qt.PenStyle.DotLine))
+                    p.drawLine(QPointF(rect.right(), rect.top()), QPointF(rect.right(), rect.bottom()))
+                t = self.tab.track(c.track_id)
+                if t is not None and rect.width() > 40 and c.bar == s0:
+                    p.setPen(QColor(255, 255, 255) if not c.ghost else QColor(220, 220, 230))
+                    f = QFont(self.font())
+                    f.setPointSizeF(9)
+                    f.setBold(True)
+                    p.setFont(f)
+                    p.drawText(QRectF(rect.left() + 4, rect.top() + 1, rect.width() - 8, 16), Qt.AlignmentFlag.AlignVCenter,
+                               ("auto · " if c.ghost else "") + f"{t.title[:36]}  @{_mmss(c.start_s)}" + ("" if c.end_bar is None else f"  {c.end_bar - c.bar} bars"))
         # playhead
         ph = self.tab.playhead()
         if ph is not None:
@@ -191,12 +204,11 @@ class TimelineCanvas(QWidget):
         if ln is None or pos.x() < self.LEFT:
             return None, None
         b = self.bar_at(pos.x())
-        for c in sorted(self.tab.timeline.on_lane(ln), key=lambda c: -c.bar):
-            end = c.end_bar if c.end_bar is not None else c.bar + 10 ** 6
-            if c.bar <= b < end:
-                edge = abs(self.x_of(c.end_bar) - pos.x()) < 6 if c.end_bar is not None else False
-                return c, ("trim" if edge else "move")
-        return None, None
+        c = self.tab.timeline.active(ln, int(b))
+        if c is None:
+            return None, None
+        edge = abs(self.x_of(c.end_bar) - pos.x()) < 6 if c.end_bar is not None else False
+        return c, ("trim" if edge else "move")
 
     def mousePressEvent(self, ev):
         if ev.button() != Qt.MouseButton.LeftButton:
@@ -223,6 +235,7 @@ class TimelineCanvas(QWidget):
         else:
             ne = max(c.bar + 1, int(round(b)))
             c.end_bar = ne
+            self.tab.timeline.resolve(c)
         self.update()
 
     def mouseReleaseEvent(self, ev):
@@ -509,6 +522,52 @@ class TimelineTab(QWidget):
         self.hint.setProperty("dim", "true")
         self.hint.setWordWrap(True)
         root.addWidget(self.hint)
+        # -- live gestures: the system writes the clips, you say when ------------------------------------------
+        live = QHBoxLayout()
+        live.setSpacing(8)
+        self.gestures = {}
+        for label, fn, tip, kind in (
+                ("NEXT SONG", self._next_song, "bring the chosen song in the way the conductor would: a lane a phrase from the next phrase  [N]", "go"),
+                ("DROP", self._drop, "every lane to the chosen (else the newest) song on the next bar  [D]", "hot"),
+                ("BREAK", self._break, "every lane but the most melodic rests four bars from the next bar  [B]", None),
+                ("HOLD", self._hold, "no new autopilot plans while held (what is placed still plays)  [H]", None)):
+            b = QPushButton(label)
+            b.setToolTip(tip)
+            b.setMinimumHeight(40)
+            if kind:
+                b.setProperty("kind", kind)
+            b.clicked.connect(fn)
+            live.addWidget(b)
+            self.gestures[label] = b
+        self.gestures["HOLD"].setCheckable(True)
+        live.addSpacing(16)
+        lab = QLabel("auto")
+        lab.setProperty("dim", "true")
+        live.addWidget(lab)
+        self.auto = QSlider(Qt.Orientation.Horizontal)
+        self.auto.setRange(0, 100)
+        self.auto.setValue(100)
+        self.auto.setMaximumWidth(180)
+        self.auto.setToolTip("autopilot: how often the system plans the next phrase's move itself, written ahead as ghost clips you can delete or move - 0 = only what you place plays")
+        self.auto.valueChanged.connect(self._auto)
+        live.addWidget(self.auto)
+        self.auto_lbl = QLabel("100%")
+        self.auto_lbl.setMinimumWidth(40)
+        live.addWidget(self.auto_lbl)
+        lab2 = QLabel("change")
+        lab2.setProperty("dim", "true")
+        live.addWidget(lab2)
+        self.change_box = QComboBox()
+        self.change_box.addItems(["every 4 bars", "every 8 bars", "every 16 bars", "every 32 bars"])
+        self.change_box.setCurrentIndex(1)
+        self.change_box.currentIndexChanged.connect(self._change)
+        live.addWidget(self.change_box)
+        live.addStretch(1)
+        root.addLayout(live)
+        for seq, fn in (("N", self._next_song), ("D", self._drop), ("B", self._break), ("H", lambda: (self.gestures["HOLD"].toggle(), self._hold()))):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(fn)
         # -- the material ---------------------------------------------------------------------------------------
         split = QSplitter(Qt.Orientation.Horizontal)
         left = QWidget()
@@ -653,6 +712,61 @@ class TimelineTab(QWidget):
     def changed(self):
         self.canvas.update()
 
+    # -- live gestures ----------------------------------------------------------------------------------------------
+    def _chosen_id(self):
+        it = self.song_list.currentItem()
+        return it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+
+    def _live_player(self):
+        """The player, or a planning-only one before PLAY (gestures write clips either way)."""
+        if self.player is not None:
+            return self.player
+        return None
+
+    def _next_song(self):
+        tid = self._chosen_id()
+        if tid is None:
+            self.state_lbl.setText("choose a song on the left first")
+            return
+        pl = self._live_player()
+        if pl is None:
+            from lib.dj.timeline import MORPH_ORDER
+            t = self.track(tid)
+            land = self._best_entry(t)
+            bars = [4, 8, 16, 32][self.change_box.currentIndex()]
+            for i, ln in enumerate(MORPH_ORDER):
+                self.timeline.add(tid, [ln], self._play_from + (i + 1) * bars, land + i * bars * self.bar_s(tid), ghost=True)
+        else:
+            pl.next_song(tid)
+        self.spectro.request(self.track(tid))
+        self.changed()
+
+    def _drop(self):
+        pl = self._live_player()
+        if pl is not None:
+            pl.drop(self._chosen_id() if self._chosen_id() in self.timeline.tracks() or self.rc.deck_of(self._chosen_id() or -1) else None)
+            self.changed()
+
+    def _break(self):
+        pl = self._live_player()
+        if pl is not None:
+            pl.break_()
+            self.changed()
+
+    def _hold(self):
+        if self.player is not None:
+            self.player.hold = self.gestures["HOLD"].isChecked()
+
+    def _auto(self, v):
+        self.auto_lbl.setText(f"{v}%")
+        if self.player is not None:
+            self.player.auto = v / 100.0
+
+    def _change(self, i):
+        bars = [4, 8, 16, 32][i]
+        if self.player is not None:
+            self.player.change_bars = bars
+
     # -- files ------------------------------------------------------------------------------------------------------
     def _save(self):
         path = self.timeline.save(self.planner.music_dir, self.name_edit.text().strip() or "untitled")
@@ -706,8 +820,8 @@ class TimelineTab(QWidget):
         from lib.dj import brain as B
         from lib.dj.remix import RemixConductor
         from lib.dj.timeline import TimelinePlayer
-        if not self.timeline.clips:
-            self.state_lbl.setText("place something on the timeline first")
+        if not self.timeline.clips and self.auto.value() <= 0:
+            self.state_lbl.setText("place something on the timeline first, or raise the autopilot")
             return
         try:
             self.planner.analysis_tab.player.stop()
@@ -720,6 +834,9 @@ class TimelineTab(QWidget):
         self.rc = RemixConductor(db, self.planner.music_dir, lib, theme="groove")
         self.engine.attach_track("dj_timeline", self.rc.submix)
         self.player = TimelinePlayer(self.rc, self.timeline)
+        self.player.auto = self.auto.value() / 100.0
+        self.player.change_bars = [4, 8, 16, 32][self.change_box.currentIndex()]
+        self.player.hold = self.gestures["HOLD"].isChecked()
         ok, msg = self.player.start(self._play_from)
         if not ok:
             self.state_lbl.setText(msg or "could not start")
@@ -768,6 +885,12 @@ class TimelineTab(QWidget):
                 self.notes_lbl.setText("   ·   ".join(f"{t} {m}" for t, m in notes) + (f"   ERROR {st['error']}" if st.get("error") else ""))
             else:
                 self.pos_lbl.setText(f"bar {self._play_from}")
+            # every song on the timeline gets its spectrogram (the autopilot's picks included)
+            for tid in self.timeline.tracks():
+                if self.spectro.get(tid) is None and tid not in self.spectro._busy and tid not in self.spectro.errors:
+                    t = self.track(tid)
+                    if t is not None:
+                        self.spectro.request(t)
             self.canvas.update()
             if self.viewer.track is not None and (self.spectro.get(self.viewer.track.id) is not None or self.rc is not None):
                 self.viewer.update()
