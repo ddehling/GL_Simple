@@ -300,6 +300,28 @@ multiple songs' info at once, and the start of a way to play parts of many songs
 ARRANGEMENT surface: songs as rows with stem-level spectral detail, their entry and exit points, paths
 drawn between them that the conductor then plays as parts of many songs. Next.
 
+**THE TIMELINE (2026-09-11, user: "the interface is not what I've been asking for" → "single ongoing
+timeline. but I don't want to have to set mix volumes for many stems"):** the interface the user asked for
+is the music itself as the surface. `tools/dj/planner/timeline.py` + `lib/dj/timeline.py`: ONE continuous
+run of bars with four lane tracks (drums, bass, other, vocals). A CLIP is a span of one song's stem placed
+at a bar, drawn with that stem's real spectrogram (48 log bands at 0.1 s, computed once from the stems and
+cached beside them) in the song's colour; one clip per lane at a time (placing ends what was there), so
+levels, beat lock, key shift and crossfades are the conductor's and never the operator's; a clip runs
+until the next clip on its lane unless given an end. Drag to move, drag the right edge to end,
+double-click to end / run on, Delete, Ctrl+wheel zoom, click the ruler to set where PLAY starts; the
+playhead keeps running (ongoing: place the next thing when you want a change). The MATERIAL below: the
+setlist (or a library search) and the SONG VIEWER - four spectrogram rows in song time, the 4-bar grid,
+sections, the analyser's entry (green) and exit (red) points, the song's live position; drag a stem row
+onto a lane, or the title bar for all four stems; SEND places the song at the playhead. The player
+(TimelinePlayer on a RemixConductor at autopilot 0) stages each clip's song ahead so its song time lands
+exactly on its bar (conductor: `stage_for_bar`, `start(cue_s, lanes)`, `jump`, `assign(force)`), puts
+lanes on decks at the bar, re-cues a live song for a clip elsewhere in it, ejects songs no clip needs.
+Headless: whole song A at 0, B's drums+bass at 8, C's vocals at 16, A's other ending at 24 - the lane map
+followed bar by bar, songs staged ahead, A left when nothing needed it; spectrograms 5.7 s per song the
+first time, cached after. Not yet heard by the user. Open next: entry / exit handles the operator drags
+and adds; clip trimming at the left edge; a lane's own fader only as an exception; the offline moment
+finder feeding the material; autopilot drawing ghost clips ahead of the playhead.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
