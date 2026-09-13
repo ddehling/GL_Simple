@@ -104,9 +104,10 @@ PROGRAMS = {
 BASS_LOW = {"flat": 1.0, "boost": 1.3, "heavy": 1.6}                # the mix bus EQ, low band (< 200 Hz)
 TONE_HIGH = {"dark": 0.7, "neutral": 1.0, "bright": 1.3}             # the mix bus EQ, high band (> 2.5 kHz)
 LEVEL_GAIN = {"quiet": 0.6, "normal": 0.85, "loud": 1.0}             # the mix bus gain
-# FLAGS: "this is not working" said for LATER, with the whole context, and no learning applied - unlike BAD,
-# which lowers a move's weight, leans the song's tags away and pushes the music on. key -> what the operator saw.
-FLAG_KINDS = {
+# FLAGS: "this is not working" - or "this worked" - said for LATER, with the whole context, and no learning
+# applied - unlike BAD, which lowers a move's weight, leans the song's tags away and pushes the music on.
+# key -> what the operator heard. The good flags are the cases to PROTECT when a rule changes.
+FLAG_BAD = {
     "dead": "dead air / too quiet",
     "busy": "too busy / too much going on",
     "still": "nothing happening for too long",
@@ -120,6 +121,17 @@ FLAG_KINDS = {
     "ui": "the screen (bouncing, unclear, wrong)",
     "other": "something else (say what)",
 }
+FLAG_GOOD = {
+    "good_moment": "that moment landed (keep it exactly like this)",
+    "good_seam": "great transition / blend",
+    "good_layer": "these songs sit well together",
+    "good_song": "good song choice here",
+    "good_build": "the energy is building right",
+    "good_vocals": "the vocals sat perfectly",
+    "good_plan": "the plan read right and happened as said",
+    "good_other": "something else worked (say what)",
+}
+FLAG_KINDS = {**FLAG_BAD, **FLAG_GOOD}
 MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
 MOMENT_GAP_S = {"rare": 1e9, "some": 480.0, "lots": 240.0}           # ...and never closer than this to the last moment (peaks are spaced)
 FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
@@ -1069,7 +1081,8 @@ class Director:
         the story row. Nothing is learned from it and nothing moves: it is a message to the fix, not a
         verdict on a mix or a song. Returns the sentence shown."""
         kind = kind if kind in FLAG_KINDS else "other"
-        snap = {"event": "flag", "kind": kind, "label": FLAG_KINDS[kind], "text": (text or "")[:400],
+        good = kind in FLAG_GOOD
+        snap = {"event": "flag", "kind": kind, "good": good, "label": FLAG_KINDS[kind], "text": (text or "")[:400],
                 "mode": self.mode, "theme": self.theme, "pool": self.pool_name, "dials": dict(self.dials),
                 "bar": round(self._bar, 1), "events": [f"{h} {m}" for h, m in self.events[-6:]],
                 "last_verdict": ({k: v for k, v in self.last_verdict.items() if k in ("up", "what", "learn", "did")} if self.last_verdict else None),
@@ -1120,14 +1133,14 @@ class Director:
             log_row({"event": "flag", "kind": kind, "text": snap["text"]})
         except Exception:
             pass
-        self.flags.append({"t": time.time(), "kind": kind, "label": FLAG_KINDS[kind], "text": snap["text"]})
+        self.flags.append({"t": time.time(), "kind": kind, "good": good, "label": FLAG_KINDS[kind], "text": snap["text"]})
         try:
             self.marks.append({"bar": int(self._bar), "end_bar": None, "lanes": None, "ghost": False, "kind": "flag",
-                               "text": f"⚑ {FLAG_KINDS[kind]}" + (f": {text[:30]}" if text else "")})
+                               "text": ("✓ " if good else "⚑ ") + FLAG_KINDS[kind] + (f": {text[:30]}" if text else "")})
         except Exception:
             pass
         n = sum(1 for f in self.flags if f["kind"] == kind)
-        msg = f"flagged: {FLAG_KINDS[kind]}" + (f" - {text[:60]}" if text else "") + f" ({n} tonight; nothing learned, nothing moved)"
+        msg = ("kept: " if good else "flagged: ") + FLAG_KINDS[kind] + (f" - {text[:60]}" if text else "") + f" ({n} tonight; nothing learned, nothing moved)"
         self._event(msg)
         return msg
 

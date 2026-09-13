@@ -26,7 +26,7 @@ def _hms(t):
 
 
 def _block(f):
-    out = [f"== {_hms(f['t'])}  sid {f.get('sid')}  [{f.get('kind')}] {f.get('label')}" + (f"  - {f['text']}" if f.get("text") else "")]
+    out = [f"== {_hms(f['t'])}  sid {f.get('sid')}  {'✓' if f.get('good') else '⚑'} [{f.get('kind')}] {f.get('label')}" + (f"  - {f['text']}" if f.get("text") else "")]
     out.append(f"   {f.get('engine') or '?'} / {f.get('mode')}  theme {f.get('theme')}  pool {f.get('pool')}  bus rms {f.get('rms')}  bar {f.get('bar')}")
     d = f.get("dials") or {}
     if d:
@@ -73,6 +73,8 @@ def _block(f):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--kind")
+    ap.add_argument("--good", action="store_true", help="only the good flags (the cases to protect)")
+    ap.add_argument("--bad", action="store_true", help="only the problems")
     ap.add_argument("--session")
     ap.add_argument("--last", type=int)
     ap.add_argument("--json", action="store_true")
@@ -82,6 +84,10 @@ def main():
     flags = read_flags()
     if a.kind:
         flags = [f for f in flags if f.get("kind") == a.kind]
+    if a.good:
+        flags = [f for f in flags if f.get("good")]
+    if a.bad:
+        flags = [f for f in flags if not f.get("good")]
     if a.session:
         flags = [f for f in flags if str(f.get("sid", "")).startswith(a.session)]
     if a.last:
@@ -90,9 +96,10 @@ def main():
         print("no flags" + (" of that kind" if a.kind else "") + " - raise one with FLAG in the Director tab (or SET on the nanoKONTROL2)")
         return 0
     if a.summary:
-        print(f"{len(flags)} flags")
+        good = [f for f in flags if f.get("good")]
+        print(f"{len(flags)} flags: {len(flags) - len(good)} problems, {len(good)} kept as good")
         for k, n in Counter(f.get("kind") for f in flags).most_common():
-            print(f"  {n:3d}  {k}: {next((f.get('label') for f in flags if f.get('kind') == k), '')}")
+            print(f"  {n:3d}  {'✓' if k in {g.get('kind') for g in good} else '⚑'} {k}: {next((f.get('label') for f in flags if f.get('kind') == k), '')}")
         print("per session:")
         for s, n in Counter(f.get("sid") for f in flags).most_common():
             first = min(f["t"] for f in flags if f.get("sid") == s)

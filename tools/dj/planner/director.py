@@ -599,10 +599,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             b.clicked.connect(fn)
             mom.addWidget(b, 2, c, 1, span)
             self.buttons[label] = b
-        self.buttons["FLAG"].setToolTip("⚑ this is not working - say what kind, for LATER: the whole room is written to logs/dj_flags.jsonl "
-                                        "(songs, positions, lanes, gains, the plan, the moment, the last moves) and marked in the story row; "
-                                        "nothing is learned and nothing moves - unlike BAD, which punishes a move and a song's tags. "
-                                        "Review with: python tools/dj/dj_flags.py")
+        self.buttons["FLAG"].setToolTip("⚑ / ✓  this is not working - or this worked - say what kind, for LATER: the whole room is written to "
+                                        "logs/dj_flags.jsonl (songs, positions, lanes, gains, the plan, the moment, the last moves) and marked in the "
+                                        "story row; nothing is learned and nothing moves - unlike BAD, which punishes a move and a song's tags. "
+                                        "Good flags are the cases to protect when a rule changes. Review with: python tools/dj/dj_flags.py")
         right.addLayout(mom)
         self.moment_lbl = QLabel("")
         self.moment_lbl.setProperty("dim", "true")
@@ -759,21 +759,32 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.err_lbl.setText("press START first")
             return
         from PyQt6.QtWidgets import QMenu, QInputDialog
-        from lib.dj.director import FLAG_KINDS
+        from lib.dj.director import FLAG_BAD, FLAG_GOOD
         m = QMenu(self)
-        head = m.addAction("⚑ what is not working? (kept for later, nothing learned)")
+        head = m.addAction("✓ this worked (a case to protect)")
         head.setEnabled(False)
-        for key, label in FLAG_KINDS.items():
+        for key, label in FLAG_GOOD.items():
+            if key == "good_other":
+                continue
             a = m.addAction(label)
             a.triggered.connect(lambda _c, k=key: self._flag_done(self.director.flag(k)))
+        good_note = m.addAction("worked, with a note…")
         m.addSeparator()
-        note = m.addAction("with a note…")
+        head2 = m.addAction("⚑ this is not working (kept for later, nothing learned)")
+        head2.setEnabled(False)
+        for key, label in FLAG_BAD.items():
+            if key == "other":
+                continue
+            a = m.addAction(label)
+            a.triggered.connect(lambda _c, k=key: self._flag_done(self.director.flag(k)))
+        note = m.addAction("not working, with a note…")
 
-        def _with_note():
-            text, ok = QInputDialog.getText(self, "FLAG", "what is not working? (a sentence; the room's state is captured with it)")
+        def _with_note(kind, prompt):
+            text, ok = QInputDialog.getText(self, "FLAG", prompt)
             if ok:
-                self._flag_done(self.director.flag("other", text))
-        note.triggered.connect(lambda _c: _with_note())
+                self._flag_done(self.director.flag(kind, text))
+        good_note.triggered.connect(lambda _c: _with_note("good_other", "what worked? (a sentence; the room's state is captured with it)"))
+        note.triggered.connect(lambda _c: _with_note("other", "what is not working? (a sentence; the room's state is captured with it)"))
         b = self.buttons["FLAG"]
         m.exec(b.mapToGlobal(b.rect().topLeft()))
 
