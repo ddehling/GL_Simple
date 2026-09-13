@@ -135,6 +135,13 @@ def build_stages(music_dir, include_stems=False, headless=False):
                        else "torch/demucs not installed",
                        "args": [tool("dj_stems.py"), "--dir", music_dir]})
     stages += [
+        # THE STEM MEASUREMENTS (lib/dj/measure.py): section chroma, the
+        # hook and the per-stem levels the conductor plays by - for every
+        # stem-bearing track not measured yet (dj_stems.py measures what it
+        # renders; this catches older or interrupted renders). Skips fast
+        # when there is nothing to do.
+        {"name": "stem measurements",
+         "args": [tool("dj_scan.py"), "--dir", music_dir, "--measure"]},
         # Rhythm AFTER stems: with drum stems on disk the signature is
         # measured from the clean rhythm section instead of the mix.
         {"name": "rhythm",

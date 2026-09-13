@@ -96,6 +96,18 @@ def cmd_render(args):
             except Exception:
                 pass
     print(f"\nrendered {matched}, failed {missed}", flush=True)
+    # THE STEM MEASUREMENTS follow the render: section chroma, the hook and the per-stem levels the conductor
+    # plays by (lib/dj/measure.py) - a freshly rendered song must not reach the decks unmeasured
+    rendered = [tid for tid, _p, _t in todo if ST.has_stems(root, tid)]
+    if rendered:
+        try:
+            from lib.dj.measure import measure_pass
+            print(f"measuring {len(rendered)} rendered tracks (chroma, hook, stem levels)", flush=True)
+            v = measure_pass(db, root, only_ids=rendered,
+                             progress_cb=lambda d, t, n: print(f"PROGRESS {d} {t} {d} 0 measure {n[:34]}", flush=True) if d % 5 == 0 or d == t else None)
+            print(f"measured {v.get('measured', 0)}" + (f", {v['errors']} errors" if v.get("errors") else ""), flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f"measure after render failed: {type(e).__name__}: {e} (run dj_scan.py --measure)", flush=True)
     db.close()
     return 0
 

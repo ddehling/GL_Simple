@@ -858,6 +858,15 @@ conductor's plan lands no bed change and no arrival inside one (`_odd_grid_bars`
 skips those samples (it read the same meaningless phase). The clock passes when the old master LEAVES, as
 before (`_pass_clock` exists but is not called: passing it at the follow re-synced the audible old bed).
 
+**"will future songs have this analysis done as part of the DJ planner analysis pipeline?" (2026-09-13).**
+They did not: the stem measurements (section chroma, hook, stem levels) lived only behind `dj_scan.py
+--measure`; a live layered play filled `stem_rms` per mounted song, nothing filled the rest. Now:
+`dj_stems.py` measures every track it renders right after the render; the planner's Stems button runs a
+"stem measurements" stage when the render finishes; `lib/dj/analyze.build_stages` (the one stage list of
+"Analyze all" and the headless `dj_analyze.py`) has a "stem measurements" stage right after the stems
+stage (skips fast when nothing is unmeasured). The 900-track level pass for the existing library ran at
+13:38 (below-normal priority, resumable).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

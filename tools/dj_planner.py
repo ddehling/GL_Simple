@@ -1749,6 +1749,12 @@ class LibraryTab(QWidget):
         except MemoryError:
             self.scan_lbl.setText("stem render complete - reopen the "
                                   "planner (low memory)")
+        # dj_stems.py measures what it rendered; this catches anything still unmeasured (an older render,
+        # a render that was stopped) so every stem-bearing song carries chroma, hook and stem levels
+        self._run_single_stage(
+            {"name": "stem measurements",
+             "args": [os.path.join(_REPO_ROOT, "tools", "dj", "dj_scan.py"),
+                      "--dir", self.planner.music_dir, "--measure"]})
 
     # -- one-button pipeline (Analyze all) -----------------------------------
     def run_analyze_all(self):
