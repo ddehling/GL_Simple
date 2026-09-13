@@ -453,6 +453,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         qcol.addWidget(un)
         self.queue = QListWidget()
         self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)))
+        self.queue.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.queue.customContextMenuRequested.connect(self._queue_menu)
+        self.queue.setToolTip("your queue, in order, with each song's state (○ ready on a deck, ▸ a part of it in play); "
+                              "right-click a song for the same commands as in SONGS; double-click removes it")
         qcol.addWidget(self.queue, 1)
         # the stem-by-stem grid (READY) is OFF the main surface (the composed moments replaced it - "a painful
         # mishmash"); a song's stem still comes in from the right-click menu on the list, loud and on the bar
@@ -1091,7 +1095,17 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         it = self.found.itemAt(pos)
         if it is None or self.director is None:
             return
-        tid = it.data(Qt.ItemDataRole.UserRole)
+        self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=False).exec(self.found.mapToGlobal(pos))
+
+    def _queue_menu(self, pos):
+        it = self.queue.itemAt(pos)
+        if it is None or self.director is None:
+            return
+        self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=True).exec(self.queue.mapToGlobal(pos))
+
+    def _song_actions(self, tid, from_queue):
+        """The same commands for a song wherever it is listed (SONGS or UP NEXT): its stems in, TAKEOVER /
+        BRIDGE with it, and the queue itself."""
         from PyQt6.QtWidgets import QMenu
         m = QMenu(self)
         title = self.director.title(tid)[:28]
@@ -1105,9 +1119,22 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 a = m.addAction(word)
                 a.triggered.connect(lambda _c, t=tid, k=kind: self.moment_lbl.setText(self.director.moment_with(t, k)))
         m.addSeparator()
-        q = m.addAction("put it UP NEXT")
-        q.triggered.connect(lambda _c, t=tid: self._queue(t))
-        m.exec(self.found.mapToGlobal(pos))
+        if from_queue:
+            up = m.addAction("▲ play this next (to the top)")
+            up.triggered.connect(lambda _c, t=tid: self._queue_top(t))
+            rm = m.addAction("✕ remove from UP NEXT")
+            rm.triggered.connect(lambda _c, t=tid: self._unqueue(t))
+        else:
+            q = m.addAction("put it UP NEXT")
+            q.triggered.connect(lambda _c, t=tid: self._queue(t))
+        return m
+
+    def _queue_top(self, tid):
+        if self.director is None:
+            return
+        self.director.up_next = [int(tid)] + [t for t in self.director.up_next if t != int(tid)]
+        self.director._event(f"up next, first: {self.director.title(int(tid))}")
+        self._render_queue()
 
     def _fill_ready(self, rows):
         """The READY rows follow the decks: one line per song, four stem buttons, lit where it holds the lane."""
@@ -1324,13 +1351,30 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._fill_search()
 
     def _render_queue(self):
-        self.queue.clear()
+        """UP NEXT with each song's state: ○ staged and ready, ▸ in play (which parts), … decoding, nothing =
+        waiting for a deck. Rebuilt only when it changes (right-click a row for the same commands as SONGS)."""
         if self.director is None:
+            if self.queue.count():
+                self.queue.clear()
             return
-        for tid in self.director.up_next:
-            it = QListWidgetItem(self.director.title(tid))
-            it.setData(Qt.ItemDataRole.UserRole, tid)
+        rows = self.director.up_next_status()
+        sig = tuple((r["id"], r["state"], tuple(r["lanes"])) for r in rows)
+        if sig == getattr(self, "_queue_sig", None):
+            return
+        self._queue_sig = sig
+        cur = self.queue.currentItem().data(Qt.ItemDataRole.UserRole) if self.queue.currentItem() else None
+        self.queue.clear()
+        words = {"bass": "bass", "drums": "drums", "other": "melody", "vocals": "vocal"}
+        for r in rows:
+            mark = {"staged": "○ ", "in play": "▸ ", "decoding": "… ", "leaving": "↘ ", "next": "▸ "}.get(r["state"], "")
+            tail = ("   in: " + ", ".join(words[ln] for ln in r["lanes"])) if r["lanes"] else ({"staged": "   ready on a deck", "next": "   next record"}.get(r["state"], ""))
+            it = QListWidgetItem(mark + r["title"][:40] + tail)
+            it.setData(Qt.ItemDataRole.UserRole, r["id"])
+            it.setToolTip(f"{r['title']} - {r['state']}" + (f", its {', '.join(r['lanes'])} sounding now" if r["lanes"] else "")
+                          + "\nright-click: its stems in, TAKEOVER / BRIDGE with it, play next, remove")
             self.queue.addItem(it)
+            if r["id"] == cur:
+                self.queue.setCurrentItem(it)
 
     # -- readout -------------------------------------------------------------------------------------------------
     def _tick(self):

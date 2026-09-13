@@ -216,6 +216,7 @@ class Director:
         self._quiet_since = None
         self._dropout_open = False
         self._pending_moment = None      # a TAKEOVER / BRIDGE waiting for its chosen song to be staged
+        self._queued_on_deck = set()     # UP NEXT ids that have been on a deck (they leave the list when they become the bed or leave)
         # TASTE: what GOOD / BAD said about SONGS tonight (their tags), fed to both brains as a lean on the
         # next picks - "more like that" / "less like that" - fading as newer verdicts arrive
         self.taste = {"like": {}, "dislike": {}}
@@ -744,6 +745,25 @@ class Director:
             self.up_next.append(tid)
             self._event(f"up next: {self.title(tid)}")
 
+    def up_next_status(self):
+        """The UP NEXT list as rows with each song's state: queued (waiting for a deck), staged (on a deck,
+        silent, ready), in play (which of its parts sound now) - a song whose stem you placed is here too,
+        until it becomes the bed or leaves."""
+        rows = []
+        rc = self.rc
+        for tid in self.up_next:
+            state, lanes = "queued", []
+            if rc is not None:
+                d = rc.deck_of(tid)
+                if d is not None and d in rc.songs:
+                    s = rc.songs[d]
+                    lanes = s.held(rc.lanes)
+                    state = ("leaving" if s.leaving else "in play" if lanes else ("staged" if s.staged_at is not None else "decoding"))
+            elif self.system is not None and self.system.next_track is not None and self.system.next_track.id == tid:
+                state = "next"
+            rows.append({"id": tid, "title": self.title(tid), "state": state, "lanes": lanes})
+        return rows
+
     def unqueue(self, track_id):
         self.up_next = [t for t in self.up_next if t != int(track_id)]
 
@@ -844,6 +864,7 @@ class Director:
             return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
         rc = self.rc
         tid = int(track_id)
+        self.queue(tid)                               # the song of a TAKEOVER / BRIDGE is UP NEXT too
         deck = next((d for d, s in rc.songs.items() if s.track.id == tid and not s.leaving), None)
         if deck is not None and rc.songs[deck].staged_at is not None:
             ok, msg = rc.arm_moment(kind, other=deck)
@@ -928,6 +949,7 @@ class Director:
         if self.rc is None or self.rc.master is None:
             return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
         rc = self.rc
+        self.queue(int(track_id))                     # a song whose stem you place is UP NEXT too (it is in play, in part)
         deck = next((d for d, s in rc.songs.items() if s.track.id == int(track_id) and not s.leaving), None)
         boost = 1.3 if loud else 1.0
         if deck is None:
@@ -1228,8 +1250,13 @@ class Director:
                 self._fed = (cur, head)
         elif self.rc is not None and self.rc.master is not None:
             d = self.rc.deck_of(head)
-            if d is not None and self.rc.songs[d].entered:
+            if d is not None:
+                self._queued_on_deck.add(head)
+            # a queued song leaves the list when it has BECOME THE BED (or left the decks after being on one) -
+            # not when a first part of it sounds: a song whose stem you placed stays listed while its part plays
+            if (d is not None and (self.rc.lanes.get("drums") == d or self.rc.songs[d].leaving)) or (d is None and head in self._queued_on_deck):
                 self.up_next.pop(0)
+                self._queued_on_deck.discard(head)
                 self.rc.reserve_pick = False
                 return
             if d is None:
