@@ -803,6 +803,8 @@ class RemixConductor:
                     g *= OTHER_DUCK
         b = self.lane_boost.get(lane)
         if b is not None and self.lanes.get(lane) == deck and self.bar_n < b[1]:
+            if len(b) > 2 and b[2] == "user":
+                g = max(g, 1.0)                       # YOU asked for it loud: never under unity before the boost (a vocal you brought in landed at 0.4)
             g *= b[0]                                 # a tactical "loud" on this lane (the peak guard keeps the bus honest)
         if getattr(self, "_clash_duck", {}).get(lane) == deck:
             g *= CLASH_DUCK                           # its chords clash with the bed here (see _clash_tick)
@@ -1250,6 +1252,8 @@ class RemixConductor:
             if not held:
                 if not song.entered or self._break is not None or (self._land_k is not None and k < self._land_k):
                     continue                          # staged and waiting, resting through a BREAK, or the old bed still sounding until the new one lands
+                if getattr(song, "user_k", None) is not None and k - song.user_k < 4 * self.change_bars:
+                    continue                          # a song YOU brought in stays on its deck four phrases even while its lane rests (one left 2 s after its vocal paused)
                 if song.idle_k is None:
                     song.idle_k = k
                 elif k - song.idle_k >= 1:
@@ -1367,38 +1371,42 @@ class RemixConductor:
                 return 0
         return 0
 
-    def _groove_through(self, deck, at, bars):
-        """Is the song on `deck` in a GROOVE (not an intro, build, breakdown or outro) at clock `at` and
-        still `bars` bars later? None when it has no section map. A bed change or an arrival lands only
-        where both songs groove through the coming phrase (five flags on 2026-09-13 were a bassline taking
-        over as its song entered its breakdown, an arrival six seconds before the bed's build, and two builds
-        at once)."""
+    def _groove_through(self, deck, at, bars, strict=False):
+        """Is the song on `deck` carrying steadily at clock `at` and still `bars` bars later - not in a build,
+        a breakdown or an outro (`strict`: a groove proper, no intro either - what an ARRIVING song must be
+        in)? None when it has no section map. A bed change or an arrival lands only where both songs carry
+        through the coming phrase (five flags on 2026-09-13 were a bassline taking over as its song entered
+        its breakdown, an arrival six seconds before the bed's build, and two builds at once). A bed's long
+        "intro" is what is playing and counts as steady - refusing it moved a plan five times in a row."""
         s = self.songs.get(deck)
         if s is None or not s.track.sections:
             return None
+        bad = ("build", "breakdown", "outro") + (("intro",) if strict else ())
         t0 = self._song_time_at(deck, at)
         t1 = t0 + bars * self._bar_s(s.track, t0)
         for t in (t0, t0 + 0.5 * (t1 - t0), t1):
             sec = s.track.section_at(t) or {}
-            if sec.get("kind") != "groove":
+            if sec.get("kind") in bad:
                 return False
         return True
 
-    def _groove_start_bars(self, deck, at, look_bars):
-        """Bars from clock `at` to the start of the song's next GROOVE that lasts at least two phrases, within
-        `look_bars`; 0 when it grooves now; None when none comes."""
+    def _groove_start_bars(self, deck, at, look_bars=None, strict=False):
+        """Bars from clock `at` to the start of the song's next steady stretch (a groove proper when `strict`)
+        that lasts at least two phrases; 0 when it carries now; None when none comes before the body ends.
+        `look_bars` caps the search; unbounded by default, so a plan is moved ONCE to the real bar."""
         s = self.songs.get(deck)
         if s is None or not s.track.sections:
             return 0
         t = self._song_time_at(deck, at)
         bar = self._bar_s(s.track, t)
-        if self._groove_through(deck, at, 2 * self.change_bars):
+        if self._groove_through(deck, at, 2 * self.change_bars, strict=strict):
             return 0
+        ok_kinds = ("groove",) if strict else ("groove", "intro")
         for x in s.track.sections:
-            if x.get("kind") == "groove" and float(x["start_s"]) > t and (float(x["end_s"]) - float(x["start_s"])) >= 2 * self.change_bars * bar - 0.05:
-                d = (s.track.nearest_downbeat(float(x["start_s"])) - t) / max(bar, 1e-6)
-                if d <= look_bars + 0.05:
-                    return max(0, int(round(d)))
+            if x.get("kind") in ok_kinds and float(x["end_s"]) > t and (float(x["end_s"]) - max(float(x["start_s"]), t)) >= 2 * self.change_bars * bar - 0.05:
+                d = max(0.0, (s.track.nearest_downbeat(float(x["start_s"])) - t) / max(bar, 1e-6))
+                if look_bars is None or d <= look_bars + 0.05:
+                    return int(round(d))
                 break
         return None
 
@@ -1738,11 +1746,11 @@ class RemixConductor:
             # breakdown, none from a song in its own (two builds at once was flagged twice)
             bed_grooves = bed is None or self._groove_through(bed, at, self.change_bars) is not False
             if not bed_grooves and not bed_out:
-                g = self._groove_start_bars(bed, at, 4 * self.change_bars)
-                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{self.songs[bed].track.title[:24]} is not in a groove: it arrives at the next one")
+                g = self._groove_start_bars(bed, at)
+                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{self.songs[bed].track.title[:24]} is building or breaking down: it arrives when that is over")
                 waiting = []
-            elif self._groove_through(d, at, self.change_bars) is False:
-                g = self._groove_start_bars(d, at, 4 * self.change_bars)
+            elif self._groove_through(d, at, self.change_bars, strict=True) is False:
+                g = self._groove_start_bars(d, at, strict=True)
                 self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{s.track.title[:24]} is not in a groove itself: it arrives at its next one")
                 waiting = []
         if waiting and len(voices) < max_voices:
@@ -1911,7 +1919,7 @@ class RemixConductor:
             # the new bed must GROOVE from its landing through two phrases (a bassline took over as its song
             # entered its breakdown): a landing in an intro, build or breakdown moves to its next groove
             if what is None:
-                g = self._groove_start_bars(d, at + max(0, K - (bar + 1)) * bar_c, 4 * self.change_bars)
+                g = self._groove_start_bars(d, at + max(0, K - (bar + 1)) * bar_c, 4 * self.change_bars, strict=True)
                 if g:
                     K, why = K + g, f"{why}, at its next groove"
             self._plan_set("bed_to", d, K, why, payoff=what)
@@ -1961,7 +1969,11 @@ class RemixConductor:
         # dwell: a lane that just came back holds four bars before it may rest, one that just rested holds two
         # before it may come back (a sparse vocal flipped rest / back within seconds in the gate)
         if vd is not None and vd in self.songs:
-            # on for a phrase before it may rest, and only when the singing stops for VOCAL_REST_BARS ahead
+            # on for a phrase before it may rest, and only when the singing stops for VOCAL_REST_BARS ahead;
+            # never while YOUR loud on it runs (you asked for that vocal: it stays through its phrase)
+            ub = self.lane_boost.get("vocals")
+            if ub is not None and len(ub) > 2 and ub[2] == "user" and self.bar_n < ub[1]:
+                return
             if since >= self.change_bars and self._vocal_gone(vd, at):
                 self._cross("vocals", None, at, beats=2.0, shape=False)
                 self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
@@ -2242,9 +2254,10 @@ class RemixConductor:
         if self._break is not None:
             self._break = None
         if boost and boost != 1.0:
-            self.lane_boost[lane] = (float(boost), self.bar_n + int(bars) + (0 if when != "phrase" else max(0, self.change_bars - 1 - self.phrase_bars)))
+            self.lane_boost[lane] = (float(boost), self.bar_n + int(bars) + (0 if when != "phrase" else max(0, self.change_bars - 1 - self.phrase_bars)), "user")
         frm = self.lanes.get(lane)
         tag = self._cross(lane, deck, at, beats=1.0, shape=False)
+        s.user_k = self.bar_n                         # your pick: it stays on its deck a while even when its lane rests (see _keep_runway, _vocal_tick)
         if s.voice_since is None:
             s.voice_since = self.bar_n
         self._hygiene(at + int(self._beat_s() * RATE))
