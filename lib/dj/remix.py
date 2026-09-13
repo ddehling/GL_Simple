@@ -753,10 +753,28 @@ class RemixConductor:
 
     # -- hygiene --------------------------------------------------------------------------------------------
     def _trim(self, deck, lane):
+        """The level trim of one stem. A SONG KEEPS ITS OWN BALANCE: the song carrying the drums (the bed -
+        or a song alone) has ONE factor for all its stems, its drums brought to the library's drum level,
+        so a record through the conductor sounds like the record. A stem sounding against another song's
+        stems (a voice's melody or vocal over a foreign bed, a bassline swapped under foreign drums) is
+        trimmed per lane toward the library's level for that lane - the two songs' stems meet there.
+        (Per-lane trims on a lone song had rebalanced its own mix by up to 6 dB - user 2026-09-13.)"""
         s = self.songs.get(deck)
-        if s is None or not self.ref_rms or not s.stem_rms.get(lane) or not self.ref_rms.get(lane):
+        if s is None or not self.ref_rms or not s.stem_rms:
             return 1.0
-        return float(min(TRIM_MAX, max(TRIM_MIN, self.ref_rms[lane] / s.stem_rms[lane])))
+
+        def k(ln):
+            a, b = self.ref_rms.get(ln), s.stem_rms.get(ln)
+            if not a or not b:
+                return None
+            return float(min(TRIM_MAX, max(TRIM_MIN, a / b)))
+        if self.lanes.get("drums") == deck:
+            f = k("drums")
+            if f is None:
+                vals = [x for x in (k(ln) for ln in STEMS) if x is not None]
+                f = float(np.exp(np.mean(np.log(vals)))) if vals else 1.0
+            return f
+        return k(lane) or 1.0
 
     def _lane_gain(self, deck, lane, at=None):
         g = self._trim(deck, lane)
@@ -824,8 +842,9 @@ class RemixConductor:
                                       "gains": {lane: self._lane_gain(d, lane)}, "ramp_s": 4 * self._beat_s()})
 
     def _hygiene(self, at):
-        """After a move lands: lows only on the songs carrying the bass or the drums lane; the `other` lane
-        under another song's vocal at OTHER_DUCK; posted at `at` with a one-beat ramp."""
+        """After a move lands: lows only on the songs carrying the bass or the drums lane; every held stem
+        re-posted at its level (a song that just became the bed switches from per-lane trims to its own
+        balance; the `other` lane under another song's vocal at OTHER_DUCK); posted at `at`, a one-beat ramp."""
         beat = self._beat_s()
         ev = []
         keep = {self.lanes.get("bass"), self.lanes.get("drums")}
@@ -834,8 +853,9 @@ class RemixConductor:
                 continue
             low = 1.0 if d in keep else LOW_CARVE
             ev.append({"at": at, "cmd": "eq", "deck": d, "low": low, "ramp_s": beat})
-            if self.lanes.get("other") == d:
-                ev.append({"at": at, "cmd": "stem_gains", "deck": d, "gains": {"other": self._lane_gain(d, "other", at)}, "ramp_s": beat})
+            held = {ln: self._lane_gain(d, ln, at) for ln in STEMS if self.lanes.get(ln) == d}
+            if held:
+                ev.append({"at": at, "cmd": "stem_gains", "deck": d, "gains": held, "ramp_s": beat})
         if ev:
             self.submix.post_many(ev)
 
@@ -900,15 +920,16 @@ class RemixConductor:
         # seconds later and came back ten seconds after that - flag 'busy' 2026-09-13)
         if "vocals" in open_lanes and self._singing(song, cue if cue is not None else self._body_start(t)) is False:
             open_lanes.discard("vocals")
+        self.lanes = {s: (deck if s in open_lanes else None) for s in STEMS}
+        song.awake = True
         self.submix.post_many([
             {"at": at, "cmd": "cue", "deck": deck, "time_s": cue if cue is not None else self._body_start(t)},
             {"at": at, "cmd": "rate", "deck": deck, "value": 1.0},
-            {"at": at, "cmd": "stem_gains", "deck": deck, "gains": {s: (1.0 if s in open_lanes else 0.0) for s in STEMS}, "ramp_s": 0.01},
+            # the opener at the library's level, its own balance kept (one factor for every stem: _trim)
+            {"at": at, "cmd": "stem_gains", "deck": deck, "gains": {s: (self._lane_gain(deck, s, at) if s in open_lanes else 0.0) for s in STEMS}, "ramp_s": 0.01},
             {"at": at, "cmd": "gain", "deck": deck, "value": 1.0, "ramp_s": 0.05},
             {"at": at, "cmd": "start", "deck": deck},
         ])
-        self.lanes = {s: (deck if s in open_lanes else None) for s in STEMS}
-        song.awake = True
         # the bed has been the bed since the SONG started playing, not since this open: a record handed over
         # from the autoDJ two minutes in has settled two minutes already (user: "long chunks when very little
         # is going on" - the first minute and a half of a layered set was the settle rule counting from zero)
@@ -1055,6 +1076,8 @@ class RemixConductor:
                     and self.rng.random() < getattr(self, "fx_level", 1.0):
                 tag = self._shape_rest(frm, at) if to_deck is None else self._shape_exit(frm, at)
             ev.append({"at": at, "cmd": "stem_gains", "deck": frm, "gains": {lane: 0.0}, "ramp_s": xf})
+        self.lanes[lane] = to_deck                     # the map first: the level of a stem depends on who holds the drums now
+        self.lane_k[lane] = self.bar_n
         if to_deck is not None and to_deck in self.songs:
             self._wake(to_deck, at)
             ev.append({"at": at, "cmd": "stem_gains", "deck": to_deck, "gains": {lane: self._lane_gain(to_deck, lane, at)}, "ramp_s": xf})
@@ -1063,8 +1086,6 @@ class RemixConductor:
                 s.entered, s.entered_k = True, self.bar_n
         if ev:
             self.submix.post_many(ev)
-        self.lanes[lane] = to_deck
-        self.lane_k[lane] = self.bar_n
         return tag
 
     def _song_id(self, deck):

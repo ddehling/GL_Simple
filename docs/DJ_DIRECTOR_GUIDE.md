@@ -130,6 +130,18 @@ last), **COOL**, **PEAK**, **VOCALS UP**, **BREATHE** (long plays, nothing added
 **DARKEN**. The program steps the dials it names at every song change (layered: every bed change) and hands
 them back when it ends; choose **none**, or **stop**, to end it early. The intent line says where it stands.
 
+## How songs are balanced (layered)
+
+A song keeps its own balance: the song carrying the drums (the bed, or a song playing alone) is scaled as
+a whole so its drums sit at the library's drum level - it sounds like the record. Only a stem set against
+another song's stems is trimmed on its own toward the library's level for that lane: a voice's melody or
+vocal over a foreign bed, a bassline swapped under foreign drums. On top of that come the roles: a voice's
+melody plays at half as a texture, a melody under another song's singing steps back further, a voice whose
+chords clash with the bed here is held down until they agree, and bass and drums come back a quarter
+louder for a phrase after a moment. Songs holding neither drums nor bass have their lows carved so two
+songs never share the low end. The layered bus is then trimmed up to plus four decibels toward the loudness
+the autoDJ produced, and LEVEL, BASS and TONE sit on the bus last.
+
 ## One stem of one song (layered)
 
 **Right-click any song in the SONGS list**: its bassline, drums, melody or vocal comes in under what plays

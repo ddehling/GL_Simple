@@ -123,6 +123,23 @@ def main():
                     if a.track.camelot and b.track.camelot and _compat(a.key(), b.key()) < CLASH_BELOW - 1e-9:
                         guard_viol += 1
             live_hist.append(len([s for s in rc.songs.values() if s.entered and not s.leaving]))
+            # A SONG KEEPS ITS OWN BALANCE: while one song holds every lane (no boost, no moment, no break),
+            # its four stem gains are one factor - equal within 2 %
+            holders = {rc.lanes.get(ln) for ln in ("drums", "bass", "other", "vocals")}
+            if len(holders) == 1 and None not in holders and rc._moment is None and rc._break is None and not rc.lane_boost and not rc._clash_duck if hasattr(rc, "_clash_duck") else False:
+                dk = next(iter(holders))
+                g = (decks.get(dk) or {}).get("stem_gains") or {}
+                vals = [float(g.get(ln, 0.0)) for ln in ("drums", "bass", "other", "vocals")]
+                key = ("lone_since", dk)
+                hyg.setdefault(key, len(audio))
+                if len(audio) - hyg[key] >= 1.5 * rc._bar_clock() / block and min(vals) > 0.05:
+                    hyg["lone_blocks"] = hyg.get("lone_blocks", 0) + 1
+                    if max(vals) / min(vals) > 1.02:
+                        hyg["lone_unequal"] = hyg.get("lone_unequal", 0) + 1
+                        hyg.setdefault("lone_first", (round(len(audio) * block / RATE), rc.songs[dk].track.title[:24] if dk in rc.songs else dk, [round(v, 3) for v in vals]))
+            else:
+                for k in [k for k in hyg if isinstance(k, tuple) and k[0] == "lone_since"]:
+                    hyg.pop(k, None)
             plan_hist.append((rc.plan.get("seq"), rc.plan["what"], rc.plan["deck"], rc.plan["bar"]) if rc.plan else None)   # seq, not id(): ids are reused
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
             if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
@@ -415,6 +432,10 @@ def main():
     crosses = [m for _, m in rc.moves if any(k in m for k in ("crosses", "enters through", "rests", "returns", "arrives through",
                                                               "arrives as a voice", "the bed passes", "takes over", "fades out as a voice"))]
     check(max(live_hist or [0]) >= 2, f"songs live at once: max {max(live_hist or [0])}")
+    if hyg.get("lone_blocks"):
+        fr = hyg.get("lone_unequal", 0) / hyg["lone_blocks"]
+        check(fr < 0.05, f"LONE SONG keeps its balance: stems unequal on {100 * fr:.0f}% of {hyg['lone_blocks']} lone blocks"
+              + (f" - first {hyg['lone_first']}" if hyg.get("lone_first") else ""))
     # THE PLAN makes up its mind: a plan's bar changes only through a logged plan move; plans are few and kept
     plans, bar_changes = 0, 0
     prev = None

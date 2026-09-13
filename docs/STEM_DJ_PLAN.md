@@ -865,7 +865,21 @@ They did not: the stem measurements (section chroma, hook, stem levels) lived on
 "stem measurements" stage when the render finishes; `lib/dj/analyze.build_stages` (the one stage list of
 "Analyze all" and the headless `dj_analyze.py`) has a "stem measurements" stage right after the stems
 stage (skips fast when nothing is unmeasured). The 900-track level pass for the existing library ran at
-13:38 (below-normal priority, resumable).
+13:38 (below-normal priority, resumable). Done 16:01: 1073/1073, medians drums 0.195 / bass 0.129 / other
+0.100 / vocals 0.032 (two NaN rows from empty body windows stored as silent; `measure_track` guards it).
+
+**"will a song be balanced within itself if only its stems are playing?" (2026-09-13).** It was not: the
+per-lane trims pulled each stem toward the library median independently, so a lone record through the
+conductor could differ from itself by up to 6 dB between stems. Now `_trim`: the song carrying the DRUMS
+(the bed, or a song alone) has ONE factor for all its stems (its drums brought to the library's drum level,
+geometric mean of the lanes when the drums are unmeasured) - it sounds like the record; a stem sounding
+against another song's stems (a voice's melody / vocal, a swapped bassline) is trimmed per lane toward the
+library's level for that lane. `_cross` updates the lane map before computing the incoming stem's level;
+`_hygiene` re-posts every held stem's level after a move (a song that just became the bed switches from
+lane trims to its own balance); the opener is posted at the library's level through `_lane_gain`. Gate:
+LONE SONG - while one song holds every lane its four stem gains are equal. Open: the vocal median (0.032)
+is taken over a half-instrumental library; a real singer trims down toward a mostly silent lane - the
+median should be over songs that sing.
 
 ## Rules carried over (they were earned)
 
