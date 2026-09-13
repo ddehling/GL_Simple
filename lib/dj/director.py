@@ -48,7 +48,7 @@ DIALS.update({
 })
 DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "tempo": "hold", "pace": "normal",
             "seams": "normal", "vocals": "some", "variety": "varied", "loops": "off",
-            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "some", "fx": "some",
+            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "some", "fx": "none",   # (no shapes on exits by default: a "filter out" sweep was flagged as a bad seam; the dial is off the surface)
             "arc": "theme", "length": "90m"}
 ARC_SHAPE = {"theme": None, "steady": "flat", "build": "rise", "waves": "peak_wave", "down": "wind_down", "yours": "yours"}
 ARC_LEN_S = {"45m": 45 * 60.0, "90m": 90 * 60.0, "3h": 3 * 3600.0, "night": 6 * 3600.0}

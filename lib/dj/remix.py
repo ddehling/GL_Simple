@@ -499,7 +499,10 @@ class RemixConductor:
             pass
 
     def _library_ref_levels(self, min_n=8):
-        """Per-lane median of the stem levels remembered across the library; None until `min_n` tracks have them."""
+        """Per-lane median of the stem levels remembered across the library; None until `min_n` tracks have
+        them. The VOCAL reference is the median over songs that SING (a vocal stem at least a fifth of the
+        drums' median): over a half-instrumental library the plain median was 0.032 and every real singer
+        was trimmed toward a mostly silent lane, up to the x2 cap (flag 'level', 'vocals' 2026-09-13)."""
         per = {ln: [] for ln in STEMS}
         for t in self.library:
             sr = (getattr(t, "axes", None) or {}).get("stem_rms")
@@ -507,11 +510,19 @@ class RemixConductor:
                 continue
             for ln in STEMS:
                 v = sr.get(ln)
-                if v is not None and float(v) > 0.0:
-                    per[ln].append(float(v))
+                try:
+                    f = float(v)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(f) and f > 0.0:
+                    per[ln].append(f)
         if any(len(v) < min_n for v in per.values()):
             return None
-        return {ln: float(np.median(v)) for ln, v in per.items()}
+        ref = {ln: float(np.median(v)) for ln, v in per.items()}
+        sung = [v for v in per["vocals"] if v >= 0.2 * ref["drums"]]
+        if len(sung) >= min_n:
+            ref["vocals"] = float(np.median(sung))
+        return ref
 
     # -- geometry ------------------------------------------------------------------------------------
     def _seg(self, track, t):
@@ -778,8 +789,10 @@ class RemixConductor:
 
     def _lane_gain(self, deck, lane, at=None):
         g = self._trim(deck, lane)
+        bed = self.lanes.get("drums")
+        if bed is not None and deck != bed:
+            g = min(g, 1.0)                           # a stem set against another song is never trimmed UP past unity
         if lane == "other":
-            bed = self.lanes.get("drums")
             if bed is not None and deck != bed:
                 g *= OTHER_VOICE                      # a voice's melody is a texture over the bed, not a second song
             vd = self.lanes.get("vocals")
@@ -793,7 +806,7 @@ class RemixConductor:
             g *= b[0]                                 # a tactical "loud" on this lane (the peak guard keeps the bus honest)
         if getattr(self, "_clash_duck", {}).get(lane) == deck:
             g *= CLASH_DUCK                           # its chords clash with the bed here (see _clash_tick)
-        return g
+        return min(g, 1.6)                            # (a quiet stem trimmed up and then boosted reached 1.6 x - flag 'clash' 2026-09-13)
 
     def _clash_tick(self):
         """Every bar: a VOICE whose chords clash with the bed in the sections both are in now (the pair fit
@@ -1354,6 +1367,41 @@ class RemixConductor:
                 return 0
         return 0
 
+    def _groove_through(self, deck, at, bars):
+        """Is the song on `deck` in a GROOVE (not an intro, build, breakdown or outro) at clock `at` and
+        still `bars` bars later? None when it has no section map. A bed change or an arrival lands only
+        where both songs groove through the coming phrase (five flags on 2026-09-13 were a bassline taking
+        over as its song entered its breakdown, an arrival six seconds before the bed's build, and two builds
+        at once)."""
+        s = self.songs.get(deck)
+        if s is None or not s.track.sections:
+            return None
+        t0 = self._song_time_at(deck, at)
+        t1 = t0 + bars * self._bar_s(s.track, t0)
+        for t in (t0, t0 + 0.5 * (t1 - t0), t1):
+            sec = s.track.section_at(t) or {}
+            if sec.get("kind") != "groove":
+                return False
+        return True
+
+    def _groove_start_bars(self, deck, at, look_bars):
+        """Bars from clock `at` to the start of the song's next GROOVE that lasts at least two phrases, within
+        `look_bars`; 0 when it grooves now; None when none comes."""
+        s = self.songs.get(deck)
+        if s is None or not s.track.sections:
+            return 0
+        t = self._song_time_at(deck, at)
+        bar = self._bar_s(s.track, t)
+        if self._groove_through(deck, at, 2 * self.change_bars):
+            return 0
+        for x in s.track.sections:
+            if x.get("kind") == "groove" and float(x["start_s"]) > t and (float(x["end_s"]) - float(x["start_s"])) >= 2 * self.change_bars * bar - 0.05:
+                d = (s.track.nearest_downbeat(float(x["start_s"])) - t) / max(bar, 1e-6)
+                if d <= look_bars + 0.05:
+                    return max(0, int(round(d)))
+                break
+        return None
+
     def _body_left_s(self, deck, at=None):
         s = self.songs.get(deck)
         if s is None:
@@ -1686,6 +1734,20 @@ class RemixConductor:
             # change and no song was ever a voice - the gate's first run of this rule.)
             bed_sings = bed is not None and (self.lanes.get("vocals") == bed or self._sings_through(bed, at, self.change_bars) is True
                                              or self._singing(self.songs[bed], self._song_time_at(bed, at)) is True)
+            # both songs must GROOVE through the coming phrase: no arrival on top of the bed's build or
+            # breakdown, none from a song in its own (two builds at once was flagged twice)
+            bed_grooves = bed is None or self._groove_through(bed, at, self.change_bars) is not False
+            if not bed_grooves and not bed_out:
+                g = self._groove_start_bars(bed, at, 4 * self.change_bars)
+                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{self.songs[bed].track.title[:24]} is not in a groove: it arrives at the next one")
+                waiting = []
+            elif self._groove_through(d, at, self.change_bars) is False:
+                g = self._groove_start_bars(d, at, 4 * self.change_bars)
+                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{s.track.title[:24]} is not in a groove itself: it arrives at its next one")
+                waiting = []
+        if waiting and len(voices) < max_voices:
+            d = waiting[0]
+            s = self.songs[d]
 
             def _free(ln):
                 # a voice lane may be taken from the bed or from a voice on its way out - never from a voice
@@ -1846,6 +1908,12 @@ class RemixConductor:
             odd = self._odd_grid_bars(d, at + max(0, K - (bar + 1)) * bar_c)
             if odd:
                 K, why, what = K + odd, f"{why}, after a mis-tracked stretch of its grid", None
+            # the new bed must GROOVE from its landing through two phrases (a bassline took over as its song
+            # entered its breakdown): a landing in an intro, build or breakdown moves to its next groove
+            if what is None:
+                g = self._groove_start_bars(d, at + max(0, K - (bar + 1)) * bar_c, 4 * self.change_bars)
+                if g:
+                    K, why = K + g, f"{why}, at its next groove"
             self._plan_set("bed_to", d, K, why, payoff=what)
             return
         # (c) a staged song arrives as a voice once the bed has settled (and the song is ready)

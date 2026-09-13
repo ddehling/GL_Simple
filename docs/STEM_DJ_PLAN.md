@@ -881,6 +881,18 @@ LONE SONG - while one song holds every lane its four stem gains are equal. Open:
 is taken over a half-instrumental library; a real singer trims down toward a mostly silent lane - the
 median should be over songs that sing.
 
+**Eight flags from session 137820 (16:08-16:15, the arrival-rule build).** Five were LANDINGS IN THE
+WRONG SECTION: a bassline took over as its song entered its breakdown, an arrival came six seconds before
+the bed's build, The Long Journey arrived in its own build under Ananta's build (two builds at once) - the
+runway rule only guarded drop landings. Now `_groove_through(deck, at, bars)` / `_groove_start_bars`: the
+plan's bed_to bar moves to the incoming song's next two-phrase groove when it would land in an intro, build
+or breakdown; an arrival requires BOTH songs to groove through the coming phrase (else the plan moves to
+the next groove, logged). Two were the TEXTURE DEFEATED BY THE TRIM (a melody "held low" at 0.73, a swapped
+bassline at 1.61): a stem set against another song is never trimmed above unity before its role level, and
+every stem gain is capped at 1.6. The vocal at x2 again → the VOCAL REFERENCE is the median over songs that
+sing (vocal stem ≥ a fifth of the drums' median). A "filter out" exit was flagged as a bad seam → FX
+default "none" (plain crossfades; the dial is off the surface, the controller's knob still reaches it).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
