@@ -851,7 +851,8 @@ class RemixConductor:
 
     def _boost_step(self):
         """A lane's "loud" ends: back to its trim over a bar."""
-        for lane, (mult, until) in list(self.lane_boost.items()):
+        for lane, b in list(self.lane_boost.items()):
+            mult, until = b[0], b[1]                  # (a third field marks the operator's own boosts)
             if self.bar_n >= until:
                 del self.lane_boost[lane]
                 d = self.lanes.get(lane)
