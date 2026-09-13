@@ -1824,6 +1824,44 @@ class RemixConductor:
         if what == "voice_in":
             self._recue_for(deck, int(bar))
 
+    def _cue_to_sounding(self, deck, lane, cue_at):
+        """Cue a silent staged song so that `lane` SOUNDS from clock `cue_at` + one bar: a vocal to its hook
+        (else its next sung stretch), another stem to its next passage where the stem is at least a third of
+        its loud level for two bars. Posts the cue at `cue_at` and re-snaps the phase a beat later (the deck
+        sleeps, so the PLL may snap). Returns a word for the story ("its hook", "2:14") or None."""
+        s = self.songs.get(deck)
+        if s is None or s.entered:
+            return None
+        t = s.track
+        env = (s.env or {}).get(lane)
+        bar = self._bar_s(t)
+        now_t = self._song_time_at(deck, cue_at)
+        target, word = None, None
+        if lane == "vocals" and t.hook:
+            starts = [float(x) for x in (t.hook.get("starts") or [t.hook["start_s"]])]
+            later = [x for x in starts if x >= now_t - 0.5 * bar]
+            target, word = (later[0] if later else starts[0]), "its hook"
+        if target is None and env is not None and len(env) > 4:
+            thr = SING_ON if lane == "vocals" else 0.3
+            need = int(2 * bar * 2)                   # half-second hops over two bars
+            arr = np.asarray(env, dtype=np.float32)
+            order = list(range(max(0, int(now_t * 2)), len(arr) - need)) + list(range(0, max(0, int(now_t * 2))))
+            for i in order:
+                if float(arr[i:i + need].mean()) >= thr and float(arr[i:i + need].min()) >= 0.5 * thr:
+                    target = i / 2.0
+                    break
+            if target is not None:
+                word = f"{int(target) // 60}:{int(target) % 60:02d}"
+        if target is None:
+            return None
+        if float(t.duration_s) - target < MIN_RUNWAY_S:
+            return None
+        cue = t.nearest_downbeat(max(0.0, target - bar))   # the bar BEFORE it: the stem arrives on its own downbeat
+        self.submix.post_many([{"at": cue_at, "cmd": "cue", "deck": deck, "time_s": cue},
+                               {"at": cue_at + int(self._beat_s() * RATE), "cmd": "sync", "slave": deck, "master": self.master, "bias_beats": 0.0, "audio_pll": False}])
+        self._note(f"{t.title[:24]} cued to {cue:.0f} s so its {lane} sounds ({word})")
+        return word
+
     def _recue_for(self, deck, arrive_bar):
         """A staged song plays silently until its arrival: cue it so its LANDMARK sounds on `arrive_bar` (the
         staging cue assumed the next move; the plan may be minutes later, and one song arrived with 75 s of
@@ -2260,13 +2298,22 @@ class RemixConductor:
             return False, "still staging: on the next bar"   # its cue, start and sync land on the coming bar; the bring follows them
         if self._on_way_out(deck):
             return False, f"{s.track.title[:24]} is running out ({self._body_left_s(deck):.0f} s of body left)"
-        why = self.why_not(lane, deck)
-        if why:
-            return False, why
         at = self._next_bar_clock()
         if when == "phrase":
             left = max(0, self.change_bars - 1 - self.phrase_bars)
             at += left * self._bar_clock()
+        cued = None
+        why = self.why_not(lane, deck)
+        if why and (why.startswith("not singing") or why.startswith("silent")) and not s.entered:
+            # YOU asked for this stem and the song is silent on its deck: it is cued to where the stem sounds
+            # (its hook for a vocal, its next sounding passage otherwise) a bar ahead, and comes in from there
+            # (a vocal you asked for was refused "not singing there now" at the staged position, 2026-09-13)
+            cue_at = at
+            at = cue_at + self._bar_clock()
+            cued = self._cue_to_sounding(deck, lane, cue_at)
+            why = None if cued is not None else why
+        if why:
+            return False, why
         if self._break is not None:
             self._break = None
         if boost and boost != 1.0:
@@ -2279,8 +2326,9 @@ class RemixConductor:
         self._hygiene(at + int(self._beat_s() * RATE))
         self.phrase_bars = 0
         self._move("moment_in", lane, self._song_id(frm), s.track.id,
-                   f"you: the {lane} of {s.track.title} in" + (", loud" if boost and boost != 1.0 else "") + (" at the phrase" if when == "phrase" else " now"), shape=tag)
-        return True, f"the {lane} of {s.track.title[:24]} comes in {'at the phrase' if when == 'phrase' else 'on the next bar'}"
+                   f"you: the {lane} of {s.track.title} in" + (", loud" if boost and boost != 1.0 else "") + (" at the phrase" if when == "phrase" else " now")
+                   + (f" (cued to {cued})" if cued else ""), shape=tag)
+        return True, f"the {lane} of {s.track.title[:24]} comes in {'at the phrase' if when == 'phrase' else ('on the bar after next, cued to ' + cued if cued else 'on the next bar')}"
 
     def release(self, lane):
         """The lane back to the bed (the song holding the drums) on the next bar; the boost ends."""
