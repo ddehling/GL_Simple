@@ -1871,9 +1871,15 @@ class RemixConductor:
                      or p["what"] == "land"
                      or (p["what"] == "voice_in" and s.entered)
                      or (p["what"] == "bed_to" and p["deck"] == bed)
-                     or (p["what"] in ("bed_to", "voice_out") and not s.held(self.lanes)))
+                     or (p["what"] in ("bed_to", "voice_out") and not s.held(self.lanes))
+                     # MISSED: its bar is a phrase gone and it did not happen (an arrival decided before your
+                     # vocal took the only voice slot sat at "bar 16 (0 bars)" for eighty bars while the voice
+                     # never got a plan to take the bed) - decided afresh from the room as it is now
+                     or bar > p["bar"] + self.change_bars)
             if not stale:
                 return
+            if bar > p["bar"] + self.change_bars:
+                self._note(f"plan missed: {self._plan_words(p)} - decided afresh")
             self.plan = None
         earliest = bar + 1
         if self.calm_phrases > 1 and self._arr_k is not None:
