@@ -992,8 +992,26 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
 
     def _fill_ready(self, rows):
         """The READY rows follow the decks: one line per song, four stem buttons, lit where it holds the lane."""
-        sig = tuple((r["id"], r["bed"], r["staged"], tuple((ln, v["held"], v["loud"], bool(v["why"])) for ln, v in r["lanes"].items())) for r in rows)
+        # rebuild the widgets only when a song appears, leaves or changes which lanes it HOLDS; the guard's
+        # bar-by-bar opinion (why / loud) changes in place - rebuilding on it made the row bounce every bar
+        sig = tuple((r["id"], r["bed"], r["staged"], tuple((ln, v["held"]) for ln, v in r["lanes"].items())) for r in rows)
         if sig == getattr(self, "_ready_sig", None):
+            for r in rows[:4]:
+                ws = self._ready_rows.get(r["id"])
+                if not ws:
+                    continue
+                for j, (lane, word) in enumerate((("bass", "bass"), ("drums", "drums"), ("other", "melody"), ("vocals", "vocal"))):
+                    v, b = r["lanes"][lane], ws[1 + j]
+                    text = word + (" ♪" if v["loud"] else "")
+                    if b.text() != text:
+                        b.setText(text)
+                    on = r["staged"] and (v["held"] or not v["why"])
+                    if b.isEnabled() != on:
+                        b.setEnabled(on)
+                    tip = ((f"{r['title'][:28]} holds the {lane}" + (" (loud)" if v["loud"] else "") + " - press = back to the bed") if v["held"]
+                           else (f"refused: {v['why']}" if v["why"] else f"the {lane} of {r['title'][:28]} in"))
+                    if b.toolTip() != tip:
+                        b.setToolTip(tip)
             return
         self._ready_sig = sig
         for w in list(self._ready_rows.values()):
@@ -1102,6 +1120,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if sig == getattr(self, "_found_sig", None):
             return
         self._found_sig = sig
+        scroll = self.found.verticalScrollBar().value()
         self.found.clear()
         for r in rows:
             mark = "" if r["ok"] is None else ("✓  " if r["ok"] else "✗  ")
@@ -1154,6 +1173,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.found.addItem(it)
             if r["id"] == cur:
                 self.found.setCurrentItem(it)
+        self.found.verticalScrollBar().setValue(scroll)   # the list stays where the eye left it
         ref = getattr(self.director, "rank_ref", None) if self.director is not None else None
         note = getattr(self.director, "rank_note", None) if self.director is not None else None
         self.found_h.setText(f"SONGS  {len(rows)}" + ((f"   ✓ fits after {ref[:22]} (last in UP NEXT)  ✗ would be rejected" if ref
@@ -1295,7 +1315,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if getattr(self, "_moments_mode", None) != st.get("mode"):
             self._label_moments(st.get("mode"))
         self._songs_tick = getattr(self, "_songs_tick", 0) + 1
-        if self._songs_tick % 12 == 0:
+        # the SONGS list re-ranks when its REFERENCE changes (the record, or the last song UP NEXT) and
+        # otherwise every 30 s - re-ranking every 3 s reordered the rows under the hand ("things bounce")
+        ref_key = ((now or {}).get("title"), tuple(d.up_next[-1:]), (nxt or {}).get("title"))
+        if ref_key != getattr(self, "_songs_ref", None) or self._songs_tick % 120 == 0:
+            self._songs_ref = ref_key
             self._fill_search()
         if self._songs_tick % 40 == 0:
             self._fill_tags()                         # the library may have been rescanned or retagged meanwhile

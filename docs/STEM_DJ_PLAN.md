@@ -640,6 +640,25 @@ refuses, LOUD and PHRASE toggles; right-click any song in the list = stage it an
 moment it is ready (`Director.stem_in` / `stem_out`, a pending stem move fires when the decode lands). The
 gate brings a live song's bass in loud and releases it, and counts bass-first bed changes.
 
+**2026-09-12, late - "the interface isn't great. things bounce around. it isn't really clear how this creates
+what I want. it seems a pale shadow. go read more on DJ theory about how moments are created" / "it's a
+painful mishmash".** Building stopped. Read Solberg 2014 (the break routine: uplifters, the drum-roll effect,
+large frequency changes, removal and reintroduction of bass and bass drum, contrasting breakdown, the
+micro-vacuum before the drop, layers changing after 2/4/8/16/32 bars, builds of 16-32 s) and Solberg &
+Dibben 2019 (expectancy set up, delayed, gratified; the delayed downbeat at the drop is what listeners name
+unprompted), plus the practice pages (phrase mixing, bass swap on the 32, kill-and-slam, acapella bridge).
+Diagnosis: the conductor makes one guarded lane move per phrase forever - busy and shapeless at once - and
+every control is a knob on that machinery; none of them IS a moment (a composed 16-32-bar shape: take away →
+build → hole → payoff on the one). Written for a yes before any code: `docs/DJ_MOMENTS_DESIGN.md` - five
+composed moments (SLAM, BREAK ROUTINE, SING-ALONG, TAKEOVER, ACAPELLA BRIDGE) as bar-offset scripts the
+conductor runs with the arrangement paused, landing on the measured drop/hook, armed from ONE row of five
+buttons with a countdown and the choreography drawn on the picture; READY / LOUD / PHRASE / FX / the program
+grid leave the main surface. Open questions for the user: loop tightening and a bus high-pass sweep as build
+tools (they touch the "no stutter builds" rule). Done meanwhile, mechanical: the READY row no longer
+rebuilds when the guard's bar-by-bar opinion flips (in-place text/enabled/tooltip; rebuild only when a song's
+holdings change) and the SONGS list re-ranks only when its reference (record, last UP NEXT) changes or every
+30 s, keeping its scroll - the two visible sources of "things bounce around".
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
