@@ -219,7 +219,8 @@ def measure_track(track, music_root):
     try:
         from lib.dj.stemload import stem_levels
         lv = stem_levels(stereo, _body_start(track), track.sections or [])
-        out["stem_rms"] = {k: round(float(lv.get(k, 0.0)), 5) for k in ("drums", "bass", "other", "vocals")}
+        out["stem_rms"] = {k: (round(float(lv.get(k, 0.0)), 5) if math.isfinite(float(lv.get(k, 0.0) or 0.0)) else 0.0)
+                           for k in ("drums", "bass", "other", "vocals")}   # (an empty body window reads NaN: stored as silent)
     except Exception as e:  # noqa: BLE001
         out["stem_rms_error"] = f"{type(e).__name__}: {e}"
     return out
