@@ -3530,6 +3530,8 @@ class DJSystem:
             ring.append(payload)
             if len(ring) > 80:
                 del ring[:-80]
+            if os.environ.get("DJ_NO_PLAY_LOG", "") == "1":
+                return                                # headless gates and smokes leave the night's log to the live session
             p = os.path.join(self.log_dir,
                              f"dj_{time.strftime('%Y%m%d')}.jsonl")
             with open(p, "a", encoding="utf-8") as f:

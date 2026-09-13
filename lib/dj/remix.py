@@ -1774,8 +1774,10 @@ class RemixConductor:
         if kind == "break":
             # the melody or vocal left alone must actually sound through the take-away (measured from its stem)
             stays = [ln for ln in ("other", "vocals") if ln in held]
-            lv = max((self._stem_level_span(held[ln], ln, at_L - 16 * bar_c, at_L - 8 * bar_c) or 0.5) for ln in stays)
-            if lv < 0.12:
+            lvs = [self._stem_level_span(held[ln], ln, at_L - 16 * bar_c, at_L - 8 * bar_c) for ln in stays]
+            if not any(lv is not None for lv in lvs):
+                return False, "the melody's level there is not measured"      # unknown is not a yes: eight bars of nothing is the risk
+            if max(lv for lv in lvs if lv is not None) < 0.12:
                 return False, "the melody left alone is silent there"
         if self._break is not None:                   # a BREAK running gives way: its lanes come back with the script
             for lane, d in self._break[1].items():
@@ -2061,6 +2063,20 @@ class RemixConductor:
             self._moment = None
             self._note(f"{m['label']} dropped: the bed left")
             return False
+        if m["started"]:
+            # the watchdog: a planned hole is two beats at most - the bus silent for longer than a bar and a
+            # half means the take-away left nothing audible (a melody stem quieter than its map said, a
+            # vocal that stopped): the moment is undone and everything comes back on the next bar
+            rms = float(self._tel().get("rms") or 0.0)
+            if rms < 0.004:
+                if m.get("quiet_since") is None:
+                    m["quiet_since"] = clock
+                elif clock - m["quiet_since"] > 1.5 * self._bar_clock():
+                    self.moment_cancel()
+                    self._move("moment_cancel", None, self._song_id(m["B"]), None, f"{m['label']} undone: the room went silent for more than a bar")
+                    return False
+            else:
+                m["quiet_since"] = None
         for off, fn in m["script"]:
             if off in m["fired"]:
                 continue

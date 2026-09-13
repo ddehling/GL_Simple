@@ -176,7 +176,7 @@ class Director:
         # TASTE: what GOOD / BAD said about SONGS tonight (their tags), fed to both brains as a lean on the
         # next picks - "more like that" / "less like that" - fading as newer verdicts arrive
         self.taste = {"like": {}, "dislike": {}}
-        self._last_moment_t = 0.0        # when the last moment (yours or the DJ's) happened: peaks are spaced
+        self._last_moment_t = time.time()  # when the last moment (yours or the DJ's) happened: peaks are spaced - and the first waits the gap too
         self.arc_custom = None           # your bent curve [(progress, energy)] when the arc dial says "yours"
         self._arc_jump = None
         self._sent = {}                  # per engine: the steering values it already has (see _send)
