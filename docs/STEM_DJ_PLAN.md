@@ -754,6 +754,18 @@ is learned or moved. Tab: FLAG button beside GOOD/BAD (menu of kinds + "with a n
 a plain flag. `tools/dj/dj_flags.py` prints the flags as blocks (or `--summary`, `--kind`, `--session`,
 `--last`, `--json`) - enough to re-render the combination offline from the stems.
 
+**"have we made too many judgements into the record recently that might be causing learned problems?"
+(2026-09-13).** Measured (read-only): 48 verdicts since 09-11, 45 BAD, 42 of them conductor lane moves
+(return:vocals 9, voice_in 7, rest:vocals 6, bed_to 9, drop 3 …). The conductor's own weights from them are
+almost inert (the arrangement policy never consults `_w` for those kinds; only the auto break got a third
+rarer) - BUT `db.seam_feedback_rows` and `pair_stats` fed EVERY row, remix ones included, into the autoDJ's
+class and exact-pair memory (a vocal rest is a self-pair; a voice arrival marked that pair class rough). And
+play_history: 668 rows on 09-12, 120 ended, an unknown share of them my gates' before DJ_NO_PLAY_LOG existed
+- freshness leaned those songs away for 30 days. Done ("do it"): `seam_feedback_rows` / `pair_stats` exclude
+`remix:%` styles and `fenced%` sources for good; `db.fence_feedback(since)` marked the 44 conductor verdicts
+since 09-11 `fenced:user` (kept, read by nothing); `FRESH_SINCE` = 2026-09-13 - play_counts never looks
+before the first clean day. BAD's tag learning was session-only all along; no moment-tune file exists yet.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

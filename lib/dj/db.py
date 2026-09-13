@@ -28,6 +28,9 @@ SCHEMA_VERSION = 15              # v15: seam_feedback.ver (engine
                                  # (v9: tracks.enrichment / MusicBrainz)
                                  # (v8: setlist_entries.target_play_s)
 DB_FILENAME = "dj_library.sqlite3"
+# the first day the play log held only live sessions (headless runs set DJ_NO_PLAY_LOG from 2026-09-12 evening):
+# freshness (play_counts) never looks before it
+FRESH_SINCE = time.mktime((2026, 9, 13, 0, 0, 0, 0, 0, -1))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -693,11 +696,25 @@ class LibraryDB:
     def seam_feedback_rows(self, days=90.0):
         """Raw recent seam feedback (a_id, b_id, style, up, source) - the
         brain generalizes these into class/style memory (see
-        Brain.load_pair_memory); pair_stats keeps the exact-pair view."""
+        Brain.load_pair_memory); pair_stats keeps the exact-pair view.
+        The conductor's lane-move verdicts (style 'remix:...') are NOT
+        seams between two records (a vocal rest is a self-pair) and never
+        feed the pair memory; fenced rows (source 'fenced:...') are kept
+        but read by nothing."""
         since = time.time() - days * 86400.0
         return [dict(r) for r in self.conn.execute(
             "SELECT a_id, b_id, style, up, source FROM seam_feedback"
-            " WHERE at > ?", (since,))]
+            " WHERE at > ? AND (style IS NULL OR style NOT LIKE 'remix:%')"
+            " AND (source IS NULL OR source NOT LIKE 'fenced%')", (since,))]
+
+    def fence_feedback(self, since, style_like="remix:%"):
+        """Fence verdicts (kept, read by nothing): source becomes 'fenced:<source>'. Returns the count."""
+        cur = self.conn.execute(
+            "UPDATE seam_feedback SET source = 'fenced:' || COALESCE(source, 'user')"
+            " WHERE at >= ? AND style LIKE ? AND (source IS NULL OR source NOT LIKE 'fenced%')",
+            (float(since), style_like))
+        self.conn.commit()
+        return cur.rowcount
 
     def pair_stats(self, days=90.0):
         """Cross-night pair memory inputs: thumbs per (a,b) pair and
@@ -706,7 +723,8 @@ class LibraryDB:
         fb = {}
         for r in self.conn.execute(
                 "SELECT a_id, b_id, up, source FROM seam_feedback"
-                " WHERE at > ?", (since,)):
+                " WHERE at > ? AND (style IS NULL OR style NOT LIKE 'remix:%')"
+                " AND (source IS NULL OR source NOT LIKE 'fenced%')", (since,)):
             k = (r["a_id"], r["b_id"])
             # The machine's self-assessment counts, but at half an
             # operator's vote - measured train-wrecks lean the memory,
@@ -735,8 +753,11 @@ class LibraryDB:
 
     def play_counts(self, days=30.0, min_s=45.0):
         """{track_id: real plays in the last `days`}: plays that ENDED normally after min_s - a stopped or
-        headless session leaves no end and does not count (the freshness lean, brain.load_play_counts)."""
-        since = time.time() - days * 86400.0
+        headless session leaves no end and does not count (the freshness lean, brain.load_play_counts).
+        Never before FRESH_SINCE: until 2026-09-12 headless gates and smokes logged plays like a live night
+        (668 rows that day, an unknown share of the 120 that ended were the test bench), so freshness counts
+        from the first clean day."""
+        since = max(time.time() - days * 86400.0, FRESH_SINCE)
         out = {}
         for r in self.conn.execute(
                 "SELECT track_id, COUNT(*) AS n FROM play_history"
