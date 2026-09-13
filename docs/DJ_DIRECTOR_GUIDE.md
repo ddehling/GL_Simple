@@ -14,10 +14,13 @@ Press **STOP** to end the night.
 
 - **one** - the autoDJ. One record, seams between records.
 - **two / three** - the playing song is handed to the conductor, which plays PARTS of songs: one song is
-  the **bed** (its drums and bass), other songs are **voices** over it (their melody or vocals). A voice
-  arrives once the bed has settled, is heard a few phrases, and takes the bed at its own drop or hook;
-  the old bed song fades out. The **intent line** says what it is doing and waiting for; the **WHY**
-  lines say why; the picture shows it.
+  the **bed** (its drums and bass), other songs are **voices** over it. A new song arrives once the bed
+  has settled, in one of three ways: through its **vocal** over an instrumental bed, through its **bass**
+  (the swap: its bassline takes over under the bed's drums, loud, and its drums follow at the phrase), or
+  through its **melody** only when the bed is not singing, held low as a texture. Never a melody over a
+  singer. A voice is heard a few phrases and takes the bed at its own drop or hook; the old bed song fades
+  out. The **intent line** says what it is doing and waiting for; the **WHY** lines say why; the picture
+  shows it.
 
 Switching back to **one** hands the playing song back to the autoDJ at the same position.
 

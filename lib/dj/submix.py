@@ -38,6 +38,30 @@ PLL_TC = 2.0                     # seconds to slew a measured error away
 PLL_KI = 0.012                   # integral gain (learns the tempo bias)
 PLL_MAX_TRIM = 0.012             # +/- 1.2% - real house grids drift this much
 PLL_DEADBAND = 0.004             # beats
+ODD_SEG_RATIO = 0.03             # a grid segment whose period is off the song's dominant period by more than this is
+                                 # a mis-track (a half-time breakdown read as 66 bpm): the PLL holds through it
+
+
+def _odd_segment(deck):
+    """Is the deck inside a grid segment whose tempo disagrees with the song's dominant segment?"""
+    g = getattr(deck, "grid", None)
+    if not isinstance(g, list) or len(g) < 2:
+        return False
+    try:
+        t = deck.source_time_s()
+        dom = max(g, key=lambda s: float(s.get("end_s", 0.0)) - float(s.get("start_s", 0.0)))
+        p0 = float(dom.get("period_s") or 0.0)
+        if p0 <= 0.0:
+            return False
+        for s in g:
+            if float(s.get("start_s", 0.0)) <= t < float(s.get("end_s", 0.0)):
+                p = float(s.get("period_s") or p0)
+                return abs(p / p0 - 1.0) > ODD_SEG_RATIO
+    except Exception:
+        return False
+    return False
+
+
 RESNAP_ERR = 0.08                # re-snap if this far off while still fading in
 RESNAP_GAIN = 0.12               # ...only while near-silent (a reseek is a
                                  # hard jump; never do it once audible)
@@ -452,6 +476,14 @@ class DJSubmix:
                 and master.grid and slave.grid):
             return
         beat_s = master.beat_period_s() or 0.5
+        # A MIS-TRACKED GRID SEGMENT is not a phase to chase. 30 % of the library's grids carry a short
+        # segment at a tempo that disagrees with the song's (a breakdown read at 66 bpm inside a 116 bpm
+        # track): the deck's beat phase there is meaningless, and chasing it saturated the trim both ways -
+        # a 1.2 % tempo wobble on an audible bed for the whole segment (measured 2026-09-13). While either
+        # deck sits in such a segment the loop holds: no trim, no nudge, no snap.
+        if _odd_segment(slave) or _odd_segment(master):
+            slave.rate_trim *= 0.9
+            return
         # The PLL's target carries the kick-alignment bias (see
         # _sync_bias_beats, computed once at sync start): zero error =
         # the KICKS are in register, not the grids.

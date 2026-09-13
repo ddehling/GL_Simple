@@ -828,6 +828,36 @@ bed), through the BASS (the swap the user asked for) or through `other` only ove
 at a texture level; the per-bar clash watch stays (it is cheap and honest) but will rarely fire. Gate after
 all of today's changes: ALL OK (the PLAN check now keys plans by a sequence number, not id()).
 
+**"yes" (2026-09-13) - THE ARRIVAL RULE.** In `_arrangement_move` section 3: a song arrives (1) through
+its VOCAL when it sings through the coming phrase and the bed does not (`vocal_freedom` > 0.1, the lane
+free, the guard), (2) else through its BASS - `_bed_to(d, at, None, None, bass_first=True)`: the bass
+swap as an arrival, its bassline takes over under the bed's drums (logged `voice_in`/bass "as it arrives"),
+the drums follow at `_land_k` - when the guard allows its bass and no change is in flight, (3) else through
+its MELODY only over an instrumental bed, at OTHER_VOICE 0.5 (a voice's `other` is always a texture in
+`_lane_gain`), (4) else it waits with the reason ("the bed is singing - no melody over a singer, and its bass
+would clash"). `_bed_to(bass_first=)` overrides the MOMENTS dial for arrivals. Philosophy principle 8 and the
+guide amended. Gate: ARRIVALS by lane, melody-over-a-singer must be 0.
+The first order (bass swap before melody) made every arrival a bed change and no song was ever a voice;
+the order is now vocal → melody over an instrumental bed → bass swap when the bed sings. Nine gate runs
+then found, one per run: a bed's BREAKDOWN counted as its death (`_bed_dies_in_bars`) and chained a change
+every phrase → outro / body end only; a re-cued song arrived inside its re-lock → no re-cue within two bars,
+the re-snap a beat after the cue, and STAGED DECKS SLEEP at gain 0 (`_stage_song`, `_wake` on the first
+lane; the PLL re-snaps only a near-silent deck - a deck at gain 1 with every stem closed slewed 0.3 beat
+for fifteen seconds); the clock passes WITH THE DRUMS (`_pass_clock` at the follow) instead of when the old
+master leaves; the plan's `land` entry made a move due every step and each no-op `_one_move` queued a
+hygiene pass at the landing with the pre-landing lane map that REOPENED the lows a second after the carve
+(found with an EQ event trace in the gate) → `land` triggers nothing, hygiene only after a move; and the
+audio PLL chased melodic pattern offset on every slave (their sounding stems never have kicks) → the
+conductor's sync events are GRID-ONLY (`audio_pll: False`). Low carve 0 %, locks p95 ≤ 0.08 on the bed decks.
+The last lock failure was a MIS-TRACKED GRID SEGMENT: Elephante's grid reads 66 bpm from 140 to 160 s inside
+a 116 bpm song, and 327 of 1073 stem tracks (30 %) carry such a segment (mostly 10-30 s, breakdowns and
+intros); the deck's beat phase there is meaningless, the PLL saturated its trim both ways and the new bed's
+tempo wobbled 1.2 % for the whole segment. `submix._odd_segment` (period off the song's dominant segment by
+> 3 %) HOLDS the PLL while either deck is inside one - this touches the shared PLL, as a guard only; the
+conductor's plan lands no bed change and no arrival inside one (`_odd_grid_bars`); the gate's lock metric
+skips those samples (it read the same meaningless phase). The clock passes when the old master LEAVES, as
+before (`_pass_clock` exists but is not called: passing it at the follow re-synced the audible old bed).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

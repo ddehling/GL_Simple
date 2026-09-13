@@ -41,6 +41,7 @@ def main():
     from lib.dj.db import LibraryDB
     from lib.dj import brain as B
     from lib.dj.remix import RemixConductor, CLASH_BELOW, TONAL, _compat
+    from lib.dj.submix import _odd_segment
 
     music = arg("--music", "D:/Devel/music")
     seconds = arg("--seconds", 240.0, float)
@@ -61,6 +62,26 @@ def main():
 
     engine = AudioEngine()
     engine.attach_track("remix", rc.submix)
+    # who posts EQ events (the carve mystery): every eq event with its clock, deck, low and the caller
+    import traceback
+    eq_trace = []
+    _post0, _post_many0 = rc.submix.post, rc.submix.post_many
+
+    def _trace(e):
+        if isinstance(e, dict) and e.get("cmd") == "eq":
+            fr = traceback.extract_stack(limit=4)[0]
+            eq_trace.append((round((e.get("at") or rc.submix.clock) / RATE, 1), e.get("deck"), e.get("low"), f"{fr.name}:{fr.lineno}"))
+
+    def _post(e):
+        _trace(e)
+        _post0(e)
+
+    def _post_many(evs):
+        evs = list(evs)
+        for e in evs:
+            _trace(e)
+        _post_many0(evs)
+    rc.submix.post, rc.submix.post_many = _post, _post_many
     gen = engine._mixer()
     next(gen)
     gen.send(256)
@@ -82,6 +103,10 @@ def main():
                 m, s = decks.get(v["master"]) or {}, decks.get(sl) or {}
                 if not (m.get("playing") and s.get("playing")):
                     continue
+                # inside a mis-tracked grid segment (a 66 bpm read in a 116 bpm song) the beat phase means
+                # nothing - the PLL holds there and so does this measurement
+                if _odd_segment(rc.submix.decks.get(sl)) or _odd_segment(rc.submix.decks.get(v["master"])):
+                    continue
                 e = (float(s["beat_phase"]) - float(m["beat_phase"]) - float(v.get("bias_beats") or 0.0) + 0.5) % 1.0 - 0.5
                 errs.setdefault(sl, []).append((len(audio), abs(e)))
             # the harmonic guard, as heard: tonal lanes actually open (gain > 0.5) on different songs
@@ -102,7 +127,10 @@ def main():
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
             if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
                 tel_hist.append((len(audio), rc.master, {d: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
-                                                          bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1), (rc.songs[d].track.title[:14] if d in rc.songs else "-"))
+                                                          bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1), (rc.songs[d].track.title[:14] if d in rc.songs else "-"),
+                                                          round(float((t.get("eq") or [1.0])[0]), 2), (rc.songs[d].held(rc.lanes) if d in rc.songs else []),
+                                                          round(float(t.get("rate") or 0.0), 4), (round(float(t["beat_phase"]), 3) if t.get("beat_phase") is not None else None),
+                                                          t.get("loop") is not None, round(float(t.get("rate_trim") or 0.0), 5) if t.get("rate_trim") is not None else None)
                                                       for d, t in decks.items()}))
             # the vocal rule, as heard: the vocal lane open on a song that is not singing there (by the
             # conductor's own measured singing map); a stretch counts once it outlasts 1.5 phrases - the
@@ -138,7 +166,8 @@ def main():
                         hyg["bed_sings_rested"] = hyg.get("bed_sings_rested", 0) + 1
             # the low carve, as heard: a playing song whose bass and drums stems are both closed (and has
             # been so for more than a bar: the EQ ramps a beat after the lane lands) has its EQ low down
-            if rc._break is None:
+            # (not during a moment: its take-away mutes the bed's own drums and bass on purpose)
+            if rc._break is None and rc._moment is None:
                 for d, song in rc.songs.items():
                     t = decks.get(d) or {}
                     g = t.get("stem_gains") or {}
@@ -155,6 +184,10 @@ def main():
                     hyg["carve_blocks"] += 1
                     if float((t.get("eq") or [1.0])[0]) > 0.6:
                         hyg["carve_open"] += 1
+                        who = hyg.setdefault("carve_who", {})
+                        kw = (song.track.title[:22], tuple(song.held(rc.lanes)), bool(song.was_bed))
+                        who[kw] = who.get(kw, 0) + 1
+                        hyg.setdefault("carve_first", (len(audio), d))
 
     # wait (real time) for the first decode, rendering silence meanwhile
     import time
@@ -294,6 +327,9 @@ def main():
     for kind, lead in (("slam", 2), ("break", 16)):
         t_m, k_m = len(rc.moves), len(audio)
         ok_m, msg_m = rc.arm_moment(kind)
+        if not ok_m and kind == "break" and any(w in msg_m for w in ("silent there", "not measured", "nothing would be left")):
+            print(f"  --   BREAK refused here, rightly: {msg_m} (not judged)")
+            continue
         st_m = rc.moment_status()
         in_bars = st_m["in_bars"] if st_m else None
         Bm = rc._moment["B"] if rc._moment else None
@@ -376,8 +412,8 @@ def main():
 
     # -- verdicts --------------------------------------------------------------------------------
     st = rc.status()
-    crosses = [m for _, m in rc.moves if any(k in m for k in ("crosses", "enters through", "rests", "returns",
-                                                              "arrives as a voice", "the bed passes", "fades out as a voice"))]
+    crosses = [m for _, m in rc.moves if any(k in m for k in ("crosses", "enters through", "rests", "returns", "arrives through",
+                                                              "arrives as a voice", "the bed passes", "takes over", "fades out as a voice"))]
     check(max(live_hist or [0]) >= 2, f"songs live at once: max {max(live_hist or [0])}")
     # THE PLAN makes up its mind: a plan's bar changes only through a logged plan move; plans are few and kept
     plans, bar_changes = 0, 0
@@ -397,6 +433,11 @@ def main():
     vt = [(m["t"], m["kind"]) for m in rc.move_log if m["kind"] in ("rest", "return") and m.get("lane") == "vocals"]
     flaps = sum(1 for i in range(1, len(vt)) if vt[i - 1][1] == "rest" and vt[i][1] == "return" and vt[i][0] - vt[i - 1][0] < 4 * bars)
     check(flaps <= 1, f"VOCAL LANE: {flaps} rest→return flaps under four bars ({len(vt)} vocal moves)")
+    # how songs arrive: through the vocal, the bass (a swap) or the melody over an INSTRUMENTAL bed - never a melody over a singer
+    arrivals = [m for m in rc.move_log if m["kind"] == "voice_in"]
+    by_lane = {ln: sum(1 for m in arrivals if m.get("lane") == ln) for ln in ("vocals", "bass", "other")}
+    bad_arr = [m["text"][:60] for m in arrivals if m.get("lane") == "other" and "instrumental" not in m["text"]]
+    check(arrivals and not bad_arr, f"ARRIVALS: {by_lane} (vocal / bass swap / melody over an instrumental bed); melody over a singer: {len(bad_arr)}")
     ducks = [m["text"][:70] for m in rc.move_log if m["kind"] in ("duck", "unduck")]
     print(f"  --   clash watch: {len(ducks)} duck/unduck" + (f" e.g. {ducks[0]}" if ducks else ""))
     recued = [n for n in rc.log if "cued to" in n and "landmark lands" in n]
@@ -409,7 +450,7 @@ def main():
     # the arrangement lets a new bed settle four phrases alone and waits out a bed's build: at four-bar phrases
     # that is about half the time with one song by design (the old free policy overlapped most of the time)
     check(frac_multi > 0.25, f"time with 2+ songs heard: {100 * frac_multi:.0f}% (a new bed settles alone by design)")
-    entered = [m for _, m in rc.moves if "enters through" in m or "arrives as a voice" in m]
+    entered = [m for _, m in rc.moves if "enters through" in m or "arrives as a voice" in m or "arrives through" in m or "as it arrives" in m]
     left = [m for _, m in rc.moves if m.endswith("leaves") or "fades out as a voice" in m]
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")
     # the philosophy of play: bed changes land at the voice's drop when one is near, after a breakdown;
@@ -419,7 +460,8 @@ def main():
     strips = [m for m in beds if "drop out for" in m]
     bass_first = [m for m in beds if "takes over" in m]
     follows = [m for _, m in rc.moves if "drums of" in m and "follow" in m]
-    check(len(beds) >= 2 and len(strips) >= 1, f"bed changes: {len(beds)}, {len(at_drop)} at the voice's payoff, {len(strips)} with a breakdown first, {len(bass_first)} bass-first ({len(follows)} drums followed)")
+    check(len(beds) >= 2 and (len(strips) >= 1 or len(bass_first) >= 1),
+          f"bed changes: {len(beds)}, {len(at_drop)} at the voice's payoff, {len(strips)} with a breakdown first, {len(bass_first)} bass-first ({len(follows)} drums followed)")
     arr = st.get("arrangement") or {}
     check("bed" in arr and "voices" in arr and not arr.get("error"), f"arrangement status: bed {((arr.get('bed') or {}).get('title') or '-')[:24]}, {len(arr.get('voices') or [])} voices, wait: {arr.get('wait_why')}")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")
@@ -432,13 +474,32 @@ def main():
         print("  --   no block with vocal data on the vocal lane (rule not exercised)")
     if hyg.get("bed_sings"):
         fr = hyg.get("bed_sings_rested", 0) / hyg["bed_sings"]
-        check(fr < 0.15, f"vocal lane resting while the bed sings: {100 * fr:.0f}% of {hyg['bed_sings']} singing blocks")
+        # (a bass swap puts another song's bassline under a singing bed for a phrase: its vocal may not sit on
+        #  that bass - the guard's refusal, not a rest; the bar is a quarter now that arrivals swap the bass)
+        check(fr < 0.25, f"vocal lane resting while the bed sings: {100 * fr:.0f}% of {hyg['bed_sings']} singing blocks")
     if hyg.get("bed_blocks"):
         fr = hyg.get("bed_empty", 0) / hyg["bed_blocks"]
         check(fr < 0.03, f"drums or bass lane with nobody: {100 * fr:.1f}% of {hyg['bed_blocks']} playing blocks (outside breaks)")
     if hyg["carve_blocks"]:
         frac = hyg["carve_open"] / hyg["carve_blocks"]
         check(frac < 0.15, f"low carve: lows still open on {100 * frac:.0f}% of {hyg['carve_blocks']} blocks where a song held neither bass nor drums")
+        if frac >= 0.15:
+            for kw, n in sorted((hyg.get("carve_who") or {}).items(), key=lambda kv: -kv[1])[:6]:
+                print(f"       lows open {n} blocks: {kw[0]} holding {list(kw[1])}{' (was the bed)' if kw[2] else ''}")
+            cf = hyg.get("carve_first")
+            if cf:
+                k_first, d_first = cf
+                print(f"       the first open block at {k_first * block / RATE:.0f} s on deck {d_first}; that deck per second around it (gain, stems, eq_low, lanes):")
+                for kk, master, pic in [r for r in tel_hist if k_first - 60 <= r[0] <= k_first + 30]:
+                    p = pic.get(d_first)
+                    if p:
+                        print(f"         {kk * block / RATE:.0f}s {p[4]} g{p[0]} {p[1]} eq{p[5]} lanes {p[6]} master {master}")
+                near = [m for m in rc.move_log if m.get("clock_s") is not None and abs(m["clock_s"] - k_first * block / RATE) < 10]
+                for m in near[-6:]:
+                    print(f"         move {m['clock_s']:.0f}s {m['text'][:90]}")
+                t_first = k_first * block / RATE
+                for row in [r for r in eq_trace if r[1] == d_first and t_first - 15 <= r[0] <= t_first + 5]:
+                    print(f"         eq event at {row[0]}s deck {row[1]} low {row[2]} from {row[3]}")
     shapes = [m for m in rc.move_log if m.get("shape")]
     # a shape rides a song's LAST lane leaving (the dice, at fx_level); with the calmer arrangement a five-minute
     # run has only a handful of such exits, so no shape at all is only a failure when there were exits to shape
@@ -469,6 +530,15 @@ def main():
                 t0 = k0 * block / RATE
                 near = min(rc.move_log, key=lambda m: abs((m.get("clock_s") or -1e9) - t0)) if rc.move_log else None
                 print(f"       deck {sl} off-lock {t0:.0f}-{k1 * block / RATE:.0f} s near: {near['clock_s']:.0f}s {near['text'][:70]}" if near and near.get("clock_s") is not None else f"       deck {sl} off-lock {t0:.0f}-{k1 * block / RATE:.0f} s")
+                # who was the clock and what did this deck do around then: re-cues (a cue is a phase jump), the
+                # master per second, the deck's song / gain / loop
+                recues = [r for r in getattr(rc, "recue_log", []) if r[0] is not None and t0 - 20 <= r[0] <= k1 * block / RATE and r[1] == sl]
+                print(f"         re-cues of {sl} in the window: {recues}")
+                for kk, master, pic in [r for r in tel_hist if k0 - 30 <= r[0] <= k1 + 10][::2]:
+                    p, pm = pic.get(sl), pic.get(master)
+                    err = ((p[8] - pm[8] + 0.5) % 1.0 - 0.5) if (p and pm and p[8] is not None and pm[8] is not None) else None
+                    print(f"         {kk * block / RATE:.0f}s master {master} ph{pm[8] if pm else '-'} rate{pm[7] if pm else '-'} loop{pm[9] if pm else '-'} | {sl}={p[4] if p else '-'} g{p[0] if p else '-'} "
+                          f"ph{p[8] if p else '-'} rate{p[7] if p else '-'} trim{p[10] if p else '-'} loop{p[9] if p else '-'} lanes{p[6] if p else '-'} err {None if err is None else round(err, 3)}")
         check(ok_lock, f"deck {sl} lock: median {med:.3f} beat, p95 {p95:.3f} (n {len(settled)})")
     x = np.concatenate(audio, axis=0)
     peak = float(np.abs(x).max())
