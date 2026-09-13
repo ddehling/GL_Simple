@@ -961,6 +961,9 @@ class Director:
             self._event(f"{lane} of {self.title(int(track_id))[:24]}: staging, in as soon as it is ready")
             return f"{self.title(int(track_id))[:24]} is being staged; its {lane} comes in the moment it is ready"
         ok, msg = rc.bring(lane, deck, boost=boost, when=when)
+        if not ok and msg.startswith("still staging"):
+            self._pending_stem = {"track_id": int(track_id), "lane": lane, "boost": boost, "when": when, "t": time.time()}
+            return f"{self.title(int(track_id))[:24]}: its {lane} comes in on the next bar"
         self._event(("moment: " if ok else "refused: ") + msg)
         return msg
 
@@ -982,8 +985,10 @@ class Director:
         deck = next((d for d, s in self.rc.songs.items() if s.track.id == p["track_id"] and s.staged_at is not None and not s.leaving), None)
         if deck is None:
             return
-        self._pending_stem = None
         ok, msg = self.rc.bring(p["lane"], deck, boost=p["boost"], when=p["when"])
+        if not ok and msg.startswith("still staging"):
+            return                                    # its staging bar has not passed: again on the next tick
+        self._pending_stem = None
         self._event(("moment: " if ok else "refused: ") + msg)
 
     def ready(self):

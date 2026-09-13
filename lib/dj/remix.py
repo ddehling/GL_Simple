@@ -1057,7 +1057,10 @@ class RemixConductor:
         if s is None or getattr(s, "awake", False):
             return
         s.awake = True
-        self.submix.post({"at": max(self._clock(), at - int(self._beat_s() * RATE)), "cmd": "gain", "deck": deck, "value": float(s.level), "ramp_s": 0.05})
+        # posted AT the bar (not a beat before), after anything already queued for it: a stem brought in the
+        # instant its song was staged had its wake applied before the staging's gain 0 - the lane map said
+        # "vocals in" and nothing sounded (2026-09-13)
+        self.submix.post({"at": max(self._clock(), at, int(s.staged_at or 0)), "cmd": "gain", "deck": deck, "value": float(s.level), "ramp_s": 0.05})
 
     # SYNC IN THE ARRANGEMENT IS GRID-ONLY. The audio PLL aligns KICKS; in the arrangement only the clock
     # song carries drums, so every slave's sounding stems are melody, vocals or a bassline - against those
@@ -2247,6 +2250,8 @@ class RemixConductor:
         s = self.songs[deck]
         if s.leaving or s.staged_at is None:
             return False, "still decoding" if s.staged_at is None else "leaving"
+        if self._clock() < int(s.staged_at):
+            return False, "still staging: on the next bar"   # its cue, start and sync land on the coming bar; the bring follows them
         if self._on_way_out(deck):
             return False, f"{s.track.title[:24]} is running out ({self._body_left_s(deck):.0f} s of body left)"
         why = self.why_not(lane, deck)
