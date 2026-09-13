@@ -788,6 +788,26 @@ lane only where the song sings and keeps two phrases of the bed alone. Tab: GOOD
 buttons. Gate: WAY OUT (no bed change into a looping song), re-cue count printed. Not run: the user was live.
 Open: the two chord-clash flags (11:42, 11:44) await an offline re-render and a section-fit measurement.
 
+**Nine more flags (session cb76c0, 11:50-11:55, the build before ff80d1f).** seam + still: a voice on
+`other` at 1.38 (trimmed toward the first song) sat alone over the bed for 96 s waiting out VOICE_MAX (6
+phrases, no payoff in sight); seam / clash x2 / "sounds were buzzing": the vocal lane FLAPPED rest→return
+within 4 s four times (two-bar reads on a sparse vocal), a voice's section changed 20-40 s after a clean
+arrival (breakdown / build chords against the bed), and a bass-first change "at its drop" that landed on
+Need You Now's 8-second groove (266-274 s, between a breakdown and a build) - the honest cause of the early
+takeover; plan: the stale "takes the bed at bar 130" stayed with a negative countdown while the drums were
+still to follow; seam at -9.6 dBFS: the loudness matcher had walked the bus to x2 during a quiet stretch
+and the next full arrival came in 6 dB hot; clash: the BED was looping its last 8 bars with the voice's
+takeover planned 74 s away. Built: VOICE_MAX_PHRASES 4; VOCAL_REST_BARS 4 both ways (`_vocal_gone(bars)`,
+return needs `_sings_through` 4 bars and 4 bars rested); `_clash_tick` per bar - a voice whose pair fit
+with the bed falls under CLASH_BELOW over the next two bars is held at CLASH_DUCK 0.5 (`duck` / `unduck`
+moves, `_clash_duck` in `_lane_gain`) until the sections agree again; honest bed-change text ("at its drop"
+only with a payoff, else "at the phrase, after its turn as a voice"); the plan shows a landing in flight
+(`what: land` at `_land_k`); the loudness matcher caps at +4 dB, releases at once and holds during moments
+and breaks; `measure_track` now stores `stem_rms` (stereo, the conductor's own `stem_levels`) so `--measure`
+fills the library's level reference offline; nine more flag kinds (bass, energy, runout, moment, long,
+queue, control; good_bass, good_calm, good_level). Gate: VOCAL LANE flaps ≤ 1, duck count printed. Not run:
+the user was live. The 8-second-groove drop is already excluded by ff80d1f's min_groove_bars.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

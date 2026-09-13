@@ -91,7 +91,13 @@ TEMPO_STEP = 0.005               # the clock moves at most this much per bar on 
 TEMPO_SPAN_MAX = 0.06            # ...and at most this far from the opener's tempo
 RECALL_PHRASES = 8               # a RECALL whose songs cannot come back within this many phrases is abandoned
 VOICE_PHRASES = 3                # the arrangement policy: a voice is heard this many phrases before it MAY take the bed
-VOICE_MAX_PHRASES = 6            # ...and takes it by then even if its drop never comes (a voice is not a home)
+VOICE_MAX_PHRASES = 4            # ...and takes it by then even if its drop never comes (a voice is not a home; six
+                                 # phrases of a lone melody over the bed was flagged "nothing happening" 2026-09-13)
+VOCAL_REST_BARS = 4              # the vocal lane rests only when the singing stops for this long, and comes back only
+                                 # when it carries on this long (two-bar reads flapped rest/return every few seconds)
+CLASH_DUCK = 0.5                 # a voice whose chords clash with the bed HERE (fit under CLASH_BELOW) is held at this
+                                 # level until the sections agree again (the guard only judged arrivals; three clash
+                                 # flags came 20-40 s after a clean arrival when a section changed)
 SETTLE_PHRASES = 4               # a new bed is heard for this many phrases before the next voice arrives (let it breathe)
 ENTRY_FIT = 0.68                 # a song ARRIVING on a tonal lane must fit the room's keys this well (CLASH_BELOW keeps what plays)
 KEY_SHIFTS = (1, -1, 2, -2)      # a staged song is shifted at most two semitones to fit the room (three sounded wrong)
@@ -704,11 +710,14 @@ class RemixConductor:
         sing = self._singing(s, self._song_time_at(deck, at))
         return sing is None or sing
 
-    def _vocal_gone(self, deck, at):
+    def _vocal_gone(self, deck, at, bars=None):
+        """The song on `deck` has stopped singing for the next `bars` bars (default VOCAL_REST_BARS)."""
         s = self.songs.get(deck)
         if s is None:
             return False
-        return self._singing(s, self._song_time_at(deck, at)) is False
+        t = self._song_time_at(deck, at)
+        span = (bars if bars is not None else VOCAL_REST_BARS) * self._bar_s(s.track, t)
+        return self._singing(s, t, span_s=span) is False
 
     def _sings_through(self, deck, at, bars):
         """Does the song on `deck` keep singing through the next `bars` bars (from the vocal stem's envelope:
@@ -759,7 +768,45 @@ class RemixConductor:
         b = self.lane_boost.get(lane)
         if b is not None and self.lanes.get(lane) == deck and self.bar_n < b[1]:
             g *= b[0]                                 # a tactical "loud" on this lane (the peak guard keeps the bus honest)
+        if getattr(self, "_clash_duck", {}).get(lane) == deck:
+            g *= CLASH_DUCK                           # its chords clash with the bed here (see _clash_tick)
         return g
+
+    def _clash_tick(self):
+        """Every bar: a VOICE whose chords clash with the bed in the sections both are in now (the pair fit
+        under CLASH_BELOW, two bars ahead) is held at CLASH_DUCK until they agree again. The guard judged the
+        arrival; the songs moved on into other sections."""
+        if getattr(self, "_ctick_k", None) == self.bar_n:
+            return
+        self._ctick_k = self.bar_n
+        if not hasattr(self, "_clash_duck"):
+            self._clash_duck = {}
+        bed = self._bed_deck()
+        if bed is None or bed not in self.songs:
+            return
+        at = self._next_bar_clock()
+        ahead = at + 2 * self._bar_clock()
+        bs = self.songs[bed]
+        for lane in ("other", "vocals"):
+            d = self.lanes.get(lane)
+            ducked = self._clash_duck.get(lane)
+            if d is None or d == bed or d not in self.songs or self.songs[d].leaving:
+                if ducked is not None:
+                    self._clash_duck.pop(lane, None)
+                continue
+            fits = [f for f in (self._pair_fit(bs, self.songs[d], at), self._pair_fit(bs, self.songs[d], ahead)) if f is not None]
+            fit = min(fits) if fits else None
+            if fit is None:
+                continue
+            if ducked != d and fit < CLASH_BELOW:
+                self._clash_duck[lane] = d
+                self.submix.post({"at": at, "cmd": "stem_gains", "deck": d, "gains": {lane: self._lane_gain(d, lane, at)}, "ramp_s": self._beat_s()})
+                self._move("duck", lane, self._song_id(d), self._song_id(bed),
+                           f"the {lane} of {self.songs[d].track.title[:26]} held down: its chords clash with {bs.track.title[:22]} here (fit {fit:.2f})")
+            elif ducked == d and fit >= CLASH_BELOW + 0.05:
+                self._clash_duck.pop(lane, None)
+                self.submix.post({"at": at, "cmd": "stem_gains", "deck": d, "gains": {lane: self._lane_gain(d, lane, at)}, "ramp_s": 2 * self._beat_s()})
+                self._move("unduck", lane, self._song_id(d), self._song_id(bed), f"the {lane} of {self.songs[d].track.title[:26]} back up: the chords agree again (fit {fit:.2f})")
 
     def _boost_step(self):
         """A lane's "loud" ends: back to its trim over a bar."""
@@ -1059,6 +1106,10 @@ class RemixConductor:
             return                                    # a recall in progress owns the lanes
         if getattr(self, "policy", "arrangement") == "arrangement" and not self.hold:
             self._vocal_tick()
+            try:
+                self._clash_tick()
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"clash watch: {type(e).__name__}: {e}"
             if getattr(self, "_plan_k", None) != self.bar_n:
                 self._plan_k = self.bar_n             # the plan is decided as soon as there is something to decide, once a bar
                 try:
@@ -1286,7 +1337,9 @@ class RemixConductor:
         bar_c = self._bar_clock()
         land = at + int(round(d_bars)) * bar_c if d_bars else at
         strip = bool(self.strip_before_bed) and old is not None and old in self.songs and old != d
-        why = f"at its {what}" if d_bars is not None else "after its phrases as a voice"
+        # the text says what is true: a payoff only when one was found (a change "at its drop" that landed on
+        # a phrase boundary read as a wrong drop)
+        why = f"at its {what}" if (d_bars is not None and what in ("drop", "hook")) else "at the phrase, after its turn as a voice"
         tag = None
         # THE BASS MOMENT (MOMENTS on, no strip): the bassline takes over first - at the payoff, loud for a
         # phrase, the old bed's bass gone - and the drums follow at the next phrase. The classic bass swap:
@@ -1486,7 +1539,7 @@ class RemixConductor:
                 continue
             if forced or p is None:
                 d_bars, what = self._payoff_in_bars(d, at, self.change_bars)
-                return self._bed_to(d, at, d_bars, what or "drop")
+                return self._bed_to(d, at, d_bars, what)
             if not planned or p["what"] != "bed_to":
                 self.wait_why = f"{s.track.title[:28]} is heard; the plan is {self._plan_words()} first"
                 continue
@@ -1494,7 +1547,7 @@ class RemixConductor:
             if left > self.change_bars - 1 and not bed_out:
                 self.wait_why = f"{s.track.title[:28]} takes the bed at bar {p['bar']} ({left} bars): {p['why']}"
                 continue
-            return self._bed_to(d, at, max(0, left), p.get("payoff") or "drop")
+            return self._bed_to(d, at, max(0, left), p.get("payoff"))
         # 3. a staged song arrives as a voice over the bed - on the PLAN's bar (the settle, the calm and the
         #    bed's build already in it); a breakdown of the bed or a bed running out opens the door early
         waiting = [d for d in live if not self.songs[d].entered and (self.songs[d].ready_k is None or bar + 1 >= self.songs[d].ready_k)]
@@ -1566,7 +1619,7 @@ class RemixConductor:
         s = self.songs.get(p["deck"])
         title = s.track.title[:24] if s else "?"
         return {"voice_in": f"{title} arriving as a voice", "bed_to": f"{title} taking the bed",
-                "voice_out": f"{title} fading out"}.get(p["what"], p["what"]) + f" at bar {p['bar']}"
+                "voice_out": f"{title} fading out", "land": f"the drums of {title} following (the bed is its)"}.get(p["what"], p["what"]) + f" at bar {p['bar']}"
 
     def _plan_set(self, what, deck, bar, why, payoff=None):
         self.plan = {"what": what, "deck": deck, "bar": int(bar), "why": why, "payoff": payoff, "set_k": self.bar_n, "moved": 0}
@@ -1612,9 +1665,17 @@ class RemixConductor:
         bar = self.bar_n
         bed = self._bed_deck()
         p = self.plan
+        # a bed change in flight IS the plan: the drums follow (or the new bed lands) at _land_k - shown as
+        # such, not as a stale "takes the bed" with a countdown gone negative (flag 'plan' 2026-09-13)
+        if self._land_k is not None and bar < self._land_k:
+            d = self._drums_follow if self._drums_follow is not None else self.lanes.get("bass")
+            if d is not None and d in self.songs and not (p is not None and p["what"] == "land" and p["deck"] == d and p["bar"] == self._land_k):
+                self._plan_set("land", d, self._land_k, "the bassline has taken over; its drums follow at the phrase" if self._drums_follow else "the new bed lands")
+            return
         if p is not None:
             s = self.songs.get(p["deck"])
             stale = (s is None or s.leaving
+                     or p["what"] == "land"
                      or (p["what"] == "voice_in" and s.entered)
                      or (p["what"] == "bed_to" and p["deck"] == bed)
                      or (p["what"] in ("bed_to", "voice_out") and not s.held(self.lanes)))
@@ -1707,14 +1768,18 @@ class RemixConductor:
         # dwell: a lane that just came back holds four bars before it may rest, one that just rested holds two
         # before it may come back (a sparse vocal flipped rest / back within seconds in the gate)
         if vd is not None and vd in self.songs:
-            if since >= self.change_bars and self._vocal_gone(vd, at):     # on for a phrase before it may rest
+            # on for a phrase before it may rest, and only when the singing stops for VOCAL_REST_BARS ahead
+            if since >= self.change_bars and self._vocal_gone(vd, at):
                 self._cross("vocals", None, at, beats=2.0, shape=False)
                 self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
                 self._reduck(at)
             return
-        if bed is None or bed not in self.songs or not self.songs[bed].entered or since < 2:
+        if bed is None or bed not in self.songs or not self.songs[bed].entered or since < VOCAL_REST_BARS:
             return
+        # back only when the bed sings NOW and keeps singing through the coming bars (a sparse vocal flapped
+        # rest / return every few seconds - four pairs in five minutes on 2026-09-13)
         if self._vocal_ok(bed, at) and self._singing(self.songs[bed], self._song_time_at(bed, at)) is True \
+                and self._sings_through(bed, at, VOCAL_REST_BARS) is not False \
                 and self._tonal_ok(bed, "vocals", at):
             self._cross("vocals", bed, at, beats=1.0, shape=False)
             self._move("return", "vocals", None, self._song_id(bed), f"vocals back on {self.songs[bed].track.title[:30]} (singing again)")

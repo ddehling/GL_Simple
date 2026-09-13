@@ -118,6 +118,13 @@ FLAG_BAD = {
     "timing": "off the beat or the phrase",
     "vocals": "vocals wrong (resting, doubled, cut)",
     "level": "too loud / too quiet / thin",
+    "bass": "the low end wrong (muddy, missing, two basslines)",
+    "energy": "the energy is wrong for the room (too low / too high)",
+    "runout": "a song ran out (looping its end, cut off, faded for no reason)",
+    "moment": "a moment did not land (SLAM / BREAK / SING / TAKEOVER / BRIDGE)",
+    "long": "too long on one song or one combination",
+    "queue": "my UP NEXT / steering was ignored",
+    "control": "a button or dial did not do what it says",
     "ui": "the screen (bouncing, unclear, wrong)",
     "other": "something else (say what)",
 }
@@ -127,7 +134,10 @@ FLAG_GOOD = {
     "good_layer": "these songs sit well together",
     "good_song": "good song choice here",
     "good_build": "the energy is building right",
+    "good_bass": "the low end is right (that bass swap, that weight)",
     "good_vocals": "the vocals sat perfectly",
+    "good_calm": "this stretch was right - nothing more was needed",
+    "good_level": "the level and balance are right",
     "good_plan": "the plan read right and happened as said",
     "good_other": "something else worked (say what)",
 }
@@ -1469,8 +1479,13 @@ class Director:
         if ref is None:
             return
         self._lay_rms = rms if getattr(self, "_lay_rms", None) is None else 0.9 * self._lay_rms + 0.1 * rms
-        want = max(1.0, min(2.0, ref / max(self._lay_rms, 1e-6)))
-        trim = cur_trim + 0.25 * (want - cur_trim)          # a slow walk, no pumping
+        # +4 dB at most; a planned quiet (a moment's take-away, a break) is not a reason to turn up
+        if getattr(self.rc, "_moment", None) is not None or getattr(self.rc, "_break", None) is not None:
+            return
+        want = max(1.0, min(1.6, ref / max(self._lay_rms, 1e-6)))
+        # up slowly, DOWN AT ONCE: a quiet stretch had walked the bus to x2 and the next full arrival came in
+        # 6 dB hot (flag 'seam' at -9.6 dBFS, 2026-09-13)
+        trim = cur_trim + 0.25 * (want - cur_trim) if want > cur_trim else want
         if abs(trim - cur_trim) > 0.02:
             self._loud_trim = trim
             self._apply_bus(self.rc.submix)
@@ -1713,10 +1728,10 @@ class Director:
                 # ONE mark for THE PLAN (decided once, so it stays put): the next event at its bar
                 pl = arr.get("plan")
                 if pl and not arr.get("landing_in_bars"):
-                    lanes_of = {"voice_in": ["other"], "bed_to": ["drums", "bass"], "voice_out": ["other", "vocals"]}
+                    lanes_of = {"voice_in": ["other"], "bed_to": ["drums", "bass"], "voice_out": ["other", "vocals"], "land": ["drums"]}
                     self.plan_marks.append({"bar": b + int(pl["in_bars"]), "end_bar": None, "lanes": lanes_of.get(pl["what"], list(LANES)), "ghost": True,
-                                            "text": f"{pl['title'][:18]} " + {"voice_in": "arrives as a voice", "bed_to": f"takes the bed ({pl.get('payoff') or 'by its phrases'})",
-                                                                              "voice_out": "fades out"}.get(pl["what"], pl["what"]),
+                                            "text": f"{pl['title'][:18]} " + {"voice_in": "arrives as a voice", "bed_to": f"takes the bed ({pl.get('payoff') or 'at the phrase'})",
+                                                                              "voice_out": "fades out", "land": "drums follow: the bed is its"}.get(pl["what"], pl["what"]),
                                             "kind": pl["what"]})
                     if pl["what"] == "voice_in":
                         plan_in = int(pl["in_bars"])
@@ -2214,7 +2229,9 @@ class Director:
                      "moment_arm": "a MOMENT is armed: it lands on the target song's drop or hook (else its next phrase); nothing else moves until it is done",
                      "moment": "a step of the armed MOMENT (take away, build, the hole, the one)",
                      "moment_cancel": "the moment was cancelled; everything came back on the bar",
-                     "plan": "the plan moved: a rule forced the next event to another bar (the text says why); plans are decided once and otherwise kept"}
+                     "plan": "the plan moved: a rule forced the next event to another bar (the text says why); plans are decided once and otherwise kept",
+                     "duck": "a voice's chords clash with the bed in the sections both are in now: it is held at half until they agree again",
+                     "unduck": "the sections agree again: the voice comes back up"}
             if last is not None:
                 why.append(f"last move - {last['text'][:70]}: {kinds.get(last['kind'], last['kind'])}")
             if rc.wait_why:

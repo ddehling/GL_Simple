@@ -94,9 +94,11 @@ after a moment. The intent line counts the lane moves of the last ten minutes.
 
 - **GOOD FLAG / BAD FLAG** - "this worked", or "this is not working", said for LATER. GOOD FLAG: that
   moment landed, a great transition, these songs sit well together, a good song choice, the energy building
-  right, the vocals sat perfectly, the plan read right, or a note. BAD FLAG: dead air, too busy, nothing
-  happening, a clash, a bad seam, a wrong song, the plan changed, off the beat, vocals wrong, the level, the
-  screen, or a note. Either way the whole room is written down with it: every song on a deck with its position, lanes and gains, the plan, the armed moment, the dials, the
+  right, the low end right, the vocals sat perfectly, this stretch was right as it was, the level right, the
+  plan read right, or a note. BAD FLAG: dead air, too busy, nothing happening, a clash, a bad seam, a wrong
+  song, the plan changed, off the beat, vocals wrong, the level, the low end, the energy, a song ran out, a
+  moment did not land, too long on one thing, UP NEXT ignored, a control did the wrong thing, the screen,
+  or a note. Either way the whole room is written down with it: every song on a deck with its position, lanes and gains, the plan, the armed moment, the dials, the
   bus level, the last moves. It is marked in the story row. **Nothing is learned and nothing moves.** BAD is
   the verdict that changes the music and the weights; FLAG is the message to the fix, and a good flag is a
   case to protect when a rule changes. Review them with `python tools/dj/dj_flags.py` (`--summary`,

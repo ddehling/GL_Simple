@@ -181,13 +181,30 @@ def find_hook(track, vocal_mono):
             "vocalness": (None if vocalness(best) is None else round(vocalness(best), 2))}
 
 
+def _body_start(track):
+    """Where the conductor opens a song (RemixConductor._body_start): the first groove with bass, else the
+    first section that is not an intro or outro."""
+    secs = track.sections or []
+    for s in secs:
+        if s.get("kind") == "groove" and s.get("bass_share", 0.3) >= 0.28:
+            return float(s["start_s"])
+    for s in secs:
+        if s.get("kind") not in ("intro", "outro"):
+            return float(s["start_s"])
+    return 0.0
+
+
 def measure_track(track, music_root):
-    """Both measurements for one track from its stems on disk; None when it has no stems."""
+    """The measurements for one track from its stems on disk - section chroma, the hook, and the per-stem
+    body levels (the same numbers the conductor measures when it mounts a song, so the library's median can
+    be the level reference); None when it has no stems."""
     from lib.dj.stems import stem_paths
+    from lib.dj.features import decode_file_stereo
     paths = stem_paths(music_root, track.id)
     if paths is None:
         return None
-    bass, other, vocals = _mono(paths["bass"]), _mono(paths["other"]), _mono(paths["vocals"])
+    stereo = {name: np.asarray(decode_file_stereo(paths[name]), dtype=np.float32) for name in ("drums", "bass", "other", "vocals")}
+    bass, other, vocals = (stereo[k].mean(axis=1) for k in ("bass", "other", "vocals"))
     n = min(len(bass), len(other), len(vocals))
     harmonic = (bass[:n] + other[:n] + vocals[:n]) / 3.0
     out = {"measure_v": MEASURE_V}
@@ -199,6 +216,12 @@ def measure_track(track, music_root):
         out["hook"] = find_hook(track, vocals[:n])
     except Exception as e:  # noqa: BLE001
         out["hook_error"] = f"{type(e).__name__}: {e}"
+    try:
+        from lib.dj.stemload import stem_levels
+        lv = stem_levels(stereo, _body_start(track), track.sections or [])
+        out["stem_rms"] = {k: round(float(lv.get(k, 0.0)), 5) for k in ("drums", "bass", "other", "vocals")}
+    except Exception as e:  # noqa: BLE001
+        out["stem_rms_error"] = f"{type(e).__name__}: {e}"
     return out
 
 
@@ -209,7 +232,7 @@ def measure_pass(db, music_root, progress_cb=None, force=False, only_ids=None):
     lib = [t for t in B.load_library(db) if not t.excluded and has_stems(music_root, t.id)]
     if only_ids:
         lib = [t for t in lib if t.id in set(only_ids)]
-    todo = [t for t in lib if force or int((t.axes or {}).get("measure_v") or 0) < MEASURE_V]
+    todo = [t for t in lib if force or int((t.axes or {}).get("measure_v") or 0) < MEASURE_V or "stem_rms" not in (t.axes or {})]
     done = errors = 0
     for i, t in enumerate(todo):
         if progress_cb:

@@ -387,6 +387,12 @@ def main():
                    and any(("loops its last" in x["text"] or "has looped long enough" in x["text"]) and x.get("from_id") == m["to_id"] and x["t"] <= m["t"]
                            for x in rc.move_log)]
     check(not bad_targets, f"WAY OUT: bed changes into a song looping its last bars: {len(bad_targets)} {bad_targets[:2]}")
+    # the vocal lane does not flap: a rest followed by a return within four bars is a flap
+    vt = [(m["t"], m["kind"]) for m in rc.move_log if m["kind"] in ("rest", "return") and m.get("lane") == "vocals"]
+    flaps = sum(1 for i in range(1, len(vt)) if vt[i - 1][1] == "rest" and vt[i][1] == "return" and vt[i][0] - vt[i - 1][0] < 4 * bars)
+    check(flaps <= 1, f"VOCAL LANE: {flaps} rest→return flaps under four bars ({len(vt)} vocal moves)")
+    ducks = [m["text"][:70] for m in rc.move_log if m["kind"] in ("duck", "unduck")]
+    print(f"  --   clash watch: {len(ducks)} duck/unduck" + (f" e.g. {ducks[0]}" if ducks else ""))
     recued = [n for n in rc.log if "cued to" in n and "landmark lands" in n]
     print(f"  --   staged songs re-cued for their arrival bar: {len(recued)}" + (f" e.g. {recued[0][:70]}" if recued else ""))
     plan_moves = sum(1 for m in rc.move_log if m["kind"] == "plan")
