@@ -1011,20 +1011,25 @@ class Director:
                 self.system.request_skip()
                 info["did"] = "moving on to the next song at the next phrase"
         if self.rc is not None:
-            m = self.rc.rate_last(up)
+            # a verdict is about the last move only while that move is fresh (two phrases); later, or with
+            # nothing to rate, a BAD means THIS STRETCH: it pushes the music on and blames no move (five BADs
+            # in a dead stretch once condemned the voice arrival, the bed change and a two-minute-old vocal rest)
+            phrase_s = self.rc.change_bars * 240.0 / max(self._bpm(), 60.0)
+            m = self.rc.rate_last(up, max_age_s=2 * phrase_s)
             if m is not None:
                 w = self.rc._w(m["kind"], m.get("lane"))
                 info["what"] = m["text"]
                 info["learn"] = f"moves of that kind ({m['kind'].replace('_', ' ')}{', ' + m['lane'] if m.get('lane') else ''}) now weigh {w:.2f} (0.50 = neutral): {'more' if up else 'less'} of them"
                 song_id = m.get("to_id") or m.get("from_id")
             else:
-                info["what"] = "nothing left to rate"
+                info["what"] = "this stretch (the last move is older than two phrases, so no move is blamed)" if not up else "nothing recent to rate"
             if tuned:
                 info["learn"] = tuned                 # the word moved a number: that is the lesson, not the weight
                 info["did"] = "the next one of that moment plays with the new number"
             elif not up and self.rc.master is not None:
+                self.rc._verdict_forced_until = time.time() + phrase_s   # the move this BAD makes is heard before it can be judged
                 self.rc.next_move()
-                info["did"] = "a different move on the next bar"
+                info["did"] = "a different move on the next bar" if m is not None else "this stretch is dead: a move now (unrateable until it has been heard)"
         tags = self._learn_song(song_id, up)
         if tags:
             info["learn"] = (info["learn"] or "") + f"; songs tagged {', '.join(tags)} are {'favoured' if up else 'held back'} for the next picks"
@@ -1599,34 +1604,26 @@ class Director:
                 for mk in mo.get("marks") or []:
                     self.plan_marks.append({"bar": int(L + mk["off"]), "end_bar": (int(L + mk["end_off"]) if mk.get("end_off") is not None else None),
                                             "lanes": mk["lanes"], "ghost": True, "kind": "moment", "text": mk["text"]})
+            plan_in = None
             try:
                 arr = rc._arrangement_status()
-                settle = int(((arr.get("bed") or {}).get("settle_left")) or 0)
                 if arr.get("landing_in_bars"):
-                    settle = max(settle, int(arr["landing_in_bars"]) + rc.change_bars)
                     self.plan_marks.append({"bar": b, "end_bar": b + int(arr["landing_in_bars"]), "lanes": ["drums", "bass"], "ghost": True,
                                             "text": "the new bed lands", "kind": "bed_to"})
-                bed = arr.get("bed") or {}
-                if bed and settle > 0 and not arr.get("landing_in_bars"):
-                    self.plan_marks.append({"bar": b + settle, "end_bar": None, "lanes": ["other"], "ghost": True,
-                                            "text": f"bed {bed['title'][:18]} settled: a voice may arrive", "kind": "voice_in"})
-                for v in arr.get("voices") or []:
-                    if v.get("leaving"):
-                        self.plan_marks.append({"bar": b + rc.change_bars, "end_bar": None, "lanes": [v["lane"]], "ghost": True,
-                                                "text": f"{v['title'][:18]} fades out", "kind": "voice_out"})
-                    elif v.get("drop_in_bars") is not None and not v.get("may_take_bed_in"):
-                        self.plan_marks.append({"bar": b + int(round(v["drop_in_bars"])), "end_bar": None, "lanes": ["drums", "bass"], "ghost": True,
-                                                "text": f"{v['title'][:18]} takes the bed at its {v.get('payoff') or 'drop'}", "kind": "bed_to"})
-                    elif v.get("may_take_bed_in"):
-                        self.plan_marks.append({"bar": b + int(v["may_take_bed_in"]), "end_bar": None, "lanes": ["drums", "bass"], "ghost": True,
-                                                "text": f"{v['title'][:18]} may take the bed (its {'hook or ' if v.get('hook') else ''}drop first)", "kind": "bed_to"})
-                    else:
-                        self.plan_marks.append({"bar": b + int(v.get("must_take_bed_in") or rc.change_bars), "end_bar": None, "lanes": ["drums", "bass"], "ghost": True,
-                                                "text": f"{v['title'][:18]} takes the bed by then", "kind": "bed_to"})
+                # ONE mark for THE PLAN (decided once, so it stays put): the next event at its bar
+                pl = arr.get("plan")
+                if pl and not arr.get("landing_in_bars"):
+                    lanes_of = {"voice_in": ["other"], "bed_to": ["drums", "bass"], "voice_out": ["other", "vocals"]}
+                    self.plan_marks.append({"bar": b + int(pl["in_bars"]), "end_bar": None, "lanes": lanes_of.get(pl["what"], list(LANES)), "ghost": True,
+                                            "text": f"{pl['title'][:18]} " + {"voice_in": "arrives as a voice", "bed_to": f"takes the bed ({pl.get('payoff') or 'by its phrases'})",
+                                                                              "voice_out": "fades out"}.get(pl["what"], pl["what"]),
+                                            "kind": pl["what"]})
+                    if pl["what"] == "voice_in":
+                        plan_in = int(pl["in_bars"])
             except Exception:
-                settle = 0
-            if settle > left:
-                left = left + rc.change_bars * ((settle - left + rc.change_bars - 1) // rc.change_bars)
+                pass
+            if plan_in is not None:
+                left = max(1, plan_in)
             staged = [(d, s) for d, s in rc.songs.items() if s.staged_at is not None and not s.entered and not s.leaving]
             if staged:
                 d, s = staged[0]
@@ -1943,38 +1940,40 @@ class Director:
                                   "duration_s": m.get("duration_s"), "bpm": st.get("master_bpm"), "camelot": st.get("key_centre")}
                 out["songs"] = [{"title": s.get("title"), "lanes": s.get("lanes"), "entered": s.get("entered")} for s in songs.values()]
                 staged = [s for s in songs.values() if not s.get("entered")]
+                plan = (st.get("arrangement") or {}).get("plan")
                 if staged:
-                    out["next"] = {"title": staged[0]["title"], "artist": staged[0].get("artist"),
-                                   "eta_s": max(0, (st.get("change_bars", 8) - 1 - st.get("phrase_bars", 0))) * 4 * 60.0 / max(st.get("master_bpm") or 120, 1),
-                                   "how": "in through one lane"}
+                    bar_s = 4 * 60.0 / max(st.get("master_bpm") or 120, 1)
+                    # the ETA counts to the PLAN's bar (decided once), not to the next phrase tick
+                    if plan and plan.get("what") == "voice_in":
+                        eta = max(0, plan["in_bars"]) * bar_s
+                        how = f"arrives as a voice: {plan['why']}"
+                    else:
+                        eta = None
+                        how = f"waits: the plan is {plan['words']} first" if plan else "in through one lane"
+                    out["next"] = {"title": (plan["title"] if plan and plan.get("what") == "voice_in" else staged[0]["title"]),
+                                   "artist": staged[0].get("artist"), "eta_s": eta, "how": how}
                 live = [s for s in songs.values() if s.get("entered")]
                 bits = [f"{len(live)} song{'s' if len(live) != 1 else ''} layered", f"a move every {st.get('change_bars')} bars",
                         "vocal lane free" if self.rc.vocal_freedom > 0.5 else "vocals cautious", f"energy {self.dials['energy']}"]
-                left = st.get("change_bars", 8) - 1 - st.get("phrase_bars", 0)
-                bits.append(f"next move in {max(0, left)} bars" + (" (held)" if st.get("hold") else ""))
-                # the arrangement's plan, in words: the bed and how long it has to settle, each voice and what it waits for
+                # THE PLAN in words: the one next event and its bar (decided once), then the bed and the voices
                 arr = st.get("arrangement") or {}
+                plan = arr.get("plan")
+                if arr.get("landing_in_bars") is not None:
+                    bits.append(f"a new bed lands in {arr['landing_in_bars']} bars")
+                elif plan:
+                    bits.append(f"next: {plan['words']} ({max(0, plan['in_bars'])} bars) - {plan['why']}" + (" (held)" if st.get("hold") else ""))
+                else:
+                    bits.append("nothing planned: the bed plays on" + (" (held)" if st.get("hold") else ""))
                 bed = arr.get("bed")
                 if bed:
                     b = f"bed: {bed['title'][:26]}"
                     if bed.get("since_bars") is not None:
                         b += f" for {bed['since_bars']} bars"
-                    if arr.get("landing_in_bars") is not None:
-                        b += f" (a new bed lands in {arr['landing_in_bars']} bars)"
-                    elif bed.get("settle_left"):
-                        b += f", settles {bed['settle_left']} more before a new voice"
-                    elif bed.get("kind") == "build":
+                    if bed.get("kind") == "build":
                         b += " (building to its drop)"
                     bits.append(b)
                 for v in arr.get("voices") or []:
-                    if v.get("leaving"):
-                        bits.append(f"{v['title'][:26]} fades out as a voice")
-                    elif v.get("may_take_bed_in"):
-                        bits.append(f"voice {v['title'][:26]}: heard {v['heard_bars']} bars, may take the bed in {v['may_take_bed_in']}")
-                    elif v.get("drop_in_bars") is not None:
-                        bits.append(f"voice {v['title'][:26]} takes the bed at its drop in ~{v['drop_in_bars']:.0f} bars")
-                    else:
-                        bits.append(f"voice {v['title'][:26]} takes the bed by {v['must_take_bed_in']} bars (no drop in sight)")
+                    bits.append(f"voice {v['title'][:26]}: heard {v['heard_bars']} bars" + (" (on its way out)" if v.get("leaving") else ""))
                 mo = st.get("moment")
                 if mo:
                     bits.insert(1, f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']}): the one in {mo['in_bars']} bars on {mo['what']}"
@@ -2111,7 +2110,8 @@ class Director:
                      "voice_out": "the old bed song, now only a voice, fades out; one song's journey is complete",
                      "moment_arm": "a MOMENT is armed: it lands on the target song's drop or hook (else its next phrase); nothing else moves until it is done",
                      "moment": "a step of the armed MOMENT (take away, build, the hole, the one)",
-                     "moment_cancel": "the moment was cancelled; everything came back on the bar"}
+                     "moment_cancel": "the moment was cancelled; everything came back on the bar",
+                     "plan": "the plan moved: a rule forced the next event to another bar (the text says why); plans are decided once and otherwise kept"}
             if last is not None:
                 why.append(f"last move - {last['text'][:70]}: {kinds.get(last['kind'], last['kind'])}")
             if rc.wait_why:

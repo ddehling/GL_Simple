@@ -219,6 +219,8 @@ class RemixConductor:
         self.calm_phrases = ARR_EVERY_PHRASES         # the arrangement moves at most once per this many phrases
         self._arr_k = None               # bar of the arrangement's last move
         self._calm_until = None          # no arrangement move before this bar (a phrase of plain play after a moment)
+        self.plan = None                 # THE PLAN: the one next arrangement event, decided once and kept (see _plan_check)
+        self._verdict_forced_until = 0.0 # moves made because of a BAD are not rateable until this wall time (hear them first)
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
@@ -814,7 +816,11 @@ class RemixConductor:
             {"at": at, "cmd": "start", "deck": deck},
         ])
         self.lanes = {s: (deck if s in open_lanes else None) for s in STEMS}
-        song.bed_since = self.bar_n
+        # the bed has been the bed since the SONG started playing, not since this open: a record handed over
+        # from the autoDJ two minutes in has settled two minutes already (user: "long chunks when very little
+        # is going on" - the first minute and a half of a layered set was the settle rule counting from zero)
+        played_bars = int((cue or 0.0) / max(self._bar_s(t, cue or 0.0), 1e-6)) if cue is not None else 0
+        song.bed_since = self.bar_n - played_bars
         self.brain.note_played(t)
         self._log_play(t)
         self._move("open", None, None, t.id, f"{t.title} opens on {'every lane' if len(open_lanes) == 4 else ', '.join(sorted(open_lanes)) or 'no lane'}: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
@@ -1010,12 +1016,23 @@ class RemixConductor:
             return                                    # a recall in progress owns the lanes
         if getattr(self, "policy", "arrangement") == "arrangement" and not self.hold:
             self._vocal_tick()
+            if getattr(self, "_plan_k", None) != self.bar_n:
+                self._plan_k = self.bar_n             # the plan is decided as soon as there is something to decide, once a bar
+                try:
+                    self._plan_check(self._next_bar_clock())
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"plan: {type(e).__name__}: {e}"
         self._auto_break()
-        # a move is PLANNED a bar early (shapes need the bar) and lands on the phrase boundary
+        # a move is PLANNED a bar early (shapes need the bar) and lands on the phrase boundary - or on the
+        # PLAN's own bar (an arrival or a fade-out decided for a bar inside the phrase is made due there)
         due = self.phrase_bars >= self.change_bars - 1
+        p = self.plan
+        if p is not None and p["what"] != "bed_to" and self.bar_n >= p["bar"] - 1 and not self.hold and self.auto > 0.0:
+            due = True
         if self._force_move:
             self._force_move = False
             self.phrase_bars = 0
+            self.plan = None                          # NEXT: whatever was planned gives way to a move now
             self._forced = True                       # NEXT: the arrangement's waits are waived for this move
             try:
                 self._one_move(self._next_bar_clock())
@@ -1277,12 +1294,18 @@ class RemixConductor:
                     self.songs[old].was_bed, self.songs[old].voice_since, self.songs[old].bed_since = True, bar, None
                 self._move("bed_to", "drums", self._song_id(old), self._song_id(d), f"the drums of {self.songs[d].track.title} follow: the bed is its", shape=tag)
                 return tag
-        # CALM between moments (user: "busy"): with the bed whole, the arrangement moves at most once per
-        # `calm_phrases` phrases and not within a phrase after a moment; NEXT (forced) and an empty bed lane
-        # (housekeeping below) are exempt
+        # THE PLAN: the one next event, decided once (calm and the settle baked into its bar) and kept until it
+        # is done or a rule moves it (logged) - the countdown the operator sees counts to THIS bar
         forced = getattr(self, "_forced", False)
+        if not forced:
+            self._plan_check(at)
+        p = self.plan
+        # CALM between moments (user: "busy"): with the bed whole, the arrangement moves at most once per
+        # `calm_phrases` phrases and not within a phrase after a moment; NEXT (forced), the plan's own bar
+        # and an empty bed lane (housekeeping below) are exempt
         bed_whole = bed is not None and self.lanes.get("bass") is not None
-        if not forced and bed_whole:
+        plan_due = p is not None and p["bar"] - (bar + 1) <= (self.change_bars - 1 if p["what"] == "bed_to" else 0)
+        if not forced and bed_whole and not plan_due:
             if self._calm_until is not None and bar < self._calm_until:
                 self.wait_why = f"a phrase of plain play after the moment ({self._calm_until - bar} bars)"
                 return None
@@ -1319,12 +1342,13 @@ class RemixConductor:
                 tag = self._cross(ln, bed, at)
                 self._move("return", ln, None, self._song_id(bed), f"{ln} returns on {self.songs[bed].track.title} (the bed is whole again)", shape=tag)
                 return tag
-        # 1. the old bed song, now only a voice, leaves after a phrase
+        # 1. the old bed song, now only a voice, leaves after a phrase - on the plan's bar
         for d in list(voices):
             s = self.songs[d]
             if s.voice_since is None:
                 s.voice_since = bar                   # a lane came to it outside the policy (an evict, a recall, your grid)
-            if getattr(s, "was_bed", False) and bar - s.voice_since >= self.change_bars:
+            planned_out = p is not None and p["what"] == "voice_out" and p["deck"] == d
+            if getattr(s, "was_bed", False) and bar - s.voice_since >= self.change_bars and (forced or p is None or (planned_out and bar + 1 >= p["bar"])):
                 tag = None
                 for ln in ("other", "vocals"):
                     if self.lanes.get(ln) == d:
@@ -1337,7 +1361,6 @@ class RemixConductor:
         #    VOICE_MAX_PHRASES regardless, at once when the bed is running out
         bed_s = self.songs.get(bed) if bed is not None else None
         bed_kind = self._kind_at(bed, at) if bed is not None else None
-        forced = bool(getattr(self, "_forced", False))          # NEXT pressed: no settling, no waiting for a payoff
         bed_out = bed_s is not None and (bed_s.loop is not None or bed_kind == "outro") or forced
         for d in sorted(voices, key=lambda x: getattr(self.songs[x], "voice_since", 0)):
             s = self.songs[d]
@@ -1346,8 +1369,9 @@ class RemixConductor:
             heard = bar - (s.voice_since if s.voice_since is not None else bar)
             if heard < (1 if forced else VOICE_PHRASES) * self.change_bars:
                 continue
+            planned = p is not None and p["deck"] == d and p["what"] in ("bed_to", "voice_out")
             if not self._lane_ok(d, "bass", at):
-                if heard >= VOICE_MAX_PHRASES * self.change_bars:
+                if heard >= VOICE_MAX_PHRASES * self.change_bars or (planned and p["what"] == "voice_out" and bar + 1 >= p["bar"]):
                     # it has had its phrases and can never take the bed (its bass clashes with the room):
                     # it fades out as a voice so the next song can come
                     tag = None
@@ -1358,26 +1382,43 @@ class RemixConductor:
                     s.was_bed = True
                     self._move("voice_out", None, s.track.id, self._song_id(bed), f"{s.track.title} fades out as a voice (its bass would clash with the room)", shape=tag)
                     return tag
+                if planned and p["what"] == "bed_to":
+                    self._plan_move("voice_out", d, max(bar + 1, (s.voice_since or bar) + VOICE_MAX_PHRASES * self.change_bars),
+                                    "its bass would clash with the room: it fades out instead of taking the bed")
                 self.wait_why = f"{s.track.title[:28]}'s bass would clash with the room: it stays a voice"
                 continue
-            d_bars, what = self._payoff_in_bars(d, at, self.change_bars)
-            if d_bars is None and heard < VOICE_MAX_PHRASES * self.change_bars and not bed_out:
-                self.wait_why = f"{s.track.title[:28]} waits for its {'hook or drop' if s.track.hook else 'drop'} before it takes the bed"
+            if forced or p is None:
+                d_bars, what = self._payoff_in_bars(d, at, self.change_bars)
+                return self._bed_to(d, at, d_bars, what or "drop")
+            if not planned or p["what"] != "bed_to":
+                self.wait_why = f"{s.track.title[:28]} is heard; the plan is {self._plan_words()} first"
                 continue
-            return self._bed_to(d, at, d_bars, what or "drop")
-        # 3. a staged song arrives as a voice over the bed - once the bed has SETTLED (heard as itself for
-        #    SETTLE_PHRASES), never while the bed is building to its drop; a breakdown of the bed or a bed
-        #    running out opens the door early
+            left = p["bar"] - (bar + 1)
+            if left > self.change_bars - 1 and not bed_out:
+                self.wait_why = f"{s.track.title[:28]} takes the bed at bar {p['bar']} ({left} bars): {p['why']}"
+                continue
+            return self._bed_to(d, at, max(0, left), p.get("payoff") or "drop")
+        # 3. a staged song arrives as a voice over the bed - on the PLAN's bar (the settle, the calm and the
+        #    bed's build already in it); a breakdown of the bed or a bed running out opens the door early
         waiting = [d for d in live if not self.songs[d].entered and (self.songs[d].ready_k is None or bar + 1 >= self.songs[d].ready_k)]
-        if waiting and len(voices) < max_voices and bed_s is not None:
-            since = bar - bed_s.bed_since if bed_s.bed_since is not None else 10 ** 6
-            settle_left = SETTLE_PHRASES * self.change_bars - since
-            if bed_kind == "build" and not bed_out:
-                self.wait_why = f"{bed_s.track.title[:28]} is building to its drop: nothing arrives on top of it"
+        if waiting and len(voices) < max_voices and bed_s is not None and not forced:
+            planned_in = p is not None and p["what"] == "voice_in" and p["deck"] in waiting
+            if not planned_in:
+                self.wait_why = f"{self.songs[waiting[0]].track.title[:28]} is ready; the plan is {self._plan_words()} first" if p is not None else self.wait_why
                 waiting = []
-            elif settle_left > 0 and not bed_out and bed_kind != "breakdown":
-                self.wait_why = f"the bed settles {settle_left} more bars before the next song arrives"
-                waiting = []
+            else:
+                waiting = [p["deck"]]
+                left = p["bar"] - (bar + 1)
+                if left > 0 and not bed_out and bed_kind != "breakdown":
+                    self.wait_why = f"{self.songs[p['deck']].track.title[:28]} arrives at bar {p['bar']} ({left} bars): {p['why']}"
+                    waiting = []
+                elif bed_kind == "build" and not bed_out:
+                    # the plan reckoned without this build (a section map can be off): it moves once to the build's end
+                    t_now = self._song_time_at(bed, at)
+                    sec = bed_s.track.section_at(t_now) or {}
+                    end_bars = int(math.ceil((float(sec.get("end_s", t_now)) - t_now) / max(self._bar_s(bed_s.track, t_now), 1e-6))) if sec else self.change_bars
+                    self._plan_move("voice_in", p["deck"], bar + 1 + max(1, end_bars), f"{bed_s.track.title[:24]} is building to its drop: nothing arrives on top of it")
+                    waiting = []
         if waiting and len(voices) < max_voices:
             d = waiting[0]
             s = self.songs[d]
@@ -1408,6 +1449,99 @@ class RemixConductor:
         # (no random rests: "too busy, and too happy to have large sections of vocal rest" - user 2026-09-12;
         #  a phrase with nothing to do is a phrase of music)
         return None
+
+    # -- THE PLAN: one next arrangement event, decided once and kept ----------------------------------------------
+    # "the system seems unable to make up its mind when planning. it keeps changing the length of how long
+    # something will play" (user 2026-09-13): every countdown was recomputed each tick from the state. Now the
+    # next event - a voice arriving, a voice taking the bed, the old bed fading out - is decided ONCE, with the
+    # settle, the calm and the song's own payoff in its bar, and kept until it is done; a rule that must move
+    # it says so in the story (`plan` moves).
+    def _plan_words(self, p=None):
+        p = p or self.plan
+        if p is None:
+            return "nothing"
+        s = self.songs.get(p["deck"])
+        title = s.track.title[:24] if s else "?"
+        return {"voice_in": f"{title} arriving as a voice", "bed_to": f"{title} taking the bed",
+                "voice_out": f"{title} fading out"}.get(p["what"], p["what"]) + f" at bar {p['bar']}"
+
+    def _plan_set(self, what, deck, bar, why, payoff=None):
+        self.plan = {"what": what, "deck": deck, "bar": int(bar), "why": why, "payoff": payoff, "set_k": self.bar_n, "moved": 0}
+        self._note(f"plan: {self._plan_words()} ({int(bar) - self.bar_n} bars): {why}")
+
+    def _plan_move(self, what, deck, bar, why):
+        p = self.plan
+        if p is None:
+            return self._plan_set(what, deck, bar, why)
+        p.update({"what": what, "deck": deck, "bar": int(bar), "why": why, "moved": p.get("moved", 0) + 1})
+        self._move("plan", None, None, self._song_id(deck), f"plan moved: {self._plan_words()} - {why}")
+
+    def _plan_check(self, at):
+        """Keep the plan while its subject stands; when there is none, decide the next event once."""
+        bar = self.bar_n
+        bed = self._bed_deck()
+        p = self.plan
+        if p is not None:
+            s = self.songs.get(p["deck"])
+            stale = (s is None or s.leaving
+                     or (p["what"] == "voice_in" and s.entered)
+                     or (p["what"] == "bed_to" and p["deck"] == bed)
+                     or (p["what"] in ("bed_to", "voice_out") and not s.held(self.lanes)))
+            if not stale:
+                return
+            self.plan = None
+        earliest = bar + 1
+        if self.calm_phrases > 1 and self._arr_k is not None:
+            earliest = max(earliest, self._arr_k + self.calm_phrases * self.change_bars)
+        if self._calm_until is not None:
+            earliest = max(earliest, self._calm_until)
+        voices = {d for ln in ("other", "vocals") for d in [self.lanes.get(ln)] if d is not None and d != bed and d in self.songs and not self.songs[d].leaving}
+        bar_c = self._bar_clock()
+        # (a) the old bed, now a voice, fades out a phrase after it became one
+        for d in sorted(voices, key=lambda x: self.songs[x].voice_since or 0):
+            s = self.songs[d]
+            if s.was_bed:
+                self._plan_set("voice_out", d, max(earliest, (s.voice_since if s.voice_since is not None else bar) + self.change_bars),
+                               "the old bed fades out as a voice")
+                return
+        # (b) a voice takes the bed: at its payoff once it has had its phrases, else by its limit
+        for d in sorted(voices, key=lambda x: self.songs[x].voice_since or 0):
+            s = self.songs[d]
+            if d == self._drums_follow:
+                continue
+            since = s.voice_since if s.voice_since is not None else bar
+            first = max(earliest, since + VOICE_PHRASES * self.change_bars)
+            last = max(first, since + VOICE_MAX_PHRASES * self.change_bars)
+            at_first = at + max(0, first - (bar + 1)) * bar_c
+            pay, what = self._payoff_in_bars(d, at_first, max(1, last - first))
+            if not self._lane_ok(d, "bass", at):
+                self._plan_set("voice_out", d, last, "its bass would clash with the room: it fades out instead of taking the bed")
+            elif pay is not None:
+                self._plan_set("bed_to", d, first + int(round(pay)), f"at its {what}", payoff=what)
+            else:
+                self._plan_set("bed_to", d, last, f"by its phrases ({'no hook or drop' if s.track.hook else 'no drop'} in sight)", payoff=None)
+            return
+        # (c) a staged song arrives as a voice once the bed has settled (and the song is ready)
+        max_voices = 2 if self.blend >= 0.5 else 1
+        bed_s = self.songs.get(bed) if bed is not None else None
+        waiting = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None and not s.entered]
+        if waiting and len(voices) < max_voices and bed_s is not None:
+            d = waiting[0]
+            s = self.songs[d]
+            since = bed_s.bed_since if bed_s.bed_since is not None else bar
+            A = max(earliest, since + SETTLE_PHRASES * self.change_bars, s.ready_k if s.ready_k is not None else 0)
+            why = "once the bed has settled" if A > bar + 1 else "the bed has settled"
+            kind_now = self._kind_at(bed, at)
+            if bed_s.loop is not None or kind_now in ("outro", "breakdown"):
+                A, why = earliest, ("the bed is running out" if kind_now == "outro" or bed_s.loop is not None else "the bed is in a breakdown: room for a voice")
+            else:
+                # never on top of the bed's build: if the bar falls in one, the plan takes the build's end
+                t_A = self._song_time_at(bed, at + (A - bar - 1) * bar_c)
+                sec = bed_s.track.section_at(t_A) or {}
+                if sec.get("kind") == "build":
+                    A += int(math.ceil((float(sec.get("end_s", t_A)) - t_A) / max(self._bar_s(bed_s.track, t_A), 1e-6)))
+                    why = f"after {bed_s.track.title[:20]}'s build"
+            self._plan_set("voice_in", d, A, why)
 
     def _vocal_tick(self):
         """Every bar, the vocal lane follows the singing: it rests when the song on it falls silent for the
@@ -1440,8 +1574,9 @@ class RemixConductor:
         if getattr(self, "policy", "arrangement") == "arrangement":
             n0 = len(self.move_log)
             tag = self._arrangement_move(at)
-            if len(self.move_log) > n0:
+            if any(m["kind"] != "plan" for m in self.move_log[n0:]):
                 self._arr_k = self.bar_n
+                self.plan = None                      # done (or overtaken): the next event is decided on the next step
             return tag
         live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
         # a staged song comes in through one lane - on the move its landmark was cued for (or any later one),
@@ -2185,6 +2320,7 @@ class RemixConductor:
 
     def _moment_end(self, m):
         self._moment = None
+        self.plan = None                              # the room changed: the next event is decided afresh
         self.phrase_bars = 0                          # a phrase of plain play before the arrangement moves again
         self._calm_until = self.bar_n + self.change_bars
         self._drop_k = self.bar_n                     # a peak: the auto break keeps its distance
@@ -2434,6 +2570,7 @@ class RemixConductor:
                 s.bed_since, s.was_bed, s.voice_since = self.bar_n, False, None
             elif s.entered and not s.leaving:
                 s.was_bed, s.voice_since, s.bed_since = True, self.bar_n, None
+        self.plan = None
         self._move("drop", None, None, self._song_id(newest), f"DROP: every lane to {self.songs[newest].track.title}")
         return True
 
@@ -2715,12 +2852,19 @@ class RemixConductor:
             self.move_w[key] = (u + 1.0) / (n + 2.0)
         self.n_verdicts = len(rows)
 
-    def rate_last(self, up):
+    def rate_last(self, up, max_age_s=None):
         """GOOD / BAD on the last rated kind of move (an entry, a cross, a rest, a return, a drop, a break).
         Stored as seam_feedback style 'remix:<kind>:<lane>' between the songs involved; the running
-        weights update at once and every later conductor starts from the record."""
+        weights update at once and every later conductor starts from the record. `max_age_s`: a move older
+        than this is not what the verdict is about (a BAD in a dead stretch condemned a vocal rest from two
+        minutes earlier); a move made because of a BAD is not rateable until it has been heard."""
+        now = time.time()
         for m in reversed(self.move_log):
             if m["kind"] in RATED_KINDS and m.get("fb") is None:
+                if m.get("unrateable_until", 0.0) > now:
+                    continue
+                if max_age_s is not None and now - m["t"] > max_age_s:
+                    return None
                 break
         else:
             return None
@@ -2828,7 +2972,13 @@ class RemixConductor:
         """The arrangement in words and numbers: who is the bed and for how long, who is a voice and what
         it waits for, what is in flight, and why the last phrase passed without a move."""
         now = time.time()
-        out = {"bed": None, "voices": [], "landing_in_bars": None, "wait_why": self.wait_why,
+        p = self.plan
+        plan = None
+        if p is not None:
+            ps = self.songs.get(p["deck"])
+            plan = {"what": p["what"], "title": ps.track.title if ps else "?", "bar": p["bar"], "in_bars": p["bar"] - self.bar_n,
+                    "why": p["why"], "payoff": p.get("payoff"), "moved": p.get("moved", 0), "words": self._plan_words(p)}
+        out = {"bed": None, "voices": [], "landing_in_bars": None, "wait_why": self.wait_why, "plan": plan,
                "settle_phrases": SETTLE_PHRASES, "voice_phrases": VOICE_PHRASES, "strip": bool(self.strip_before_bed),
                "calm_phrases": self.calm_phrases,
                # the measure of "busy": lane moves in the last ten minutes (entries, crosses, rests, returns, bed changes)
@@ -2922,6 +3072,8 @@ class RemixConductor:
         self.move_log.append({"id": self._move_seq, "t": time.time(), "clock_s": self._tel().get("clock_s"), "kind": kind,
                               "lane": lane, "from_id": from_id, "to_id": to_id, "text": msg, "fb": None, "shape": shape,
                               "hms": time.strftime("%H:%M:%S")})
+        if getattr(self, "_verdict_forced_until", 0.0) > time.time():
+            self.move_log[-1]["unrateable_until"] = self._verdict_forced_until   # a BAD made this move: hear it before judging it
         if len(self.moves) > 200:
             del self.moves[:-200]
             del self.move_log[:-200]

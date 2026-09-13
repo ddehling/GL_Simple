@@ -61,7 +61,7 @@ def main():
     next(gen)
     gen.send(256)
 
-    audio, errs, guard_viol, live_hist, lane_hist, tel_hist = [], {}, 0, [], [], []
+    audio, errs, guard_viol, live_hist, lane_hist, tel_hist, plan_hist = [], {}, 0, [], [], [], []
     hyg = {"vocal_blocks": 0, "vocal_silent": 0, "carve_blocks": 0, "carve_open": 0}
     block = 4410
 
@@ -94,6 +94,7 @@ def main():
                     if a.track.camelot and b.track.camelot and _compat(a.key(), b.key()) < CLASH_BELOW - 1e-9:
                         guard_viol += 1
             live_hist.append(len([s for s in rc.songs.values() if s.entered and not s.leaving]))
+            plan_hist.append((id(rc.plan), rc.plan["what"], rc.plan["deck"], rc.plan["bar"]) if rc.plan else None)
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
             if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
                 tel_hist.append((len(audio), rc.master, {d: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
@@ -372,6 +373,18 @@ def main():
     crosses = [m for _, m in rc.moves if any(k in m for k in ("crosses", "enters through", "rests", "returns",
                                                               "arrives as a voice", "the bed passes", "fades out as a voice"))]
     check(max(live_hist or [0]) >= 2, f"songs live at once: max {max(live_hist or [0])}")
+    # THE PLAN makes up its mind: a plan's bar changes only through a logged plan move; plans are few and kept
+    plans, bar_changes = 0, 0
+    prev = None
+    for ph in plan_hist:
+        if ph is not None and (prev is None or ph[0] != prev[0]):
+            plans += 1
+        elif ph is not None and prev is not None and ph[0] == prev[0] and ph[3] != prev[3]:
+            bar_changes += 1
+        prev = ph
+    plan_moves = sum(1 for m in rc.move_log if m["kind"] == "plan")
+    check(plans >= 2 and bar_changes <= plan_moves and plan_moves <= max(2, plans // 2),
+          f"PLAN: {plans} plans decided, {bar_changes} bar changes, {plan_moves} logged plan moves (every change is logged, few plans move)")
     check(len(crosses) >= 6, f"lane moves: {len(crosses)} ({len(rc.moves)} moves in all)")
     frac_multi = float(np.mean([1.0 if n >= 2 else 0.0 for n in live_hist])) if live_hist else 0.0
     # the arrangement lets a new bed settle four phrases alone and waits out a bed's build: at four-bar phrases

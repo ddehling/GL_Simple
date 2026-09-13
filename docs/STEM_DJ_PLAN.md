@@ -718,6 +718,29 @@ length; the state line shows it for three minutes). (6) Refusal statistics: `mom
 refused by reason key) in status and each moment button's tooltip, refusals logged. Gate: WORDS, CHOSEN SONG
 refused and counted, CALM (≤ one arrangement move per two phrases over six). Not run yet: the user was live.
 
+**2026-09-13 morning - "the system just seems unable to make up its mind when planning. it keeps changing
+the length of how long something will play. also it has long chunks of time when very little is going on. I
+just slammed bad several times during one".** The log (session 670b43): 86 s of one song alone after the
+handover (the settle counted from zero although the record had played two minutes), a voice waiting 40 s
+for its payoff, then five BADs in six seconds that landed on the voice arrival, on the takeover the first BAD
+had just forced, on a two-minute-old vocal rest, then on nothing - teaching LESS of exactly what was wanted.
+Every countdown was recomputed each tick (the next-move ETA reached zero, calm said wait, it jumped back to
+8; the staged ghost moved with it; a voice flipped between "at its drop in N" and "may take the bed in M").
+Built: (1) THE PLAN - `RemixConductor.plan`, one next event {what: voice_in | bed_to | voice_out, deck, bar,
+why, payoff}, decided ONCE in `_plan_check` (called once a bar and at every arrangement tick) with the calm,
+the settle, the song's readiness and its payoff search (from the first allowed bar to the limit) baked into
+the bar, the bed's build skipped at decision time; kept until done or stale; `_arrangement_move` executes ON
+that bar (the step makes the plan's bar due even inside a phrase; bed_to within the phrase before it via
+`_bed_to`'s landing) and moves it only through `_plan_move`, which logs a `plan` move ("plan moved: … - why");
+NEXT/forced, DROP, a moment's end clear it. Status: `arrangement.plan` with words; the Director's intent line
+starts with "next: … at bar K (N bars) - why", the layered NEXT ETA counts to the plan's bar, the picture
+draws ONE ghost mark at it. (2) BAD semantics: `rate_last(up, max_age_s)` - a verdict is about the last move
+only within two phrases; later or with nothing to rate a BAD is about THIS STRETCH (pushes on, blames no
+move); moves made because of a BAD carry `unrateable_until` (a phrase) so the correction is heard before it
+can be judged. (3) The handover backdates `bed_since` by the bars the record had already played (`_open_first`
+from the cue), so layering the playing song does not restart the settle. Gate: PLAN (plans decided ≥ 2, every
+bar change logged as a plan move, few plans move). Not run: the user was live.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

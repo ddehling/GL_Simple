@@ -92,6 +92,14 @@ see the same countdown and can cancel or replace it. Refusals say why on the lin
 Between moments the arrangement is calm: at most one lane move per two phrases and none within a phrase
 after a moment. The intent line counts the lane moves of the last ten minutes.
 
+**The plan is decided once.** Layered, the intent line begins with the one next event and its bar - "next:
+Grandma Dance arriving as a voice at bar 120 (14 bars) - once the bed has settled" - and the picture shows
+one ghost mark there. That bar does not drift: it moves only when a rule forces it (the bed turns out to be
+building, a voice's bass clashes), and then the story row says "plan moved" and why. NEXT and a BAD in a
+dead stretch overrule it. A BAD is about the last move only while that move is fresh (two phrases); later it
+means "this stretch": it pushes the music on and blames no move, and the move it causes cannot be rated
+until it has been heard.
+
 ## Steering the songs (left column)
 
 The **SONGS** list is the pool ranked by fit to what is playing, or, once you have queued something, to the
