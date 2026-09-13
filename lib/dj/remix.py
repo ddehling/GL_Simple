@@ -52,7 +52,9 @@ Learning: GOOD / BAD on the last move is stored (seam_feedback, style
 kinds of move you dislike happen less, kinds you like happen more, with a
 Laplace prior so a handful of verdicts nudges and does not dictate.
 """
+import json
 import math
+import os
 import random
 import threading
 import time
@@ -116,6 +118,17 @@ MOMENT_TIGHTEN = False           # the BREAK's build may tighten the bed's loop 
                                  # user heard the first live BREAK as "painful in its execution"; a stutter build stays rejected
 MOMENT_SWEEP = False             # ...or high-pass sweep the whole bed deck over the build - OFF for the same reason (it thins the
                                  # melody and vocal too); the build is the drums back thin, their lows returning (the deck's low shelf)
+# the ear's five words on a moment (BAD on a moment asks which) and the ONE number each word moves - see tune_moment
+MOMENT_WORDS = {"hole": "the hole was too long", "thin": "it sounded thin", "long": "it went on too long",
+                "beat": "the return was off the beat", "place": "it landed in the wrong place"}
+MOMENT_TUNE_DEFAULT = {
+    "slam": {"hole_beats": 1.0, "out_bars": 2, "boost": MOMENT_BOOST, "payoff_only": False},
+    "break": {"hole_beats": 2.0, "take_bars": 8, "build_low": LOW_CARVE, "boost": MOMENT_BOOST, "payoff_only": False},
+    "sing": {"out_bars": 2, "boost": MOMENT_BOOST, "payoff_only": False},
+    "takeover": {"hole_beats": 1.0, "boost": MOMENT_BOOST, "payoff_only": False},
+    "bridge": {"hole_beats": 1.0, "fade_bars": 4, "boost": MOMENT_BOOST, "payoff_only": False},
+}
+ARR_EVERY_PHRASES = 1            # the arrangement moves at most once per this many phrases (the Director asks for 2: calm between moments)
 
 
 def _compat(c1, c2):
@@ -201,6 +214,11 @@ class RemixConductor:
         self.lane_boost = {}             # lane -> (gain multiplier, until bar): a tactical "loud" on a lane, then back to its trim
         self._drums_follow = None        # deck whose drums complete a bass-first bed change when _land_k comes
         self._moment = None              # a composed MOMENT armed or running (see arm_moment); the arrangement pauses meanwhile
+        self.moment_tune = self._load_moment_tune()   # per kind: the numbers the ear's words have moved (persisted per library)
+        self.moment_stats = {}           # kind -> {"armed": n, "refused": {reason: n}}: how often each moment could be used
+        self.calm_phrases = ARR_EVERY_PHRASES         # the arrangement moves at most once per this many phrases
+        self._arr_k = None               # bar of the arrangement's last move
+        self._calm_until = None          # no arrangement move before this bar (a phrase of plain play after a moment)
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
@@ -1259,6 +1277,18 @@ class RemixConductor:
                     self.songs[old].was_bed, self.songs[old].voice_since, self.songs[old].bed_since = True, bar, None
                 self._move("bed_to", "drums", self._song_id(old), self._song_id(d), f"the drums of {self.songs[d].track.title} follow: the bed is its", shape=tag)
                 return tag
+        # CALM between moments (user: "busy"): with the bed whole, the arrangement moves at most once per
+        # `calm_phrases` phrases and not within a phrase after a moment; NEXT (forced) and an empty bed lane
+        # (housekeeping below) are exempt
+        forced = getattr(self, "_forced", False)
+        bed_whole = bed is not None and self.lanes.get("bass") is not None
+        if not forced and bed_whole:
+            if self._calm_until is not None and bar < self._calm_until:
+                self.wait_why = f"a phrase of plain play after the moment ({self._calm_until - bar} bars)"
+                return None
+            if self.calm_phrases > 1 and self._arr_k is not None and bar - self._arr_k < self.calm_phrases * self.change_bars:
+                self.wait_why = f"calm: one move every {self.calm_phrases} phrases ({self.calm_phrases * self.change_bars - (bar - self._arr_k)} bars to the next)"
+                return None
         # 0. housekeeping first. THE BED IS NEVER EMPTY: a drums or bass lane left with nobody (a break whose
         #    song left before it ended, an eviction with no target, a landing that never came - the user heard
         #    "the bass track empty for minutes") goes back to the bed song at once, or to the song holding most
@@ -1408,7 +1438,11 @@ class RemixConductor:
 
     def _one_move_inner(self, at):
         if getattr(self, "policy", "arrangement") == "arrangement":
-            return self._arrangement_move(at)
+            n0 = len(self.move_log)
+            tag = self._arrangement_move(at)
+            if len(self.move_log) > n0:
+                self._arr_k = self.bar_n
+            return tag
         live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
         # a staged song comes in through one lane - on the move its landmark was cued for (or any later one),
         # and only while fewer songs are heard than the cap (the blend dial: two, or three)
@@ -1714,14 +1748,42 @@ class RemixConductor:
                 cand = d
         return int(round(max(min_bars, cand)))
 
-    def arm_moment(self, kind, auto=False):
+    @staticmethod
+    def _refusal_key(msg):
+        for key in ("key clash", "chords clash", "no hook", "not singing", "no second song", "still decoding", "no vocal on a lane",
+                    "nothing would be left", "not measured", "silent there", "no drop or hook", "neither drums nor bass", "not on the lane"):
+            if key in msg:
+                return key
+        return msg[:40]
+
+    def arm_moment(self, kind, auto=False, other=None):
         """Arm a composed moment: choose where it lands and count down. Pressing the same moment again while
-        it is armed = go now (the script starts on the next bar). Returns (ok, sentence)."""
+        it is armed = go now (the script starts on the next bar). `other`: the deck of the second song for
+        TAKEOVER / BRIDGE (else the newest voice or a staged song). Every arm and every refusal is counted
+        per kind (moment_stats) so an unusable moment shows itself. Returns (ok, sentence)."""
+        ok, msg = self._arm_moment_inner(kind, auto, other)
+        if kind in MOMENTS:
+            st = self.moment_stats.setdefault(kind, {"armed": 0, "refused": {}})
+            if ok:
+                st["armed"] += 1
+            else:
+                key = self._refusal_key(msg)
+                st["refused"][key] = st["refused"].get(key, 0) + 1
+                try:
+                    from lib.dj.session import log_row
+                    log_row({"event": "moment_refused", "kind": kind, "auto": bool(auto), "why": msg[:120]})
+                except Exception:
+                    pass
+        return ok, msg
+
+    def _arm_moment_inner(self, kind, auto, other):
         if kind not in MOMENTS:
             return False, "no such moment"
         if self.master is None:
             return False, "no clock"
-        label, lead, _desc = MOMENTS[kind]
+        label = MOMENTS[kind][0]
+        lead = self._moment_lead(kind)
+        tune = self.moment_tune.get(kind, {})
         if self._moment is not None:
             if self._moment["kind"] == kind and not self._moment["started"]:
                 return self.moment_go()
@@ -1750,7 +1812,10 @@ class RemixConductor:
                 return False, f"no hook of {self.songs[S].track.title[:24]} within {MOMENT_LOOK_PHRASES} phrases"
             T, what = S, "hook"
         if kind in ("takeover", "bridge"):
-            V = self._second_song(B)
+            V = other if (other in self.songs and other != B and not self.songs[other].leaving and self.songs[other].staged_at is not None) else None
+            if V is None and other is not None:
+                return False, "that song is not ready on a deck" if other in self.songs else "that song is not on a deck"
+            V = V or self._second_song(B)
             if V is None:
                 return False, "no second song on a deck (put one UP NEXT)"
             why = self.why_not("bass", V)
@@ -1764,11 +1829,13 @@ class RemixConductor:
             T = V
         # the landing: the target song's drop or hook within four phrases, else its next phrase far enough away
         if kind == "sing":
-            L = self.bar_n + 1 + int(round(hb)) + 2
+            L = self.bar_n + 1 + int(round(hb)) + int(tune.get("out_bars", 2))   # the bed out at the hook, back `out_bars` later
         else:
             pay, what = self._payoff_in_bars(T, at, MOMENT_LOOK_PHRASES * self.change_bars)
             if pay is not None and pay >= lead - 0.05:
                 L = self.bar_n + 1 + int(round(pay))
+            elif tune.get("payoff_only"):
+                return False, f"no drop or hook of {self.songs[T].track.title[:24]} far enough ahead (this moment lands only on one now)"
             else:
                 L = self.bar_n + 1 + self._phrase_ahead(T, at, lead)
                 what = "the phrase"
@@ -1776,7 +1843,7 @@ class RemixConductor:
         if kind == "break":
             # the melody or vocal left alone must actually sound through the take-away (measured from its stem)
             stays = [ln for ln in ("other", "vocals") if ln in held]
-            lvs = [self._stem_level_span(held[ln], ln, at_L - 16 * bar_c, at_L - 8 * bar_c) for ln in stays]
+            lvs = [self._stem_level_span(held[ln], ln, at_L - lead * bar_c, at_L - 8 * bar_c) for ln in stays]
             if not any(lv is not None for lv in lvs):
                 return False, "the melody's level there is not measured"      # unknown is not a yes: eight bars of nothing is the risk
             if max(lv for lv in lvs if lv is not None) < 0.12:
@@ -1861,7 +1928,9 @@ class RemixConductor:
 
     def _m_hole(self, at, beats, keep_vocal=False):
         """Everything out at clock `at` for `beats` beats (a hard mute, 0.1 beat): the micro-vacuum before the
-        one. `keep_vocal`: the vocal carries through (a bridge's thread)."""
+        one. `keep_vocal`: the vocal carries through (a bridge's thread). No beats = no hole (the ear's word)."""
+        if beats <= 0:
+            return
         ev = []
         for lane, d in self._m_held():
             if keep_vocal and lane == "vocals":
@@ -1880,9 +1949,10 @@ class RemixConductor:
             s = self.songs.get(d)
             if s is not None and not s.entered:
                 s.entered, s.entered_k = True, self.bar_n
+        boost = float(self.moment_tune.get(m["kind"], {}).get("boost", MOMENT_BOOST))
         for lane in boost_lanes:
             if self.lanes.get(lane) is not None:
-                self.lane_boost[lane] = (MOMENT_BOOST, self.bar_n + self.change_bars)
+                self.lane_boost[lane] = (boost, self.bar_n + self.change_bars)
         ev = [{"at": at, "cmd": "clear_loop", "deck": m["B"]}, {"at": at, "cmd": "filter", "deck": m["B"], "mode": "off"}]
         if m.get("looped"):
             ev.append({"at": at, "cmd": "jump", "deck": m["B"], "time_s": float(m["t_L"])})
@@ -1910,8 +1980,14 @@ class RemixConductor:
 
     def _moment_script(self, kind):
         """The script: [(offset in bars from the one, fn(at_clock_of_that_bar))]; and the marks for the picture."""
-        m = None
         beat_c = int(self._beat_s() * RATE)
+        tune = self.moment_tune.get(kind, {})
+        hb = float(tune.get("hole_beats", 1.0))
+        out_bars = int(tune.get("out_bars", 2))
+
+        def hole_at(at):
+            """The hole sits on the LAST `hb` beats of the bar starting at `at`."""
+            return at + int((4.0 - hb) * beat_c)
 
         def M():
             return self._moment
@@ -1929,15 +2005,18 @@ class RemixConductor:
             self._move("moment", None, self._song_id(mm["B"]), None, f"{mm['label']}: on the one - everything back, bass and drums loud")
 
         if kind == "slam":
-            script = [(-2, lambda at: out_bed(at, ("drums", "bass"), 1.0, "bass and drums out for two bars")),
-                      (-1, lambda at: self._m_hole(at + 3 * beat_c, 1)),
+            script = [(-out_bars, lambda at: out_bed(at, ("drums", "bass"), 1.0, f"bass and drums out for {out_bars} bar{'s' if out_bars != 1 else ''}")),
+                      (-1, lambda at: self._m_hole(hole_at(at), hb)),
                       (0, payoff_one)]
-            marks = [(-2, 0, ["drums", "bass"], "SLAM: bass + drums out"), (-1, 0, list(STEMS), "hole"), (0, None, list(STEMS), "SLAM on the one")]
+            marks = [(-out_bars, 0, ["drums", "bass"], "SLAM: bass + drums out")] + ([(-1, 0, list(STEMS), "hole")] if hb > 0 else []) \
+                + [(0, None, list(STEMS), "SLAM on the one")]
         elif kind == "sing":
-            script = [(-2, lambda at: out_bed(at, ("drums", "bass"), 1.0, "the hook - bass and drums out, the room sings")),
+            script = [(-out_bars, lambda at: out_bed(at, ("drums", "bass"), 1.0, "the hook - bass and drums out, the room sings")),
                       (0, payoff_one)]
-            marks = [(-2, 0, ["drums", "bass"], "SING: the vocal alone"), (0, None, list(STEMS), "back, loud")]
+            marks = [(-out_bars, 0, ["drums", "bass"], "SING: the vocal alone"), (0, None, list(STEMS), "back, loud")]
         elif kind == "break":
+            take = int(tune.get("take_bars", 8))
+            build_low = float(tune.get("build_low", LOW_CARVE))
             def build(at):
                 mm = M()
                 B = mm["B"]
@@ -1950,7 +2029,7 @@ class RemixConductor:
                 else:
                     # the drums come back THIN (the deck's low shelf at the carve) and their lows return over the
                     # build - the kick fattens toward the one; the bass stem itself waits for the one
-                    ev += [{"at": at, "cmd": "eq", "deck": B, "low": LOW_CARVE, "ramp_s": 0.01},
+                    ev += [{"at": at, "cmd": "eq", "deck": B, "low": build_low, "ramp_s": 0.01},
                            {"at": at + int(0.05 * RATE), "cmd": "eq", "deck": B, "low": 1.0, "ramp_s": 7.5 * 4 * self._beat_s()}]
                 self.submix.post_many(ev)
                 self._move("moment", None, self._song_id(B), None, f"BREAK: the build - drums back{', the lows sweep away' if MOMENT_SWEEP else ' thin, their lows returning'}")
@@ -1973,27 +2052,29 @@ class RemixConductor:
                         {"at": at + 3 * bar_c, "cmd": "loop", "deck": B, "start_s": start, "end_s": start + 0.5 * bar},
                     ])
                     self._move("moment", None, self._song_id(B), None, "BREAK: the drums tighten - two bars, one, half")
-                # the last half bar is the hole, the one is posted now (a looping master stalls the bar count)
-                self._m_hole(at_L - 2 * beat_c, 2, keep_vocal=True)
+                # the last beats are the hole, the one is posted now (a looping master stalls the bar count)
+                self._m_hole(at_L - int(hb * beat_c), hb, keep_vocal=True)
                 mm["fired"].update({-1, 0})
                 self._m_payoff(mm, at_L)
                 self._move("moment", None, self._song_id(B), None, "BREAK: on the one - everything back, bass and drums loud")
 
-            script = [(-16, lambda at: out_bed(at, ("drums", "bass"), 2.0, "drums and bass out, the melody stays")),
+            script = [(-(take + 8), lambda at: out_bed(at, ("drums", "bass"), 2.0, "drums and bass out, the melody stays")),
                       (-8, build), (-4, tighten),
-                      (-1, lambda at: self._m_hole(at + 2 * beat_c, 2, keep_vocal=True)),
+                      (-1, lambda at: self._m_hole(hole_at(at), hb, keep_vocal=True)),
                       (0, payoff_one)]
-            marks = [(-16, -8, ["drums", "bass"], "BREAK: drums + bass out"), (-8, 0, ["drums"], "build: drums back thin, lows return")]
+            marks = [(-(take + 8), -8, ["drums", "bass"], "BREAK: drums + bass out"), (-8, 0, ["drums"], "build: drums back thin, lows return")]
             if MOMENT_TIGHTEN:
                 marks.append((-4, 0, ["drums", "bass"], "tighten 2·1·½"))
-            marks += [(-1, 0, list(STEMS), "hole"), (0, None, list(STEMS), "on the one, loud")]
+            if hb > 0:
+                marks.append((-1, 0, list(STEMS), "hole"))
+            marks.append((0, None, list(STEMS), "on the one, loud"))
         elif kind == "takeover":
             def hole_bass(at):
                 mm = M()
                 B = mm["B"]
-                if self.lanes.get("bass") == B:
-                    self.submix.post(self._m_mute(B, "bass", at + 3 * beat_c, 0.1))
-                self._note("the hole: the old bassline out for a beat")
+                if self.lanes.get("bass") == B and hb > 0:
+                    self.submix.post(self._m_mute(B, "bass", hole_at(at), 0.1))
+                    self._note(f"the hole: the old bassline out for {hb:g} beat{'s' if hb != 1 else ''}")
 
             def bass_in(at):
                 mm = M()
@@ -2016,12 +2097,14 @@ class RemixConductor:
                 mm["end_clock"] = at + self._bar_clock()
 
             script = [(-1, hole_bass), (0, bass_in), (self.change_bars, drums_follow)]
-            marks = [(-1, 0, ["bass"], "hole"), (0, None, ["bass"], "TAKEOVER: new bassline, loud"), (self.change_bars, None, ["drums"], "its drums follow")]
+            marks = ([(-1, 0, ["bass"], "hole")] if hb > 0 else []) + [(0, None, ["bass"], "TAKEOVER: new bassline, loud"), (self.change_bars, None, ["drums"], "its drums follow")]
         elif kind == "bridge":
+            fade = int(tune.get("fade_bars", 4))
+
             def bed_out(at):
                 mm = M()
                 B = mm["B"]
-                ev = [self._m_mute(B, ln, at, 16.0) for ln in ("drums", "bass", "other") if self.lanes.get(ln) == B]
+                ev = [self._m_mute(B, ln, at, 4.0 * fade) for ln in ("drums", "bass", "other") if self.lanes.get(ln) == B]
                 if ev:
                     self.submix.post_many(ev)
                 self._move("moment", None, self._song_id(B), None, f"BRIDGE: the bed fades out under the vocal of {self.songs[B].track.title}")
@@ -2047,11 +2130,11 @@ class RemixConductor:
                 self._m_roles(V, B)
                 self._move("moment", "bass", self._song_id(B), self._song_id(V), f"BRIDGE: bass and drums of {self.songs[V].track.title} slam on the one - it is the bed")
 
-            script = [(-8, bed_out), (-4, drums_under),
-                      (-1, lambda at: self._m_hole(at + 3 * beat_c, 1, keep_vocal=True)),
+            script = [(-(fade + 4), bed_out), (-4, drums_under),
+                      (-1, lambda at: self._m_hole(hole_at(at), hb, keep_vocal=True)),
                       (0, slam)]
-            marks = [(-8, -4, ["drums", "bass", "other"], "BRIDGE: the bed fades under the vocal"), (-4, 0, ["drums"], "new drums under"),
-                     (-1, 0, ["drums"], "hole"), (0, None, ["drums", "bass", "other"], "slam on the one")]
+            marks = [(-(fade + 4), -4, ["drums", "bass", "other"], "BRIDGE: the bed fades under the vocal"), (-4, 0, ["drums"], "new drums under")] \
+                + ([(-1, 0, ["drums"], "hole")] if hb > 0 else []) + [(0, None, ["drums", "bass", "other"], "slam on the one")]
         else:
             script, marks = [], []
         # the marks ride on the moment dict (set right after this returns)
@@ -2103,8 +2186,86 @@ class RemixConductor:
     def _moment_end(self, m):
         self._moment = None
         self.phrase_bars = 0                          # a phrase of plain play before the arrangement moves again
+        self._calm_until = self.bar_n + self.change_bars
         self._drop_k = self.bar_n                     # a peak: the auto break keeps its distance
         self._note(f"{m['label']} done")
+
+    # -- the ear's words on a moment: one word moves one number ------------------------------------------------------
+    def _tune_path(self):
+        try:
+            return os.path.join(str(self.music_root), ".dj_moment_tune.json")
+        except Exception:
+            return None
+
+    def _load_moment_tune(self):
+        tune = {k: dict(v) for k, v in MOMENT_TUNE_DEFAULT.items()}
+        p = self._tune_path()
+        try:
+            if p and os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    saved = json.load(f)
+                for k, v in (saved or {}).items():
+                    if k in tune and isinstance(v, dict):
+                        tune[k].update({kk: vv for kk, vv in v.items() if kk in tune[k]})
+        except Exception:
+            pass
+        return tune
+
+    def _save_moment_tune(self):
+        if os.environ.get("DJ_NO_PLAY_LOG", "") == "1":
+            return                                    # gates never move the user's numbers
+        p = self._tune_path()
+        try:
+            if p:
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump(self.moment_tune, f, indent=1)
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"moment tune store: {e}"
+
+    def tune_moment(self, kind, word):
+        """BAD on a moment, with the word: `hole` halves the hole (to none), `thin` keeps more of the bed
+        (a shorter take-away for SLAM/SING, a fuller low shelf in the BREAK's build), `long` halves the
+        take-away / the fade, `beat` and `place` make the moment land only on a measured drop or hook.
+        Returns the sentence of what changed."""
+        t = self.moment_tune.get(kind)
+        if t is None or word not in MOMENT_WORDS:
+            return None
+        before = dict(t)
+        if word == "hole" and "hole_beats" in t:
+            t["hole_beats"] = 0.0 if t["hole_beats"] <= 0.5 else t["hole_beats"] / 2.0
+        elif word == "thin":
+            if "build_low" in t:
+                t["build_low"] = min(1.0, t["build_low"] + 0.25)
+            elif "out_bars" in t:
+                t["out_bars"] = max(1, t["out_bars"] - 1)
+            else:
+                t["boost"] = min(1.6, t["boost"] + 0.1)
+        elif word == "long":
+            if "take_bars" in t:
+                t["take_bars"] = max(2, t["take_bars"] // 2)
+            elif "fade_bars" in t:
+                t["fade_bars"] = max(1, t["fade_bars"] // 2)
+            elif "out_bars" in t:
+                t["out_bars"] = max(1, t["out_bars"] - 1)
+        elif word in ("beat", "place"):
+            t["payoff_only"] = True
+        changed = [f"{k} {before[k]:g} → {v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else f"{k} → {v}"
+                   for k, v in t.items() if before.get(k) != v]
+        self._save_moment_tune()
+        label = MOMENTS[kind][0]
+        msg = f"{label}: {MOMENT_WORDS[word]} → " + (", ".join(changed) if changed else "nothing left to move there")
+        self._note(msg)
+        return msg
+
+    def _moment_lead(self, kind):
+        t = self.moment_tune.get(kind, {})
+        if kind in ("slam", "sing"):
+            return int(t.get("out_bars", 2))
+        if kind == "break":
+            return int(t.get("take_bars", 8)) + 8
+        if kind == "bridge":
+            return int(t.get("fade_bars", 4)) + 4
+        return MOMENTS[kind][1]
 
     def eject(self, deck):
         """The operator takes a song off: its lanes move to the other songs (or rest), it leaves a bar later."""
@@ -2630,6 +2791,8 @@ class RemixConductor:
                "auto": self.auto,
                "arrangement": self._arrangement_status(),
                "moment": self.moment_status(),
+               "moment_stats": {k: {"armed": v["armed"], "refused": dict(v["refused"])} for k, v in self.moment_stats.items()},
+               "moment_tune": {k: dict(v) for k, v in self.moment_tune.items()},
                "grid": {d: {ln: self.why_not(ln, d) for ln in STEMS} for d, s in self.songs.items() if not s.leaving},
                "candidates": self.candidates(10),
                "pool": (None if self.brain is None or self.brain.pool_ids is None else len(self.brain.pool_ids)),
@@ -2664,8 +2827,13 @@ class RemixConductor:
     def _arrangement_status(self):
         """The arrangement in words and numbers: who is the bed and for how long, who is a voice and what
         it waits for, what is in flight, and why the last phrase passed without a move."""
+        now = time.time()
         out = {"bed": None, "voices": [], "landing_in_bars": None, "wait_why": self.wait_why,
-               "settle_phrases": SETTLE_PHRASES, "voice_phrases": VOICE_PHRASES, "strip": bool(self.strip_before_bed)}
+               "settle_phrases": SETTLE_PHRASES, "voice_phrases": VOICE_PHRASES, "strip": bool(self.strip_before_bed),
+               "calm_phrases": self.calm_phrases,
+               # the measure of "busy": lane moves in the last ten minutes (entries, crosses, rests, returns, bed changes)
+               "moves_10min": sum(1 for x in self.move_log if now - x["t"] <= 600.0
+                                  and x["kind"] in ("enter", "cross", "cross_new", "rest", "return", "voice_in", "bed_to", "voice_out", "manual", "moment_in", "moment_out"))}
         try:
             bar = self.bar_n
             at = self._next_bar_clock()
@@ -2758,6 +2926,11 @@ class RemixConductor:
             del self.moves[:-200]
             del self.move_log[:-200]
         self._note(msg)
+        try:
+            from lib.dj.session import log_row
+            log_row({"event": "remix_move", "kind": kind, "lane": lane, "bar": self.bar_n, "text": msg[:160]})
+        except Exception:
+            pass
 
     def _note(self, msg):
         self.log.append(msg)

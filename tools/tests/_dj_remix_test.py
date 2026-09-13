@@ -318,6 +318,26 @@ def main():
               f"TAKEOVER: {msg_t}; bass -> {rc.lanes.get('bass')} drums -> {rc.lanes.get('drums')} (other song {Vt}), done {rc._moment is None}")
     else:
         print(f"  --   TAKEOVER not armed here: {msg_t} (not judged)")
+    # the ear's words move one number each (in memory only under DJ_NO_PLAY_LOG); a chosen song that is not on a
+    # deck is refused and counted; refusal statistics per kind
+    h0 = rc.moment_tune["slam"]["hole_beats"]
+    msg_h = rc.tune_moment("slam", "hole")
+    msg_th = rc.tune_moment("break", "thin")
+    check(rc.moment_tune["slam"]["hole_beats"] == h0 / 2 and rc.moment_tune["break"]["build_low"] > 0.25 and rc.moment_tune["break"]["payoff_only"] is False,
+          f"WORDS: {msg_h} | {msg_th}")
+    ok_o, msg_o = rc.arm_moment("takeover", other="zz")
+    st_m = rc.moment_stats.get("takeover") or {}
+    check(not ok_o and "not on a deck" in msg_o and sum((st_m.get("refused") or {}).values()) >= 1,
+          f"CHOSEN SONG off a deck refused and counted: {msg_o} | stats {rc.moment_stats}")
+    # CALM: with calm_phrases 2 the arrangement moves at most once per two phrases (NEXT and an empty bed lane exempt)
+    rc.calm_phrases = 2
+    n_c0, k_c0 = len(rc.move_log), rc.bar_n
+    paced(int(6 * rc.change_bars * bars * RATE) // block)
+    arr_moves = [m for m in rc.move_log[n_c0:] if m["kind"] in ("enter", "cross", "cross_new", "rest", "return", "voice_in", "bed_to", "voice_out")]
+    phrases = max(1, (rc.bar_n - k_c0) // rc.change_bars)
+    check(len(arr_moves) <= phrases // 2 + 1, f"CALM: {len(arr_moves)} arrangement moves over {phrases} phrases (at most one per two)"
+          + (f": {[m['text'][:40] for m in arr_moves]}" if len(arr_moves) > phrases // 2 + 1 else ""))
+    rc.calm_phrases = 1
     # a tempo journey: lean hot, span 4 %: the clock climbs in half-percent steps, every song inside the wall
     bpm0 = rc.master_bpm
     rc.set_energy_lean(0.4)

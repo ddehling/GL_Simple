@@ -699,6 +699,25 @@ and MOMENT_SWEEP OFF (the ear's verdict on stutter builds stands; the whole-deck
 and vocal too); the BREAK's build is now the drums back thin (the deck's low shelf at the carve) with their
 lows returning over eight bars, the bass stem waiting for the one. Which part hurt is still to be named.
 
+**"what are the current problems and how can we improve things?" → "do them all" (2026-09-12, late).**
+(1) The ear session's tools: BAD on a moment asks WHICH of five words (`MOMENT_WORDS`: hole / thin / long /
+beat / place) and `RemixConductor.tune_moment` moves ONE number of that moment (`MOMENT_TUNE_DEFAULT` per
+kind: hole_beats, out_bars, take_bars, build_low, fade_bars, boost, payoff_only; the hole halves to none, the
+take-away shortens, the build's low shelf fills, `beat`/`place` make it land only on a measured drop or hook),
+persisted per library in `<music>/.dj_moment_tune.json` (never by gates); the scripts read the numbers.
+(2) `Director.rate(up, word)` + `rate_target()`; the tab's BAD opens the five-word menu when the last rateable
+move is a moment. (3) CALM: `rc.calm_phrases` (the Director sets 2) - the arrangement moves at most once per
+two phrases and not within a phrase after a moment (`_calm_until`); NEXT and an empty bed lane exempt;
+`moves_10min` measured in the arrangement status and said in the intent line. (4) TAKEOVER / BRIDGE with a
+CHOSEN song: `arm_moment(kind, other=deck)`, `Director.moment_with(track_id, kind)` stages if needed and arms
+when ready; right-click a song → "TAKEOVER with this" / "BRIDGE with this". (5) `lib/dj/session.py`:
+SESSION_ID on every jsonl row (the autoDJ's, the conductor's moves, the Director's events, refusals), nothing
+written under DJ_NO_PLAY_LOG; the DROPOUT detector in `Director._dropout_step` (bus under -48 dBFS for more
+than a bar → one event + log row with mode, handover, armed moment, last events and moves; its end with the
+length; the state line shows it for three minutes). (6) Refusal statistics: `moment_stats` per kind (armed,
+refused by reason key) in status and each moment button's tooltip, refusals logged. Gate: WORDS, CHOSEN SONG
+refused and counted, CALM (≤ one arrangement move per two phrases over six). Not run yet: the user was live.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

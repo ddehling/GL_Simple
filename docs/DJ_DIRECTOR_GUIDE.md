@@ -83,7 +83,14 @@ see the same countdown and can cancel or replace it. Refusals say why on the lin
 - **STAY** - one more phrase of this.
 - **👍 GOOD / 👎 BAD** - what to do more or less of. The line underneath says what was rated, what it
   learned (seam-style and move weights, and the song's tags for the next picks) and what it did. BAD acts
-  at once.
+  at once. **BAD on a moment asks which of five things hurt** - the hole was too long / it sounded thin /
+  it went on too long / the return was off the beat / it landed in the wrong place - and moves ONE number
+  of that moment (the hole halves, the take-away shortens, the build keeps more lows, or it lands only on a
+  measured drop or hook from then on). The numbers are kept per library and show in the button's tooltip,
+  with how often that moment was armed or refused tonight and why.
+
+Between moments the arrangement is calm: at most one lane move per two phrases and none within a phrase
+after a moment. The intent line counts the lane moves of the last ten minutes.
 
 ## Steering the songs (left column)
 
@@ -104,7 +111,8 @@ them back when it ends; choose **none**, or **stop**, to end it early. The inten
 
 **Right-click any song in the SONGS list**: its bassline, drums, melody or vocal comes in under what plays
 on the next bar, loud for a phrase (a song not on a deck is staged first and comes in the moment it is
-ready). The guard still refuses a key clash. With MOMENTS on, the conductor's own bed changes are bass-first:
+ready). The guard still refuses a key clash. The same menu offers **TAKEOVER with this** and **BRIDGE with
+this**: the song is staged if it has to be and the moment arms with it the moment it is ready. With MOMENTS on, the conductor's own bed changes are bass-first:
 the new song's bassline takes over at its drop or hook, loud, and its drums follow a phrase later.
 
 ## The controller (nanoKONTROL2)
@@ -116,4 +124,7 @@ MOMENTS, FX, TONE, ARC, LENGTH. PLAY / STOP = NEXT / STAY; REC = SLAM (again = g
 ## When it does something odd
 
 The **story row** names the move at that bar and the **WHY** panel names the rule behind the last move or
-the last wait. A sentence from either is a complete bug report.
+the last wait. A sentence from either is a complete bug report. Silence on the bus for more than a bar is a
+**DROPOUT**: the state line shows it for three minutes with what was happening (a moment, a handover), and
+the night's log (`logs/dj_YYYYMMDD.jsonl`, every row tagged with the session id) holds the same with the
+last three moves.

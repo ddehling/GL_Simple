@@ -574,6 +574,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             mom.addWidget(b, 0, c * 5, 1, 5)
             self.buttons[label] = b
         self.moment_btns = {}
+        self._moment_tips = {}
         from lib.dj.remix import MOMENTS
         for i, (key, label) in enumerate(MOMENT_ROW):
             b = QPushButton(label)
@@ -581,15 +582,16 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             b.setMinimumHeight(30)
             b.setProperty("kind", "hot")
             b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            b.setToolTip(f"{label}: {MOMENTS[key][2]}\n\npress = arm (lands on the drop or hook ahead, else the next phrase; the picture shows it in gold, "
-                         "the button counts down) · press again = go now · right-click = cancel")
+            self._moment_tips[key] = (f"{label}: {MOMENTS[key][2]}\n\npress = arm (lands on the drop or hook ahead, else the next phrase; the picture shows it in gold, "
+                                      "the button counts down) · press again = go now · right-click = cancel")
+            b.setToolTip(self._moment_tips[key])
             b.clicked.connect(lambda _c, k=key: self._moment(k))
             b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             b.customContextMenuRequested.connect(lambda _p, k=key: self._moment_cancel(k))
             mom.addWidget(b, 1, i * 2, 1, 2)
             self.moment_btns[key] = b
         for (label, fn, kind, c) in (("GOOD", lambda: self.director and self.director.rate(True), "good", 0),
-                                     ("BAD", lambda: self.director and self.director.rate(False), "bad", 1)):
+                                     ("BAD", self._bad, "bad", 1)):
             b = QPushButton(label)
             b.setMinimumHeight(26)
             b.setProperty("kind", kind)
@@ -711,7 +713,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                     else ("NEXT MOVE", "the conductor's next lane move on the next bar"),
             "HOLD": ("STAY", "one more phrase of this song before moving on" if one else "freeze the lanes for a phrase"),
             "GOOD": ("👍 GOOD", "that was good - the DJ does more of it"),
-            "BAD": ("👎 BAD", "that was bad - the DJ does less of it"),
+            "BAD": ("👎 BAD", "that was bad - the DJ does less of it; on a moment it asks which of five things hurt and moves that one number"),
         }
         for k, (t, tip) in texts.items():
             if self.buttons[k].text() != t:
@@ -745,6 +747,29 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             return
         ok, msg = self.director.moment_cancel()
         self.moment_lbl.setText(msg)
+
+    def _bad(self):
+        """BAD: on a moment, the ear's five words first (one word moves one number of that moment); on anything
+        else, plain BAD."""
+        if self.director is None:
+            return
+        tgt = getattr(self, "_rate_target", None)
+        if not tgt or not tgt.get("moment"):
+            self.director.rate(False)
+            return
+        from PyQt6.QtWidgets import QMenu
+        from lib.dj.remix import MOMENT_WORDS
+        m = QMenu(self)
+        head = m.addAction(f"BAD on {tgt['text'][:44]} - what hurt?")
+        head.setEnabled(False)
+        for word, text in MOMENT_WORDS.items():
+            a = m.addAction(text)
+            a.triggered.connect(lambda _c, w=word: self.director and self.director.rate(False, word=w))
+        m.addSeparator()
+        plain = m.addAction("just bad (less of this moment)")
+        plain.triggered.connect(lambda _c: self.director and self.director.rate(False))
+        b = self.buttons["BAD"]
+        m.exec(b.mapToGlobal(b.rect().topLeft()))
 
     # -- mood chips -----------------------------------------------------------------------------------------------
     def _pool_tracks(self):
@@ -1017,6 +1042,12 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         for lane, word in (("bass", "bassline"), ("drums", "drums"), ("other", "melody"), ("vocals", "vocals")):
             a = m.addAction(f"{word} of {title} in {'at the phrase' if self.phrase_btn.isChecked() else 'now'}" + (" · loud" if self.loud_btn.isChecked() else ""))
             a.triggered.connect(lambda _c, t=tid, ln=lane: self._stem(t, ln, False))
+        if self.director.mode == "layered":
+            m.addSeparator()
+            for kind, word in (("takeover", "TAKEOVER with this (its bassline on the one, its drums at the phrase)"),
+                               ("bridge", "BRIDGE with this (the bed fades under the vocal, its bass + drums slam)")):
+                a = m.addAction(word)
+                a.triggered.connect(lambda _c, t=tid, k=kind: self.moment_lbl.setText(self.director.moment_with(t, k)))
         m.addSeparator()
         q = m.addAction("put it UP NEXT")
         q.triggered.connect(lambda _c, t=tid: self._queue(t))
@@ -1252,13 +1283,21 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         mode = "one song at a time" if st.get("mode") == "one" else ("songs layered" if st.get("mode") else "-")
         last = (st.get("events") or [("", "")])[-1][1]
         doubled = st.get("doubled") or []
-        self.state_lbl.setText(f"{mode}   ·   {st.get('theme')}   ·   {st.get('pool') or 'whole library'}"
+        do = st.get("last_dropout")
+        drop_note = ""
+        if do and time.time() - do.get("t", 0) < 180:
+            drop_note = f"   ·   ⚠ DROPOUT {time.time() - do['t']:.0f} s ago" + (f" ({do['length_s']:.1f} s)" if do.get("length_s") else " (still silent)") \
+                + (f" during {do['moment']}" if do.get("moment") else "") + (f" while switching to {do['switching']}" if do.get("switching") else "")
+        self.state_lbl.setText(f"{mode}   ·   {st.get('theme')}   ·   {st.get('pool') or 'whole library'}" + drop_note
                                + (f"   ·   switching to {st['switching']}…" if st.get("switching") else "")
                                + (f"   ·   ⚠ DOUBLED: {', '.join(doubled)} (two songs' {'stems' if doubled != ['mix'] else 'mixes'} at once)" if doubled else "")
                                + (f"   ·   {last[:60]}" if last else "")
                                + (f"   ·   {self._midi_note}" if getattr(self, "_midi_note", "") else ""))
-        # the moments: the armed one lit with its countdown, the rest plain
+        # the moments: the armed one lit with its countdown, the rest plain; the tooltip carries how often each
+        # was armed or refused tonight (and why) and the numbers the ear's words have moved
         mo = st.get("moment")
+        self._rate_target = st.get("rate_target")
+        stats, tune = st.get("moment_stats") or {}, st.get("moment_tune") or {}
         for key, label in MOMENT_ROW:
             b = self.moment_btns[key]
             armed = bool(mo and mo.get("kind") == key)
@@ -1268,6 +1307,16 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 b.setText(text)
             if b.isChecked() != armed:
                 b.setChecked(armed)
+            tip = self._moment_tips.get(key, "")
+            s = stats.get(key)
+            if s:
+                refused = sorted(s.get("refused", {}).items(), key=lambda kv: -kv[1])
+                tip += f"\n\ntonight: armed {s.get('armed', 0)}, refused {sum(n for _, n in refused)}" + (" (" + ", ".join(f"{k} ×{n}" for k, n in refused[:3]) + ")" if refused else "")
+            t = tune.get(key)
+            if t:
+                tip += "\nnumbers: " + ", ".join(f"{k} {v:g}" if isinstance(v, (int, float)) and not isinstance(v, bool) else f"{k} {v}" for k, v in t.items())
+            if b.toolTip() != tip:
+                b.setToolTip(tip)
         if mo:
             words = f"{mo['label']} ({mo['who']}): {'running' if mo['started'] else 'armed'}, the one in {mo['in_bars']} bars on {mo['what']}"
             if mo.get("other") and mo["kind"] in ("takeover", "bridge"):

@@ -173,6 +173,10 @@ class Director:
         self.played = []                 # (track_id, when)
         self._noted = set()
         self.last_verdict = None         # what the last GOOD / BAD did (the tab shows it)
+        self.last_dropout = None         # the last silence on the bus over a bar: when, what was happening
+        self._quiet_since = None
+        self._dropout_open = False
+        self._pending_moment = None      # a TAKEOVER / BRIDGE waiting for its chosen song to be staged
         # TASTE: what GOOD / BAD said about SONGS tonight (their tags), fed to both brains as a lean on the
         # next picks - "more like that" / "less like that" - fading as newer verdicts arrive
         self.taste = {"like": {}, "dislike": {}}
@@ -351,6 +355,7 @@ class Director:
         # the bass moment: with MOMENTS on and mixing auto / cut, a bed change is bass-first - the bassline
         # takes over at the payoff, loud, the drums follow at the phrase
         rc.bass_moments = d["moments"] != "rare" and d["mixing"] in ("auto", "cut")
+        rc.calm_phrases = 2                            # calm between moments: one arrangement move per two phrases
         rc.set_arc_waypoints(self._arc_points())
         rc.set_arc_length(ARC_LEN_S[d["length"]])
         try:
@@ -791,6 +796,84 @@ class Director:
     def moment_status(self):
         return self.rc.moment_status() if self.rc is not None else None
 
+    def moment_with(self, track_id, kind):
+        """TAKEOVER / BRIDGE with THIS song: on a deck and ready = armed now with it as the other song; not on
+        a deck = staged first and armed the moment it is ready (layered only). Returns a sentence."""
+        if kind not in ("takeover", "bridge"):
+            return "only TAKEOVER and BRIDGE take a song"
+        if self.rc is None or self.rc.master is None:
+            return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
+        rc = self.rc
+        tid = int(track_id)
+        deck = next((d for d, s in rc.songs.items() if s.track.id == tid and not s.leaving), None)
+        if deck is not None and rc.songs[deck].staged_at is not None:
+            ok, msg = rc.arm_moment(kind, other=deck)
+            self._event((f"{kind.upper()} with {self.title(tid)[:24]}: " if ok else f"{kind.upper()} refused: ") + msg)
+            return msg
+        if deck is None:
+            ok, msg = rc.stage_track(tid)
+            if not ok:
+                self._event(f"{kind.upper()} refused: {msg}")
+                return msg
+        self._pending_moment = {"track_id": tid, "kind": kind, "t": time.time()}
+        self._event(f"{kind.upper()} with {self.title(tid)[:24]}: staging, armed as soon as it is ready")
+        return f"{self.title(tid)[:24]} is being staged; {kind.upper()} arms the moment it is ready"
+
+    def _pending_moment_step(self):
+        p = getattr(self, "_pending_moment", None)
+        if p is None or self.rc is None:
+            return
+        if time.time() - p["t"] > 90.0:
+            self._pending_moment = None
+            self._event("the staged song never became ready: the moment is dropped")
+            return
+        deck = next((d for d, s in self.rc.songs.items() if s.track.id == p["track_id"] and s.staged_at is not None and not s.leaving), None)
+        if deck is None:
+            return
+        self._pending_moment = None
+        ok, msg = self.rc.arm_moment(p["kind"], other=deck)
+        self._event((f"{p['kind'].upper()} with {self.title(p['track_id'])[:24]}: " if ok else f"{p['kind'].upper()} refused: ") + msg)
+
+    # -- the dropout detector: silence on the bus is named, with what was happening ------------------------------------
+    def _dropout_step(self):
+        """The playing engine's bus under -48 dBFS for more than a bar (a planned hole is two beats at most)
+        is a DROPOUT: logged once with the mode, the handover state, the armed moment and the last moves, and
+        shown in the state line; its end is logged with the length. The next silence names itself."""
+        eng = self.rc if self.rc is not None else self.system
+        if eng is None or not self.running:
+            self._quiet_since = None
+            return
+        tel = eng.submix.telemetry or {}
+        rms = float(tel.get("rms") or 0.0)
+        now = time.time()
+        bar_s = 240.0 / max(self._bpm(), 60.0)
+        if rms >= 0.004:
+            q = getattr(self, "_quiet_since", None)
+            if q is not None and getattr(self, "_dropout_open", False):
+                self._dropout_open = False
+                length = now - q
+                self.last_dropout = {**(self.last_dropout or {}), "end_t": now, "length_s": round(length, 1)}
+                self._event(f"dropout over: {length:.1f} s of silence")
+                from lib.dj.session import log_row
+                log_row({"event": "dropout_end", "length_s": round(length, 1)})
+            self._quiet_since = None
+            return
+        if getattr(self, "_quiet_since", None) is None:
+            self._quiet_since = now
+            return
+        if now - self._quiet_since > bar_s and not getattr(self, "_dropout_open", False):
+            self._dropout_open = True
+            mo = self.moment_status()
+            ctx = {"t": now, "mode": self.mode, "switching": (self._switch or {}).get("to") if self._switch else None,
+                   "moment": (f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']}), the one in {mo['in_bars']} bars" if mo else None),
+                   "events": [e[1] for e in self.events[-3:]],
+                   "moves": ([m for _, m in self.rc.moves[-3:]] if self.rc is not None else [])}
+            self.last_dropout = ctx
+            self._event(f"DROPOUT: the bus has been silent for {now - self._quiet_since:.1f} s" + (f" during {ctx['moment']}" if ctx["moment"] else "")
+                        + (f" while switching to {ctx['switching']}" if ctx["switching"] else ""))
+            from lib.dj.session import log_row
+            log_row({"event": "dropout", **{k: v for k, v in ctx.items() if k != "t"}})
+
     # -- tactical stem moves: THIS song's bassline (drums, vocals, melody) in, now, loud -------------------------
     def stem_in(self, track_id, lane, loud=True, when="bar"):
         """Bring one song's `lane` under what plays - on the next bar (or the next phrase), loud for a
@@ -883,13 +966,37 @@ class Director:
             self.taste[other].pop(tag, None)
         return tags
 
-    def rate(self, up):
+    def rate_target(self):
+        """What GOOD / BAD would land on right now: {"text", "kind", "moment": kind or None} - the tab asks
+        before a BAD, so a BAD on a moment can carry the ear's word."""
+        if self.rc is not None:
+            from lib.dj.remix import RATED_KINDS, MOMENTS
+            m = next((x for x in reversed(self.rc.move_log) if x["kind"] in RATED_KINDS and x.get("fb") is None), None)
+            if m is None:
+                return None
+            moment = None
+            if m["kind"] == "moment":
+                label = m["text"].split(":")[0].strip()
+                moment = next((k for k, v in MOMENTS.items() if v[0] == label), None)
+            return {"text": m["text"], "kind": m["kind"], "moment": moment}
+        if self.system is not None:
+            h = next((x for x in reversed(self.system._history) if x.get("via") != "start"), None)
+            return {"text": f"the mix into {h.get('title')}", "kind": "seam", "moment": None} if h else None
+        return None
+
+    def rate(self, up, word=None):
         """GOOD / BAD: say WHAT was rated, what the DJ learns from it, and - on a BAD - change the music
         now (a fresh move layered; the next seam brought forward in one-song mode), so the button is
-        visibly consequential."""
+        visibly consequential. `word` (a BAD on a moment): one of the ear's five words - hole / thin / long /
+        beat / place - and ONE number of that moment moves (see RemixConductor.tune_moment)."""
         up = bool(up)
         info = {"up": up, "t": time.time(), "what": None, "learn": None, "did": None, "style": None}
         song_id = None
+        tuned = None
+        if not up and word and self.rc is not None:
+            tgt = self.rate_target()
+            if tgt and tgt.get("moment"):
+                tuned = self.rc.tune_moment(tgt["moment"], word)
         if self.system is not None:
             h = next((x for x in reversed(self.system._history) if x.get("via") != "start"), None)
             style = h.get("via") if h else None
@@ -912,7 +1019,10 @@ class Director:
                 song_id = m.get("to_id") or m.get("from_id")
             else:
                 info["what"] = "nothing left to rate"
-            if not up and self.rc.master is not None:
+            if tuned:
+                info["learn"] = tuned                 # the word moved a number: that is the lesson, not the weight
+                info["did"] = "the next one of that moment plays with the new number"
+            elif not up and self.rc.master is not None:
                 self.rc.next_move()
                 info["did"] = "a different move on the next bar"
         tags = self._learn_song(song_id, up)
@@ -946,6 +1056,11 @@ class Director:
                 self._hold_until = None
             self._loops_layered()
             self._pending_stem_step()
+            self._pending_moment_step()
+        try:
+            self._dropout_step()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"dropout: {type(e).__name__}: {e}"
         try:
             self._loops_one()
         except Exception as e:  # noqa: BLE001
@@ -1864,9 +1979,13 @@ class Director:
                 if mo:
                     bits.insert(1, f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']}): the one in {mo['in_bars']} bars on {mo['what']}"
                                 + (f" of {mo['other'][:20]}" if mo.get("other") and mo["kind"] in ("takeover", "bridge") else ""))
+                if arr.get("moves_10min") is not None:
+                    bits.append(f"{arr['moves_10min']} lane moves in the last 10 min")
                 out["intent"] = ", ".join(bits)
                 out["wait_why"] = arr.get("wait_why")
                 out["moment"] = mo
+                out["moment_stats"] = st.get("moment_stats") or {}
+                out["moment_tune"] = st.get("moment_tune") or {}
                 out["lanes"] = {ln: (songs.get(d) or {}).get("title") if d else None for ln, d in lanes.items()}
                 out["recent"] = [f"{t}  {m}" for t, m in (st.get("moves") or [])[-8:]]
                 out["error"] = out["error"] or st.get("error")
@@ -1906,6 +2025,16 @@ class Director:
             out["ready"] = []
             out["error"] = out.get("error") or f"ready: {type(e).__name__}: {e}"
         out["programs"] = {k: (v[0], v[1]) for k, v in PROGRAMS.items()}
+        try:
+            from lib.dj.session import SESSION_ID
+            out["session"] = SESSION_ID
+        except Exception:
+            out["session"] = None
+        out["last_dropout"] = self.last_dropout
+        try:
+            out["rate_target"] = self.rate_target()
+        except Exception:
+            out["rate_target"] = None
         if out["program"]:
             ps = out["program"]
             nxt_steps = [s for s in ps["steps"] if not s["done"] and not s["now"]]
@@ -2009,3 +2138,8 @@ class Director:
         self.events.append((time.strftime("%H:%M:%S"), msg))
         if len(self.events) > 200:
             del self.events[:-200]
+        try:
+            from lib.dj.session import log_row
+            log_row({"event": "director", "text": str(msg)[:200]})
+        except Exception:
+            pass

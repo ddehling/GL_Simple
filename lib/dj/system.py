@@ -3521,7 +3521,8 @@ class DJSystem:
     def _log(self, payload):
         try:
             os.makedirs(self.log_dir, exist_ok=True)
-            payload = {"t": round(time.time(), 2),
+            from lib.dj.session import SESSION_ID
+            payload = {"t": round(time.time(), 2), "sid": SESSION_ID,
                        "clock_s": round(self.submix.clock / RATE, 2), **payload}
             # the last events in memory too: the performance surface shows what the system just did and why
             ring = getattr(self, "_recent_events", None)
