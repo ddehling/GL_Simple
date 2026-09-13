@@ -590,14 +590,19 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             b.customContextMenuRequested.connect(lambda _p, k=key: self._moment_cancel(k))
             mom.addWidget(b, 1, i * 2, 1, 2)
             self.moment_btns[key] = b
-        for (label, fn, kind, c) in (("GOOD", lambda: self.director and self.director.rate(True), "good", 0),
-                                     ("BAD", self._bad, "bad", 1)):
+        for (label, fn, kind, c, span) in (("GOOD", lambda: self.director and self.director.rate(True), "good", 0, 4),
+                                           ("BAD", self._bad, "bad", 4, 4), ("FLAG", self._flag, None, 8, 2)):
             b = QPushButton(label)
             b.setMinimumHeight(26)
-            b.setProperty("kind", kind)
+            if kind:
+                b.setProperty("kind", kind)
             b.clicked.connect(fn)
-            mom.addWidget(b, 2, c * 5, 1, 5)
+            mom.addWidget(b, 2, c, 1, span)
             self.buttons[label] = b
+        self.buttons["FLAG"].setToolTip("⚑ this is not working - say what kind, for LATER: the whole room is written to logs/dj_flags.jsonl "
+                                        "(songs, positions, lanes, gains, the plan, the moment, the last moves) and marked in the story row; "
+                                        "nothing is learned and nothing moves - unlike BAD, which punishes a move and a song's tags. "
+                                        "Review with: python tools/dj/dj_flags.py")
         right.addLayout(mom)
         self.moment_lbl = QLabel("")
         self.moment_lbl.setProperty("dim", "true")
@@ -747,6 +752,34 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             return
         ok, msg = self.director.moment_cancel()
         self.moment_lbl.setText(msg)
+
+    def _flag(self):
+        """FLAG: what is not working, for later - a kind from the menu, or a kind with a note. No learning."""
+        if self.director is None:
+            self.err_lbl.setText("press START first")
+            return
+        from PyQt6.QtWidgets import QMenu, QInputDialog
+        from lib.dj.director import FLAG_KINDS
+        m = QMenu(self)
+        head = m.addAction("⚑ what is not working? (kept for later, nothing learned)")
+        head.setEnabled(False)
+        for key, label in FLAG_KINDS.items():
+            a = m.addAction(label)
+            a.triggered.connect(lambda _c, k=key: self._flag_done(self.director.flag(k)))
+        m.addSeparator()
+        note = m.addAction("with a note…")
+
+        def _with_note():
+            text, ok = QInputDialog.getText(self, "FLAG", "what is not working? (a sentence; the room's state is captured with it)")
+            if ok:
+                self._flag_done(self.director.flag("other", text))
+        note.triggered.connect(lambda _c: _with_note())
+        b = self.buttons["FLAG"]
+        m.exec(b.mapToGlobal(b.rect().topLeft()))
+
+    def _flag_done(self, msg):
+        self.verdict_lbl.setText("⚑ " + msg)
+        self.moment_lbl.setText("")
 
     def _bad(self):
         """BAD: on a moment, the ear's five words first (one word moves one number of that moment); on anything
@@ -975,6 +1008,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                     d.rate(False)
                 elif name == "track_next":
                     d.rate(True)
+                elif name == "marker_set":
+                    self._flag_done(d.flag("other", "flagged from the controller (SET)"))
                 elif name == "marker_prev":
                     d.arc_jump(max(0.0, d.arc_progress() - 0.1))
                 elif name == "marker_next":

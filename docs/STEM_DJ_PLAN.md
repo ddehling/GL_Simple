@@ -741,6 +741,19 @@ can be judged. (3) The handover backdates `bed_since` by the bars the record had
 from the cue), so layering the playing song does not restart the settle. Gate: PLAN (plans decided ≥ 2, every
 bar change logged as a plan move, few plans move). Not run: the user was live.
 
+**"I need a more robust way of messaging what is not working so we can fix problems later without just
+hurting specific mixes or song tags" (2026-09-13).** FLAGS: `Director.flag(kind, text)` with `FLAG_KINDS`
+(dead / busy / still / clash / seam / song / plan / timing / vocals / level / ui / other) writes a SNAPSHOT
+of the room to `logs/dj_flags.jsonl` (via `session.log_row(name=)`; also a short row in the day's log): mode,
+theme, pool, dials, arc, the engine's clock and bus rms/peak, every song on a deck (id, title, tempo, key,
+shift, rate, position, section, lanes held, stem gains, deck gain, low EQ, loop, entered/leaving/was_bed,
+voice_since/bed_since), the lane map, boosts, the plan, wait_why, moves/10min, the armed moment and the
+moment tune, the last ten conductor moves, the last six Director events, the last verdict and dropout; in
+one-song mode the autoDJ's current/next/plan/history. A ⚑ mark in the story row; `status["flags"]`. NOTHING
+is learned or moved. Tab: FLAG button beside GOOD/BAD (menu of kinds + "with a note…"); nanoKONTROL2 SET =
+a plain flag. `tools/dj/dj_flags.py` prints the flags as blocks (or `--summary`, `--kind`, `--session`,
+`--last`, `--json`) - enough to re-render the combination offline from the stems.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

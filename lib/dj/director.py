@@ -104,6 +104,22 @@ PROGRAMS = {
 BASS_LOW = {"flat": 1.0, "boost": 1.3, "heavy": 1.6}                # the mix bus EQ, low band (< 200 Hz)
 TONE_HIGH = {"dark": 0.7, "neutral": 1.0, "bright": 1.3}             # the mix bus EQ, high band (> 2.5 kHz)
 LEVEL_GAIN = {"quiet": 0.6, "normal": 0.85, "loud": 1.0}             # the mix bus gain
+# FLAGS: "this is not working" said for LATER, with the whole context, and no learning applied - unlike BAD,
+# which lowers a move's weight, leans the song's tags away and pushes the music on. key -> what the operator saw.
+FLAG_KINDS = {
+    "dead": "dead air / too quiet",
+    "busy": "too busy / too much going on",
+    "still": "nothing happening for too long",
+    "clash": "clash (key, chords, two songs fighting)",
+    "seam": "bad transition / seam",
+    "song": "wrong song choice",
+    "plan": "the plan changed / could not make up its mind",
+    "timing": "off the beat or the phrase",
+    "vocals": "vocals wrong (resting, doubled, cut)",
+    "level": "too loud / too quiet / thin",
+    "ui": "the screen (bouncing, unclear, wrong)",
+    "other": "something else (say what)",
+}
 MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
 MOMENT_GAP_S = {"rare": 1e9, "some": 480.0, "lots": 240.0}           # ...and never closer than this to the last moment (peaks are spaced)
 FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
@@ -174,6 +190,7 @@ class Director:
         self._noted = set()
         self.last_verdict = None         # what the last GOOD / BAD did (the tab shows it)
         self.last_dropout = None         # the last silence on the bus over a bar: when, what was happening
+        self.flags = []                  # the FLAGS raised tonight: {t, kind, label, text} (the snapshots are in logs/dj_flags.jsonl)
         self._quiet_since = None
         self._dropout_open = False
         self._pending_moment = None      # a TAKEOVER / BRIDGE waiting for its chosen song to be staged
@@ -1043,6 +1060,76 @@ class Director:
         self.last_verdict = info
         self._event(("GOOD" if up else "BAD") + (f": {info['what'][:50]}" if info.get("what") else ""))
         return info
+
+    # -- FLAGS: "this is not working", kept for later with everything needed to reproduce it -------------------------
+    def flag(self, kind, text=""):
+        """Raise a flag: what the operator saw (a FLAG_KINDS key, a free note) with a SNAPSHOT of the room -
+        mode, dials, the plan, the armed moment, every song on a deck with its position, lanes and gains, the
+        bus level, the last moves and events - written to logs/dj_flags.jsonl (and the day's log), marked in
+        the story row. Nothing is learned from it and nothing moves: it is a message to the fix, not a
+        verdict on a mix or a song. Returns the sentence shown."""
+        kind = kind if kind in FLAG_KINDS else "other"
+        snap = {"event": "flag", "kind": kind, "label": FLAG_KINDS[kind], "text": (text or "")[:400],
+                "mode": self.mode, "theme": self.theme, "pool": self.pool_name, "dials": dict(self.dials),
+                "bar": round(self._bar, 1), "events": [f"{h} {m}" for h, m in self.events[-6:]],
+                "last_verdict": ({k: v for k, v in self.last_verdict.items() if k in ("up", "what", "learn", "did")} if self.last_verdict else None),
+                "last_dropout": self.last_dropout}
+        try:
+            snap["arc"] = {k: v for k, v in self.arc_status().items() if k in ("word", "target", "elapsed_s", "length_s", "shape")}
+        except Exception:
+            pass
+        try:
+            if self.rc is not None and self.rc.master is not None:
+                rc = self.rc
+                tel = rc.submix.telemetry or {}
+                decks = tel.get("decks") or {}
+                songs = {}
+                for d, s in rc.songs.items():
+                    t = decks.get(d) or {}
+                    songs[d] = {"id": s.track.id, "title": s.track.title, "artist": s.track.artist, "bpm": s.track.bpm, "camelot": s.track.camelot,
+                                "shift": s.shift, "rate": round(float(s.rate), 4), "time_s": t.get("time_s"), "playing": bool(t.get("playing")),
+                                "lanes": s.held(rc.lanes), "gains": {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
+                                "gain": t.get("gain"), "eq_low": (t.get("eq") or [None])[0], "loop": t.get("loop"),
+                                "entered": s.entered, "leaving": s.leaving, "was_bed": s.was_bed, "voice_since": s.voice_since, "bed_since": s.bed_since,
+                                "section": (s.track.section_at(float(t.get("time_s") or 0.0)) or {}).get("kind")}
+                arr = rc._arrangement_status()
+                snap.update({"engine": "conductor", "clock_s": tel.get("clock_s"), "rms": tel.get("rms"), "peak": tel.get("peak"),
+                             "master": rc.master, "master_bpm": rc.master_bpm, "key_centre": rc.key_centre, "bar_n": rc.bar_n,
+                             "phrase_bars": rc.phrase_bars, "change_bars": rc.change_bars, "calm_phrases": rc.calm_phrases,
+                             "lanes": {ln: (rc.songs[d].track.title if d in rc.songs else None) for ln, d in rc.lanes.items()},
+                             "lane_boost": {k: list(v) for k, v in rc.lane_boost.items()}, "songs": songs,
+                             "plan": arr.get("plan"), "wait_why": arr.get("wait_why"), "moves_10min": arr.get("moves_10min"),
+                             "moment": rc.moment_status(), "moment_tune": rc.moment_tune, "breaking": rc._break is not None,
+                             "user_loop": rc.user_loop_bars, "hold": rc.hold,
+                             "moves": [{"hms": m.get("hms"), "kind": m["kind"], "lane": m.get("lane"), "text": m["text"][:140]} for m in rc.move_log[-10:]]})
+            elif self.system is not None:
+                sysm = self.system
+                st = sysm.status()
+                tel = sysm.submix.telemetry or {}
+                cur = st.get("current") or {}
+                snap.update({"engine": "autodj", "clock_s": tel.get("clock_s"), "rms": tel.get("rms"), "peak": tel.get("peak"),
+                             "state": st.get("state"), "current": cur, "next": st.get("next"), "plan": st.get("plan"),
+                             "blend_in_s": st.get("blend_in_s"), "played_s": self._played_s(),
+                             "history": [{k: v for k, v in h.items() if k in ("title", "via", "t", "beats")} for h in sysm._history[-4:]],
+                             "recent": (st.get("recent_events") or [])[-8:]})
+        except Exception as e:  # noqa: BLE001
+            snap["snapshot_error"] = f"{type(e).__name__}: {e}"
+        try:
+            from lib.dj.session import log_row, FLAGS_FILE
+            log_row(snap, name=FLAGS_FILE)
+            log_row({"event": "flag", "kind": kind, "text": snap["text"]})
+        except Exception:
+            pass
+        self.flags.append({"t": time.time(), "kind": kind, "label": FLAG_KINDS[kind], "text": snap["text"]})
+        try:
+            self.marks.append({"bar": int(self._bar), "end_bar": None, "lanes": None, "ghost": False, "kind": "flag",
+                               "text": f"⚑ {FLAG_KINDS[kind]}" + (f": {text[:30]}" if text else "")})
+        except Exception:
+            pass
+        n = sum(1 for f in self.flags if f["kind"] == kind)
+        msg = f"flagged: {FLAG_KINDS[kind]}" + (f" - {text[:60]}" if text else "") + f" ({n} tonight; nothing learned, nothing moved)"
+        self._event(msg)
+        return msg
 
     # -- the tick ---------------------------------------------------------------------------------------------
     def step(self):
@@ -2030,6 +2117,9 @@ class Director:
         except Exception:
             out["session"] = None
         out["last_dropout"] = self.last_dropout
+        out["flags"] = list(self.flags[-5:])
+        out["n_flags"] = len(self.flags)
+        out["flag_kinds"] = dict(FLAG_KINDS)
         try:
             out["rate_target"] = self.rate_target()
         except Exception:
