@@ -886,6 +886,13 @@ class Director:
         rms = float(tel.get("rms") or 0.0)
         now = time.time()
         bar_s = 240.0 / max(self._bpm(), 60.0)
+        # silence only counts once the room has sounded: the two seconds between START and the first song's
+        # audio raised a DROPOUT two seconds into a set (2026-09-13)
+        if rms >= 0.004:
+            self._heard = True
+        elif not getattr(self, "_heard", False):
+            self._quiet_since = None
+            return
         if rms >= 0.004:
             q = getattr(self, "_quiet_since", None)
             if q is not None and getattr(self, "_dropout_open", False):
