@@ -1244,7 +1244,7 @@ class WebController:
                       'director_rate', 'director_arc', 'director_program'}
         REMIX_ACTS = ('next', 'hold', 'unhold', 'drop', 'break', 'loop4',
                       'loop8', 'unloop', 'save', 'recall')
-        DIRECTOR_ACTS = ('next', 'hold', 'drop', 'break')
+        DIRECTOR_ACTS = ('next', 'hold', 'drop', 'break', 'slam', 'break_routine', 'sing', 'takeover', 'bridge', 'moment_cancel')
 
         def queue_dj_action(data):
             """Validate + clamp one DJ control action and queue it for the

@@ -322,8 +322,10 @@ class TimelineCanvas(QWidget):
                     continue
                 ghost = bool(m.get("ghost"))
                 lanes = m.get("lanes") or list(LANES)
-                col = QColor(255, 255, 255, 34 if not ghost else 18)
-                pen = QPen(QColor(230, 230, 236, 160 if not ghost else 110), 1, Qt.PenStyle.DashLine if ghost else Qt.PenStyle.SolidLine)
+                moment = m.get("kind") == "moment"    # an armed moment's choreography: gold
+                col = QColor(255, 200, 60, 40) if moment else QColor(255, 255, 255, 34 if not ghost else 18)
+                pen = QPen(QColor(255, 210, 90, 200) if moment else QColor(230, 230, 236, 160 if not ghost else 110), 1,
+                           Qt.PenStyle.DashLine if ghost else Qt.PenStyle.SolidLine)
                 if m.get("end_bar") is not None:
                     x1 = self.x_of(m["end_bar"])
                     for ln in lanes:
@@ -336,8 +338,8 @@ class TimelineCanvas(QWidget):
                 # the words: two rows so neighbours do not overwrite each other, cut to what fits
                 row = 1 - row if x0 - last_x < 200 else 0
                 last_x = x0
-                p.setPen(QColor(230, 230, 236) if not ghost else QColor(170, 170, 185))
-                txt = ("plan: " if ghost else "") + m.get("text", "")
+                p.setPen(QColor(255, 210, 90) if moment else (QColor(230, 230, 236) if not ghost else QColor(170, 170, 185)))
+                txt = ("plan: " if ghost and not moment else "") + m.get("text", "")
                 p.drawText(QRectF(x0 + 3, sy + (0 if row == 0 else 9), 200, 11), Qt.AlignmentFlag.AlignVCenter, txt[:38] + ("…" if len(txt) > 38 else ""))
         # playhead
         ph = self.tab.playhead()

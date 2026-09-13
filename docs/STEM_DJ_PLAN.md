@@ -659,6 +659,38 @@ rebuilds when the guard's bar-by-bar opinion flips (in-place text/enabled/toolti
 holdings change) and the SONGS list re-ranks only when its reference (record, last UP NEXT) changes or every
 30 s, keeping its scroll - the two visible sources of "things bounce around".
 
+**2026-09-12, "yes, do it" - THE MOMENTS built as designed.** Conductor (`lib/dj/remix.py`): `MOMENTS`
+(slam 2 / break 16 / sing 2 / takeover 1 / bridge 8 bars of lead), `arm_moment(kind, auto)` chooses the
+landing - the target song's drop or hook within MOMENT_LOOK_PHRASES (4) phrases via `_payoff_in_bars`, else
+`_phrase_ahead` (the next 8-bar boundary of its section grid at least the lead away) - and stores a script
+of (bar offset from THE ONE, action); `_moment_step` (in `step()` after the boost step) fires each action
+when the bar before it begins, posted at the next bar's clock, and returns True so the arrangement, the vocal
+rule, the auto break and the phrase move all PAUSE while a moment is armed or running; `moment_go` re-anchors
+the one to the next bar + lead; `moment_cancel` undoes a running one on the bar; `moment_status` carries the
+countdown and the choreography marks. The scripts: SLAM = bed's bass + drums out (1 beat) two bars before,
+`_m_hole` (every held lane hard-muted) on the last beat, `_m_payoff` on the one (every held lane back at its
+level, bass + drums MOMENT_BOOST 1.25 via `lane_boost` for a phrase, filter off, loop cleared). BREAK = out
+at -16 (2 beats; refused when no melody/vocal is held or the one left is measured silent over the take-away),
+`build` at -8 (drums back, a HIGH-PASS SWEEP on the bed deck 50 -> 420 Hz over 7.5 bars when MOMENT_SWEEP),
+`tighten` at -4 (the bed deck LOOPS 2 bars -> 1 -> half, posted at absolute clocks because a looping master
+stalls the bar count; the hole for the last 2 beats keeping the vocal; the one posted then too, with a
+`jump` back to where the song would have been); SING = bed out at hook + 0 for two bars, back loud at
+hook + 2; TAKEOVER = old bass out on the last beat, the other song's bass in loud on the one (lanes moved,
+`_m_roles` later), its drums cross at + change_bars (`bed_to` logged); BRIDGE = bed's drums/bass/other out
+over 4 bars from -8 under its vocal, the other song's drums under at -4, a one-beat hole keeping the vocal,
+its bass + drums (+ other when the guard allows) slam on the one and it is the bed. After a moment:
+`phrase_bars = 0`, `_drop_k = bar_n` (a phrase of plain play; the auto break keeps its distance). Director:
+`arm_moment` / `moment_go` / `moment_cancel` / `moment_status` (one song: SLAM = the autoDJ's DROP, the rest
+refuse with the reason); `_auto_moments` layered now arms these same five (bridge/takeover when a voice has
+been heard two phrases, else sing, break, slam) instead of the DROP-onto-voice; the intent line and
+`status["moment"]`; the picture draws the choreography as gold dashed marks (kind "moment") from the one
+backwards. Tab: ONE ROW of five checkable buttons (press = arm, the button counts down `SLAM in 6`, press
+again = go now, right-click = cancel, a line under the row for refusals); DROP/BREAK buttons, the READY grid,
+LOUD/PHRASE, the FX dial and the 2×4 program grid are OFF the surface (one PROGRAM box); the right-click
+song menu still brings one stem. nanoKONTROL2 REC/CYCLE = SLAM/BREAK. Show page: the five + ✕. Gate:
+SLAM and BREAK armed (landing within four phrases + lead), take-away and the one in the log, the bed's drums
+measured out then back in the deck telemetry; TAKEOVER when a second song is there (bass then drums on it).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

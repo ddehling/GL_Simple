@@ -1,7 +1,10 @@
 # How a moment is made — design for a yes (2026-09-12)
 
 *Written after "it seems a pale shadow… go read more on DJ theory about how moments are created" and
-"it's a painful mishmash". Nothing below is built. This is the page to say yes or no to.*
+"it's a painful mishmash". Answered "yes, do it" the same night and BUILT as written (all three questions
+taken as yes: the five moments, loop tightening and the bus high-pass in the BREAK's build, the simplified
+surface). The build is described in `STEM_DJ_PLAN.md` and the operating guide; the numbers below await the
+ear.*
 
 ## Why it is a mishmash
 

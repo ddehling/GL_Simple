@@ -31,8 +31,9 @@ Three kinds, hover any heading for the detail and its live effect.
   tag may play; none lit = everything; "+N more…" opens the rest).
 - **How it mixes.** MIXING (auto / long blends / hard cuts / stem morphs), PACE (how long records or
   phrases run), SEAMS (how long the mixes themselves are), LOOPS.
-- **How it plays.** BASS, TONE, LEVEL on the mix bus; MOMENTS (how often the DJ makes its own drops,
-  breaks and bass-first bed changes: rare / some / lots); FX.
+- **How it plays.** BASS, TONE, LEVEL on the mix bus; MOMENTS (how often the DJ arms its own moments, the
+  same five as yours: rare / some / lots). FX is off the surface (the moments carry their own shapes); the
+  controller's knob 5 still reaches it.
 
 A dial acts within a phrase; it never re-plans the next song unless the dial changes what songs fit.
 
@@ -52,12 +53,33 @@ above the lanes says what happened where and what is planned (dashed). **Wheel**
 pans, **− / + / now / follow** on the right of the top row. Under NOW and NEXT a **song map** shows the
 whole record's shape.
 
-## The moments (the four big buttons)
+## The moments (the row of five)
+
+A moment is a composed shape over 1 to 16 bars, the way the literature describes the break routine: take
+away, build, a hole with the downbeat delayed, then bass drum and bass back **on the one** of a phrase,
+louder. Press a moment to **arm** it: the system picks the landing (the target song's drop or hook within
+four phrases, else its next phrase far enough away), the picture draws the choreography in **gold** across
+the lanes, and the button counts down in bars. Press the armed one again = **go now** (it starts on the next
+bar). Right-click = cancel (a running one is undone on the bar). Nothing else moves while a moment is armed
+or running; afterwards the arrangement waits a phrase.
+
+- **SLAM** (2 bars) - bass and drums out for the last two bars, a beat of nothing, everything back louder.
+  One song at a time this button reads **DROP**: the autoDJ's build into the next song's drop.
+- **BREAK** (16 bars) - drums and bass out for eight bars while the melody or vocal stays; the drums come
+  back and the lows sweep away over eight; the drums tighten (two bars, one, half); half a bar of nothing;
+  everything back louder on the one.
+- **SING** (at the hook) - bass and drums out for two bars, the vocal alone for the room; back louder on the
+  third bar. Needs a song singing with a hook ahead.
+- **TAKEOVER** - the other song's bassline takes over on the one, loud, at its drop or hook; its drums follow
+  at the phrase. Needs a second song (a voice, or one staged: put one UP NEXT).
+- **BRIDGE** - the bed fades out under this song's vocal, the other song's drums come in under it, a beat of
+  nothing, its bass and drums slam on the one; the vocal carries over. Needs the bed singing and a second song.
+
+The **MOMENTS** dial (rare / some / lots) makes the DJ arm these same five by itself, spaced as before; you
+see the same countdown and can cancel or replace it. Refusals say why on the line under the row.
 
 - **NEXT** - move on at the next phrase (layered: the next lane move, waits waived).
 - **STAY** - one more phrase of this.
-- **DROP** - one song: build and land on the next song's drop; layered: every part to the newest song.
-- **BREAK** - layered: strip to one part for four bars, then all back.
 - **👍 GOOD / 👎 BAD** - what to do more or less of. The line underneath says what was rated, what it
   learned (seam-style and move weights, and the song's tags for the next picks) and what it did. BAD acts
   at once.
@@ -70,31 +92,25 @@ puts a song UP NEXT. The **filter row** narrows the list: instrumental / vocal, 
 hotter, slower / same / faster, songs with a hook, unheard tonight; the sort box orders it. Hover a row
 for the song's shape and when it last played.
 
-## Over the next few songs: PROGRAMS
+## Over the next few songs: PROGRAM
 
-**NEXT SONGS**: pick 2, 3 or 4 songs, then **BUILD** (energy up song by song, a big moment on the last),
-**COOL**, **PEAK**, **VOCALS UP**, **BREATHE** (long plays, nothing added), **BRIGHTEN** or **DARKEN**.
-The program steps the dials it names at every song change (layered: every bed change) and hands them
-back when it ends; press the lit program again, or **stop**, to end it early. The intent line says
-where it stands.
+The **PROGRAM** box: pick 2, 3 or 4 songs, then **BUILD** (energy up song by song, a big moment on the
+last), **COOL**, **PEAK**, **VOCALS UP**, **BREATHE** (long plays, nothing added), **BRIGHTEN** or
+**DARKEN**. The program steps the dials it names at every song change (layered: every bed change) and hands
+them back when it ends; choose **none**, or **stop**, to end it early. The intent line says where it stands.
 
-## Big moments on purpose: READY (layered)
+## One stem of one song (layered)
 
-Under UP NEXT, **READY** lists every song on a deck with four stem buttons: **bass / drums / melody /
-vocal**. Lit = that song holds the lane. Press an unlit one and **that song's stem comes in on the next
-bar**, loud for a phrase when **LOUD** is on (or at the next phrase with **PHRASE** on); press a lit one
-and it goes back to the bed. Greyed = the guard refuses (hover for the reason: a key clash, not singing
-there). **Right-click any song in the SONGS list** to stage it and bring a chosen stem the moment it is
-ready. This is "the bassline of that song under this one, now".
-
-With MOMENTS on, the conductor's own bed changes are bass-first: the new song's bassline takes over at its
-drop or hook, loud, and its drums follow a phrase later.
+**Right-click any song in the SONGS list**: its bassline, drums, melody or vocal comes in under what plays
+on the next bar, loud for a phrase (a song not on a deck is staged first and comes in the moment it is
+ready). The guard still refuses a key clash. With MOMENTS on, the conductor's own bed changes are bass-first:
+the new song's bassline takes over at its drop or hook, loud, and its drums follow a phrase later.
 
 ## The controller (nanoKONTROL2)
 
 Faders 1-8: ENERGY, TEMPO, PACE, SEAMS, VOCALS, VARIETY, BASS, LEVEL. Knobs 1-8: MIXING, LAYERS, LOOPS,
-MOMENTS, FX, TONE, ARC, LENGTH. PLAY / STOP / REC / CYCLE = NEXT / STAY / DROP / BREAK. TRACK ◀ ▶ = BAD /
-GOOD. MARKER ◀ ▶ = arc back / ahead 10 %.
+MOMENTS, FX, TONE, ARC, LENGTH. PLAY / STOP = NEXT / STAY; REC = SLAM (again = go now); CYCLE = BREAK
+(again = go now). TRACK ◀ ▶ = BAD / GOOD. MARKER ◀ ▶ = arc back / ahead 10 %.
 
 ## When it does something odd
 

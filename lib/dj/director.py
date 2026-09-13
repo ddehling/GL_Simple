@@ -754,6 +754,43 @@ class Director:
             return True
         return False
 
+    # -- the composed moments: SLAM / BREAK / SING / TAKEOVER / BRIDGE ------------------------------------------------
+    def arm_moment(self, kind, auto=False):
+        """Arm a composed moment (layered). Pressing the armed one again = go now. One song at a time: the
+        first moment is the autoDJ's DROP (a build into the next song's drop); the rest need layers.
+        Returns (ok, sentence)."""
+        if self.rc is not None and self.rc.master is not None:
+            ok, msg = self.rc.arm_moment(kind, auto=auto)
+            if ok:
+                self._last_moment_t = time.time()
+                if not auto:
+                    self._event(f"{kind.upper()}: {msg}")
+            elif not auto:
+                self._event(f"{kind.upper()} refused: {msg}")
+            return ok, msg
+        if self.system is not None:
+            if kind == "slam":
+                self.drop()
+                return True, "DROP: a short build, then the next song's drop"
+            return False, "needs songs layered (LAYERS two or three)"
+        return False, "press START first"
+
+    def moment_go(self):
+        if self.rc is not None:
+            return self.rc.moment_go()
+        return False, "nothing armed"
+
+    def moment_cancel(self):
+        if self.rc is not None:
+            ok, msg = self.rc.moment_cancel()
+            if ok:
+                self._event(msg)
+            return ok, msg
+        return False, "nothing armed"
+
+    def moment_status(self):
+        return self.rc.moment_status() if self.rc is not None else None
+
     # -- tactical stem moves: THIS song's bassline (drums, vocals, melody) in, now, loud -------------------------
     def stem_in(self, track_id, lane, loud=True, when="bar"):
         """Bring one song's `lane` under what plays - on the next bar (or the next phrase), loud for a
@@ -1247,15 +1284,24 @@ class Director:
                     self._last_moment_t = time.time()
                     self._event("moment: double-drop into the next song")
         elif self.rc is not None and self.rc.master is not None:
-            self.rc.auto_break_scale = rate / 0.5 if spaced else 0.0
-            if self.rc.phrase_bars == 0 and getattr(self, "_moment_k", None) != self.rc.bar_n:
-                self._moment_k = self.rc.bar_n
-                voices = [s for d, s in self.rc.songs.items() if s.entered and not s.leaving and d != self.rc.lanes.get("drums")
-                          and s.voice_since is not None and self.rc.bar_n - s.voice_since >= 2 * self.rc.change_bars]
-                if voices and spaced and hot and self.rc.rng.random() < rate * 0.35:
-                    self.rc.drop()
-                    self._last_moment_t = time.time()
-                    self._event("moment: DROP onto the voice - bed and voice become one song")
+            rc = self.rc
+            rc.auto_break_scale = rate / 0.5 if spaced else 0.0
+            # the DJ's own moments are the same five as yours, armed the same way (you see the countdown and
+            # can cancel): at a phrase start, spaced and hot, one whose conditions hold - a two-song moment
+            # when a voice has been heard two phrases, SING when the bed sings toward a hook, else BREAK, else SLAM
+            if rc.phrase_bars == 0 and getattr(self, "_moment_k", None) != rc.bar_n and rc._moment is None:
+                self._moment_k = rc.bar_n
+                if spaced and hot and rc.rng.random() < rate * 0.5:
+                    bed = rc.lanes.get("drums")
+                    voices = [s for d, s in rc.songs.items() if s.entered and not s.leaving and d != bed
+                              and s.voice_since is not None and rc.bar_n - s.voice_since >= 2 * rc.change_bars]
+                    order = (["bridge", "takeover"] if voices else []) + ["sing", "break", "slam"]
+                    for kind in order:
+                        ok, msg = rc.arm_moment(kind, auto=True)
+                        if ok:
+                            self._last_moment_t = time.time()
+                            self._event(f"the DJ: {msg}")
+                            break
 
     # -- one night's memory --------------------------------------------------------------------------------------------
     def _note_played(self, tid):
@@ -1431,6 +1477,13 @@ class Director:
             # the bed's settling allows - one steady ghost, not a lane-hopping one; the story row says what
             # each live song is waiting for
             left = max(0, rc.change_bars - 1 - rc.phrase_bars)
+            # an armed moment: its choreography, dashed and gold, from the one backwards
+            mo = rc.moment_status()
+            if mo:
+                L = b + mo["in_bars"]
+                for mk in mo.get("marks") or []:
+                    self.plan_marks.append({"bar": int(L + mk["off"]), "end_bar": (int(L + mk["end_off"]) if mk.get("end_off") is not None else None),
+                                            "lanes": mk["lanes"], "ghost": True, "kind": "moment", "text": mk["text"]})
             try:
                 arr = rc._arrangement_status()
                 settle = int(((arr.get("bed") or {}).get("settle_left")) or 0)
@@ -1807,8 +1860,13 @@ class Director:
                         bits.append(f"voice {v['title'][:26]} takes the bed at its drop in ~{v['drop_in_bars']:.0f} bars")
                     else:
                         bits.append(f"voice {v['title'][:26]} takes the bed by {v['must_take_bed_in']} bars (no drop in sight)")
+                mo = st.get("moment")
+                if mo:
+                    bits.insert(1, f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']}): the one in {mo['in_bars']} bars on {mo['what']}"
+                                + (f" of {mo['other'][:20]}" if mo.get("other") and mo["kind"] in ("takeover", "bridge") else ""))
                 out["intent"] = ", ".join(bits)
                 out["wait_why"] = arr.get("wait_why")
+                out["moment"] = mo
                 out["lanes"] = {ln: (songs.get(d) or {}).get("title") if d else None for ln, d in lanes.items()}
                 out["recent"] = [f"{t}  {m}" for t, m in (st.get("moves") or [])[-8:]]
                 out["error"] = out["error"] or st.get("error")
@@ -1921,7 +1979,10 @@ class Director:
                      "manual": "your move", "open": "the opener",
                      "voice_in": "a new song arrives as a VOICE over the bed once the bed has settled (drums + bass stay where they are)",
                      "bed_to": "the voice was heard two phrases and reached its drop (or ran out of phrases), so the BED (drums + bass together) passes to it",
-                     "voice_out": "the old bed song, now only a voice, fades out; one song's journey is complete"}
+                     "voice_out": "the old bed song, now only a voice, fades out; one song's journey is complete",
+                     "moment_arm": "a MOMENT is armed: it lands on the target song's drop or hook (else its next phrase); nothing else moves until it is done",
+                     "moment": "a step of the armed MOMENT (take away, build, the hole, the one)",
+                     "moment_cancel": "the moment was cancelled; everything came back on the bar"}
             if last is not None:
                 why.append(f"last move - {last['text'][:70]}: {kinds.get(last['kind'], last['kind'])}")
             if rc.wait_why:

@@ -97,7 +97,23 @@ SING_ON, SING_OFF = 0.12, 0.05   # the vocal stem's own envelope (of its loud le
 STRIP_BARS = 4                   # the breakdown before a bed lands: the old bed's drums + bass out for this many bars
 DROP_LOOK_BARS = 2               # a voice's drop counts as "now" when its groove starts within this many bars
 RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break", "break_auto",
-               "voice_in", "bed_to", "voice_out", "moment_in")
+               "voice_in", "bed_to", "voice_out", "moment_in", "moment")
+# MOMENTS: composed shapes the conductor runs as scripts of bar offsets from THE ONE (the literature's break
+# routine: take away -> build -> a hole with the downbeat delayed -> bass drum and bass back on the one of a
+# phrase). key -> (label, lead bars before the one, what it does)
+MOMENTS = {
+    "slam": ("SLAM", 2, "bass and drums out for the last two bars, a beat of nothing, everything back louder on the one"),
+    "break": ("BREAK", 16, "drums and bass out for eight bars (the melody stays); the drums back and the lows sweep away over eight, "
+                          "the drums tighten into the last bars; half a bar of nothing; everything back louder on the one"),
+    "sing": ("SING", 2, "at the hook: bass and drums out for two bars, the vocal alone for the room to sing; back louder on the third bar"),
+    "takeover": ("TAKEOVER", 1, "the other song's bassline takes over on the one, loud, at its drop or hook; its drums follow at the phrase"),
+    "bridge": ("BRIDGE", 8, "the bed fades out under this song's vocal; the other song's drums come in under it; a beat of nothing; "
+                            "its bass and drums slam on the one, the vocal carries over"),
+}
+MOMENT_BOOST = 1.25              # bass and drums come back this much louder for a phrase (the peak guard keeps the bus honest)
+MOMENT_LOOK_PHRASES = 4          # a moment lands on the target song's drop or hook when one comes within this many phrases
+MOMENT_TIGHTEN = True            # the BREAK's build tightens the bed's loop 2 -> 1 -> half a bar (the drum-roll effect, from the real stem)
+MOMENT_SWEEP = True              # ...and a high-pass sweep on the bed over the build (a mixer move)
 
 
 def _compat(c1, c2):
@@ -182,6 +198,7 @@ class RemixConductor:
         self.bass_moments = False        # the Director's MOMENTS: a bed change is bass-first (the bassline takes over, drums follow)
         self.lane_boost = {}             # lane -> (gain multiplier, until bar): a tactical "loud" on a lane, then back to its trim
         self._drums_follow = None        # deck whose drums complete a bass-first bed change when _land_k comes
+        self._moment = None              # a composed MOMENT armed or running (see arm_moment); the arrangement pauses meanwhile
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
@@ -964,6 +981,8 @@ class RemixConductor:
         self._keep_runway(self.bar_n)
         self._tempo_step()
         self._boost_step()
+        if self._moment_step():
+            return                                    # a MOMENT is armed or running: nothing else moves
         if self._break is not None:
             return
         self._recall_step()
@@ -1658,6 +1677,410 @@ class RemixConductor:
         self._move("moment_out", lane, self._song_id(frm), self._song_id(bed), f"you: the {lane} back to {self.songs[bed].track.title}", shape=tag)
         return True, f"{lane} back to the bed"
 
+    # -- MOMENTS: composed shapes over 1-16 bars, landing on the one ------------------------------------------------
+    # The literature's break routine (Solberg 2014/2019): take away (the beat and bass go, something melodic
+    # stays), build (layers return in 2/4/8-bar steps, the frequency range opens), the hole (a beat to a bar
+    # of nothing, the downbeat delayed), the payoff (bass drum and bass slam back on the one of a phrase,
+    # louder). Each moment is a script of bar offsets from THE ONE; the arrangement's own moves pause while
+    # one is armed or running, so nothing else moves under it. Armed = the landing is chosen (the target
+    # song's drop or hook within four phrases, else its next phrase far enough away) and counted down.
+    def _second_song(self, bed):
+        """The other song for a two-song moment: the newest VOICE heard, else a song staged and waiting."""
+        live = [(d, s) for d, s in self.songs.items() if d != bed and not s.leaving and s.staged_at is not None]
+        voices = [(d, s) for d, s in live if s.entered]
+        if voices:
+            return max(voices, key=lambda ds: ds[1].entered_k or 0)[0]
+        staged = [(d, s) for d, s in live if not s.entered]
+        return staged[0][0] if staged else None
+
+    def _phrase_ahead(self, deck, at, min_bars):
+        """Bars from the bar at clock `at` to the song's next 8-bar phrase boundary (counted from the start of
+        its section) at least `min_bars` away - or its next section start when that is nearer and far enough."""
+        s = self.songs.get(deck)
+        if s is None:
+            return int(min_bars)
+        t = self._song_time_at(deck, at)
+        bar = self._bar_s(s.track, t)
+        sec = s.track.section_at(t) or {}
+        s0 = s.track.nearest_downbeat(float(sec.get("start_s", 0.0))) if sec else 0.0
+        ph = 8 * bar
+        n = math.ceil((t - s0 + min_bars * bar - 0.05 * bar) / ph)
+        cand = (s0 + n * ph - t) / bar
+        for x in s.track.sections or []:
+            d = (s.track.nearest_downbeat(float(x["start_s"])) - t) / bar
+            if min_bars - 0.05 <= d < cand:
+                cand = d
+        return int(round(max(min_bars, cand)))
+
+    def arm_moment(self, kind, auto=False):
+        """Arm a composed moment: choose where it lands and count down. Pressing the same moment again while
+        it is armed = go now (the script starts on the next bar). Returns (ok, sentence)."""
+        if kind not in MOMENTS:
+            return False, "no such moment"
+        if self.master is None:
+            return False, "no clock"
+        label, lead, _desc = MOMENTS[kind]
+        if self._moment is not None:
+            if self._moment["kind"] == kind and not self._moment["started"]:
+                return self.moment_go()
+            self.moment_cancel()
+        at = self._next_bar_clock()
+        bar_c = self._bar_clock()
+        B = self._bed_deck() or self.master
+        if B not in self.songs or self.songs[B].leaving:
+            return False, "no bed"
+        held = {ln: d for ln, d in self.lanes.items() if d is not None and d in self.songs and not self.songs[d].leaving}
+        V, T, what, hb = None, B, None, None
+        if kind in ("slam", "break") and not any(held.get(ln) == B for ln in ("drums", "bass")):
+            return False, "the bed holds neither drums nor bass"
+        if kind == "break":
+            stays = [ln for ln in ("other", "vocals") if ln in held]
+            if not stays:
+                return False, "nothing would be left playing (no melody or vocal on a lane)"
+            if all(self.songs[held[ln]].loop is not None for ln in stays):
+                return False, "the melody left is looping its last bars"
+        if kind == "sing":
+            S = held.get("vocals")
+            if S is None:
+                return False, "no vocal on a lane"
+            hb = self._hook_in_bars(S, at, MOMENT_LOOK_PHRASES * self.change_bars)
+            if hb is None:
+                return False, f"no hook of {self.songs[S].track.title[:24]} within {MOMENT_LOOK_PHRASES} phrases"
+            T, what = S, "hook"
+        if kind in ("takeover", "bridge"):
+            V = self._second_song(B)
+            if V is None:
+                return False, "no second song on a deck (put one UP NEXT)"
+            why = self.why_not("bass", V)
+            if why:
+                return False, f"{self.songs[V].track.title[:24]}: {why}"
+            if kind == "bridge":
+                if held.get("vocals") != B:
+                    return False, "the bed's vocal is not on the lane"
+                if self._sings_through(B, at, 4) is False:
+                    return False, f"{self.songs[B].track.title[:24]} is not singing here"
+            T = V
+        # the landing: the target song's drop or hook within four phrases, else its next phrase far enough away
+        if kind == "sing":
+            L = self.bar_n + 1 + int(round(hb)) + 2
+        else:
+            pay, what = self._payoff_in_bars(T, at, MOMENT_LOOK_PHRASES * self.change_bars)
+            if pay is not None and pay >= lead - 0.05:
+                L = self.bar_n + 1 + int(round(pay))
+            else:
+                L = self.bar_n + 1 + self._phrase_ahead(T, at, lead)
+                what = "the phrase"
+        at_L = at + (L - self.bar_n - 1) * bar_c
+        if kind == "break":
+            # the melody or vocal left alone must actually sound through the take-away (measured from its stem)
+            stays = [ln for ln in ("other", "vocals") if ln in held]
+            lv = max((self._stem_level_span(held[ln], ln, at_L - 16 * bar_c, at_L - 8 * bar_c) or 0.5) for ln in stays)
+            if lv < 0.12:
+                return False, "the melody left alone is silent there"
+        if self._break is not None:                   # a BREAK running gives way: its lanes come back with the script
+            for lane, d in self._break[1].items():
+                if d in self.songs and not self.songs[d].leaving:
+                    self.lanes[lane] = d
+            self._break = None
+        self._loop_after_land = None
+        self._moment = {"kind": kind, "label": label, "lead": lead, "L": L, "at_L": at_L, "B": B, "V": V, "what": what or "the phrase",
+                        "fired": set(), "started": False, "end_clock": None, "t_L": self._song_time_at(B, at_L), "auto": bool(auto),
+                        "script": self._moment_script(kind), "who": "the DJ" if auto else "you"}
+        self._moment["script_marks"] = getattr(self, "_pending_marks", [])
+        tt = self.songs[T].track.title[:24]
+        self._move("moment_arm", None, self._song_id(B), self._song_id(V),
+                   f"{'the DJ' if auto else 'you'}: {label} armed, lands in {L - self.bar_n} bars on {tt}'s {what or 'phrase'}")
+        return True, f"{label} in {L - self.bar_n} bars, on {tt}'s {what or 'phrase'}"
+
+    def moment_go(self):
+        """The armed moment starts on the next bar (its landing moves to the next bar plus its lead)."""
+        m = self._moment
+        if m is None:
+            return False, "nothing armed"
+        if m["started"]:
+            return True, f"{m['label']} is already running"
+        at = self._next_bar_clock()
+        m["L"] = self.bar_n + 1 + m["lead"]
+        m["at_L"] = at + m["lead"] * self._bar_clock()
+        m["t_L"] = self._song_time_at(m["B"], m["at_L"])
+        m["what"] = "now"
+        self._move("moment_arm", None, self._song_id(m["B"]), self._song_id(m["V"]), f"{m['who']}: {m['label']} now - lands in {m['lead']} bars")
+        return True, f"{m['label']} now: lands in {m['lead']} bars"
+
+    def moment_cancel(self):
+        """Disarm; a running script is undone on the next bar (every lane back at its level, loops and
+        filters off, no boost)."""
+        m = self._moment
+        if m is None:
+            return False, "nothing armed"
+        self._moment = None
+        if m["started"]:
+            at = self._next_bar_clock()
+            ev = []
+            for lane, d in self.lanes.items():
+                if d is not None and d in self.songs and not self.songs[d].leaving:
+                    self.lane_boost.pop(lane, None)
+                    ev.append(self._m_gain(d, lane, at, 1.0))
+            ev += [{"at": at, "cmd": "clear_loop", "deck": m["B"]}, {"at": at, "cmd": "filter", "deck": m["B"], "mode": "off"}]
+            self.submix.post_many(ev)
+            self._hygiene(at + int(self._beat_s() * RATE))
+            self.phrase_bars = 0
+        self._move("moment_cancel", None, self._song_id(m["B"]), None, f"{m['label']} cancelled" + (" - everything back on the bar" if m["started"] else ""))
+        return True, f"{m['label']} cancelled"
+
+    def moment_status(self):
+        """The armed or running moment for the readout and the picture: what, whose, bars to the one, and the
+        choreography as (offset, end offset, lanes, words) from the one."""
+        m = self._moment
+        if m is None:
+            return None
+        marks = [{"off": off, "end_off": end, "lanes": lanes, "text": text} for off, end, lanes, text in m.get("script_marks") or []]
+        return {"kind": m["kind"], "label": m["label"], "in_bars": m["L"] - self.bar_n, "started": m["started"], "what": m["what"],
+                "who": m["who"], "auto": m["auto"], "bed": self.songs[m["B"]].track.title if m["B"] in self.songs else None,
+                "other": (self.songs[m["V"]].track.title if m["V"] in self.songs else None) if m["V"] else None,
+                "marks": marks, "desc": MOMENTS[m["kind"]][2]}
+
+    def _m_gain(self, deck, lane, at, ramp_beats, mult=1.0):
+        return {"at": at, "cmd": "stem_gains", "deck": deck, "gains": {lane: self._lane_gain(deck, lane, at) * mult}, "ramp_s": ramp_beats * self._beat_s()}
+
+    def _m_mute(self, deck, lane, at, ramp_beats):
+        return {"at": at, "cmd": "stem_gains", "deck": deck, "gains": {lane: 0.0}, "ramp_s": ramp_beats * self._beat_s()}
+
+    def _m_held(self):
+        """(lane, deck) pairs sounding by the lane map."""
+        out = []
+        for lane, d in self.lanes.items():
+            if d is None or d not in self.songs or self.songs[d].leaving:
+                continue
+            out.append((lane, d))
+        return out
+
+    def _m_hole(self, at, beats, keep_vocal=False):
+        """Everything out at clock `at` for `beats` beats (a hard mute, 0.1 beat): the micro-vacuum before the
+        one. `keep_vocal`: the vocal carries through (a bridge's thread)."""
+        ev = []
+        for lane, d in self._m_held():
+            if keep_vocal and lane == "vocals":
+                continue
+            ev.append(self._m_mute(d, lane, at, 0.1))
+        if ev:
+            self.submix.post_many(ev)
+        self._note(f"the hole: {beats:g} beat{'s' if beats != 1 else ''} of nothing")
+
+    def _m_payoff(self, m, at, lanes_to=None, boost_lanes=("drums", "bass")):
+        """THE ONE: every held lane back at its level, bass and drums MOMENT_BOOST louder for a phrase; loops
+        cleared and the bed put back where it would have been; the sweep off. `lanes_to`: {lane: deck} moves
+        applied first (a two-song payoff)."""
+        for lane, d in (lanes_to or {}).items():
+            self.lanes[lane] = d
+            s = self.songs.get(d)
+            if s is not None and not s.entered:
+                s.entered, s.entered_k = True, self.bar_n
+        for lane in boost_lanes:
+            if self.lanes.get(lane) is not None:
+                self.lane_boost[lane] = (MOMENT_BOOST, self.bar_n + self.change_bars)
+        ev = [{"at": at, "cmd": "clear_loop", "deck": m["B"]}, {"at": at, "cmd": "filter", "deck": m["B"], "mode": "off"}]
+        if m.get("looped"):
+            ev.append({"at": at, "cmd": "jump", "deck": m["B"], "time_s": float(m["t_L"])})
+        for lane, d in self._m_held():
+            if lane == "vocals" and not self._vocal_ok(d, at):
+                continue
+            ev.append(self._m_gain(d, lane, at, 0.05))
+        # the previous holders of moved lanes go quiet on the one
+        for lane, d in (lanes_to or {}).items():
+            for od, s in self.songs.items():
+                if od != d and not s.leaving and s.staged_at is not None:
+                    ev.append(self._m_mute(od, lane, at, 0.25))
+        self.submix.post_many(ev)
+        self._hygiene(at + int(self._beat_s() * RATE))
+        m["end_clock"] = at + self._bar_clock()
+
+    def _m_roles(self, V, B):
+        """After a two-song payoff the other song is the bed; the old bed is a voice on its way out."""
+        v, b = self.songs.get(V), self.songs.get(B)
+        if v is not None:
+            v.bed_since, v.was_bed, v.voice_since = self.bar_n, False, None
+        if b is not None:
+            b.was_bed, b.voice_since, b.bed_since = True, self.bar_n, None
+        self._land_k, self._land_at, self._drums_follow = None, None, None
+
+    def _moment_script(self, kind):
+        """The script: [(offset in bars from the one, fn(at_clock_of_that_bar))]; and the marks for the picture."""
+        m = None
+        beat_c = int(self._beat_s() * RATE)
+
+        def M():
+            return self._moment
+
+        def out_bed(at, lanes, ramp_beats, text):
+            mm = M()
+            ev = [self._m_mute(mm["B"], ln, at, ramp_beats) for ln in lanes if self.lanes.get(ln) == mm["B"]]
+            if ev:
+                self.submix.post_many(ev)
+            self._move("moment", None, self._song_id(mm["B"]), None, f"{mm['label']}: {text}")
+
+        def payoff_one(at):
+            mm = M()
+            self._m_payoff(mm, at)
+            self._move("moment", None, self._song_id(mm["B"]), None, f"{mm['label']}: on the one - everything back, bass and drums loud")
+
+        if kind == "slam":
+            script = [(-2, lambda at: out_bed(at, ("drums", "bass"), 1.0, "bass and drums out for two bars")),
+                      (-1, lambda at: self._m_hole(at + 3 * beat_c, 1)),
+                      (0, payoff_one)]
+            marks = [(-2, 0, ["drums", "bass"], "SLAM: bass + drums out"), (-1, 0, list(STEMS), "hole"), (0, None, list(STEMS), "SLAM on the one")]
+        elif kind == "sing":
+            script = [(-2, lambda at: out_bed(at, ("drums", "bass"), 1.0, "the hook - bass and drums out, the room sings")),
+                      (0, payoff_one)]
+            marks = [(-2, 0, ["drums", "bass"], "SING: the vocal alone"), (0, None, list(STEMS), "back, loud")]
+        elif kind == "break":
+            def build(at):
+                mm = M()
+                B = mm["B"]
+                ev = []
+                if self.lanes.get("drums") == B:
+                    ev.append(self._m_gain(B, "drums", at, 1.0))
+                if MOMENT_SWEEP:
+                    ev += [{"at": at, "cmd": "filter", "deck": B, "mode": "hp", "cutoff_hz": 50.0, "ramp_s": 0.0, "q": 0.9},
+                           {"at": at + int(0.05 * RATE), "cmd": "filter", "deck": B, "cutoff_hz": 420.0, "ramp_s": 7.5 * 4 * self._beat_s()}]
+                self.submix.post_many(ev)
+                self._move("moment", None, self._song_id(B), None, f"BREAK: the build - drums back{', the lows sweep away' if MOMENT_SWEEP else ''}")
+
+            def tighten(at):
+                mm = M()
+                B = mm["B"]
+                s = self.songs.get(B)
+                bar_c = self._bar_clock()
+                at_L = at + 4 * bar_c
+                mm["at_L"] = at_L
+                if MOMENT_TIGHTEN and s is not None and s.loop is None and not self.user_loop_bars:
+                    t0 = self._song_time_at(B, at)
+                    start = s.track.nearest_downbeat(t0)
+                    bar = self._bar_s(s.track, start)
+                    mm["looped"] = True
+                    self.submix.post_many([
+                        {"at": at, "cmd": "loop", "deck": B, "start_s": start, "end_s": start + 2 * bar},
+                        {"at": at + 2 * bar_c, "cmd": "loop", "deck": B, "start_s": start, "end_s": start + bar},
+                        {"at": at + 3 * bar_c, "cmd": "loop", "deck": B, "start_s": start, "end_s": start + 0.5 * bar},
+                    ])
+                    self._move("moment", None, self._song_id(B), None, "BREAK: the drums tighten - two bars, one, half")
+                # the last half bar is the hole, the one is posted now (a looping master stalls the bar count)
+                self._m_hole(at_L - 2 * beat_c, 2, keep_vocal=True)
+                mm["fired"].update({-1, 0})
+                self._m_payoff(mm, at_L)
+                self._move("moment", None, self._song_id(B), None, "BREAK: on the one - everything back, bass and drums loud")
+
+            script = [(-16, lambda at: out_bed(at, ("drums", "bass"), 2.0, "drums and bass out, the melody stays")),
+                      (-8, build), (-4, tighten),
+                      (-1, lambda at: self._m_hole(at + 2 * beat_c, 2, keep_vocal=True)),
+                      (0, payoff_one)]
+            marks = [(-16, -8, ["drums", "bass"], "BREAK: drums + bass out"), (-8, -4, ["drums"], "build: drums back, lows sweep"),
+                     (-4, 0, ["drums", "bass"], "tighten 2·1·½"), (-1, 0, list(STEMS), "hole"), (0, None, list(STEMS), "on the one, loud")]
+        elif kind == "takeover":
+            def hole_bass(at):
+                mm = M()
+                B = mm["B"]
+                if self.lanes.get("bass") == B:
+                    self.submix.post(self._m_mute(B, "bass", at + 3 * beat_c, 0.1))
+                self._note("the hole: the old bassline out for a beat")
+
+            def bass_in(at):
+                mm = M()
+                V = mm["V"]
+                self._m_payoff(mm, at, lanes_to={"bass": V}, boost_lanes=("bass",))
+                s = self.songs[V]
+                if s.voice_since is None:
+                    s.voice_since = self.bar_n
+                self._move("moment", "bass", self._song_id(mm["B"]), self._song_id(V), f"TAKEOVER: the bassline of {s.track.title} takes over on the one, loud")
+                mm["end_clock"] = None                # the drums still owe their move
+
+            def drums_follow(at):
+                mm = M()
+                V, B = mm["V"], mm["B"]
+                if V in self.songs and not self.songs[V].leaving:
+                    self._cross("drums", V, at, beats=1.0, shape=False)
+                    self._m_roles(V, B)
+                    self._hygiene(at + int(self._beat_s() * RATE))
+                    self._move("bed_to", "drums", self._song_id(B), self._song_id(V), f"TAKEOVER: the drums of {self.songs[V].track.title} follow - it is the bed")
+                mm["end_clock"] = at + self._bar_clock()
+
+            script = [(-1, hole_bass), (0, bass_in), (self.change_bars, drums_follow)]
+            marks = [(-1, 0, ["bass"], "hole"), (0, None, ["bass"], "TAKEOVER: new bassline, loud"), (self.change_bars, None, ["drums"], "its drums follow")]
+        elif kind == "bridge":
+            def bed_out(at):
+                mm = M()
+                B = mm["B"]
+                ev = [self._m_mute(B, ln, at, 16.0) for ln in ("drums", "bass", "other") if self.lanes.get(ln) == B]
+                if ev:
+                    self.submix.post_many(ev)
+                self._move("moment", None, self._song_id(B), None, f"BRIDGE: the bed fades out under the vocal of {self.songs[B].track.title}")
+
+            def drums_under(at):
+                mm = M()
+                V = mm["V"]
+                if V in self.songs and not self.songs[V].leaving:
+                    self.lanes["drums"] = V
+                    s = self.songs[V]
+                    if not s.entered:
+                        s.entered, s.entered_k = True, self.bar_n
+                    self.submix.post(self._m_gain(V, "drums", at, 1.0))
+                    self._move("moment", "drums", self._song_id(mm["B"]), self._song_id(V), f"BRIDGE: the drums of {s.track.title} under the vocal")
+
+            def slam(at):
+                mm = M()
+                V, B = mm["V"], mm["B"]
+                to = {"drums": V, "bass": V}
+                if self.lanes.get("other") in (B, None) and self._tonal_ok(V, "other", at):
+                    to["other"] = V
+                self._m_payoff(mm, at, lanes_to=to)
+                self._m_roles(V, B)
+                self._move("moment", "bass", self._song_id(B), self._song_id(V), f"BRIDGE: bass and drums of {self.songs[V].track.title} slam on the one - it is the bed")
+
+            script = [(-8, bed_out), (-4, drums_under),
+                      (-1, lambda at: self._m_hole(at + 3 * beat_c, 1, keep_vocal=True)),
+                      (0, slam)]
+            marks = [(-8, -4, ["drums", "bass", "other"], "BRIDGE: the bed fades under the vocal"), (-4, 0, ["drums"], "new drums under"),
+                     (-1, 0, ["drums"], "hole"), (0, None, ["drums", "bass", "other"], "slam on the one")]
+        else:
+            script, marks = [], []
+        # the marks ride on the moment dict (set right after this returns)
+        self._pending_marks = marks
+        return script
+
+    def _moment_step(self):
+        """Run the armed moment: an action at bar L+off fires when the bar before it begins (posted at the
+        next bar's clock), late if a bar was skipped. Returns True while a moment owns the room."""
+        m = self._moment
+        if m is None:
+            return False
+        clock = self._clock()
+        if m["end_clock"] is not None and clock >= m["end_clock"]:
+            self._moment_end(m)
+            return False
+        if m["B"] not in self.songs or self.songs[m["B"]].leaving:
+            self._moment = None
+            self._note(f"{m['label']} dropped: the bed left")
+            return False
+        for off, fn in m["script"]:
+            if off in m["fired"]:
+                continue
+            if self.bar_n >= m["L"] + off - 1:
+                m["fired"].add(off)
+                m["started"] = True
+                at = self._next_bar_clock()
+                m["at_L"] = at - off * self._bar_clock()
+                try:
+                    fn(at)
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"moment {m['kind']} @{off}: {type(e).__name__}: {e}"
+        return True
+
+    def _moment_end(self, m):
+        self._moment = None
+        self.phrase_bars = 0                          # a phrase of plain play before the arrangement moves again
+        self._drop_k = self.bar_n                     # a peak: the auto break keeps its distance
+        self._note(f"{m['label']} done")
+
     def eject(self, deck):
         """The operator takes a song off: its lanes move to the other songs (or rest), it leaves a bar later."""
         s = self.songs.get(deck)
@@ -2181,6 +2604,7 @@ class RemixConductor:
                "tempo_span": self.tempo_span, "base_bpm": self.base_bpm, "n_snapshots": len(self.snapshots),
                "auto": self.auto,
                "arrangement": self._arrangement_status(),
+               "moment": self.moment_status(),
                "grid": {d: {ln: self.why_not(ln, d) for ln in STEMS} for d, s in self.songs.items() if not s.leaving},
                "candidates": self.candidates(10),
                "pool": (None if self.brain is None or self.brain.pool_ids is None else len(self.brain.pool_ids)),

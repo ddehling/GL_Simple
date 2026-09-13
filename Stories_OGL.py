@@ -2729,8 +2729,10 @@ class EnvironmentalSystem:
                     if action == 'director_dial':
                         d.set_dial(arg['name'], arg['value'])
                     elif action == 'director_act':
-                        {"next": d.next, "hold": d.hold, "drop": d.drop,
-                         "break": d.break_}.get(str(arg), lambda: None)()
+                        {"next": d.next, "hold": d.hold, "drop": d.drop, "break": d.break_,
+                         "slam": lambda: d.arm_moment("slam"), "break_routine": lambda: d.arm_moment("break"),
+                         "sing": lambda: d.arm_moment("sing"), "takeover": lambda: d.arm_moment("takeover"),
+                         "bridge": lambda: d.arm_moment("bridge"), "moment_cancel": d.moment_cancel}.get(str(arg), lambda: None)()
                     elif action == 'director_rate':
                         d.rate(bool(arg))
                     elif action == 'director_arc':

@@ -3,10 +3,12 @@
 One screen, no scrolling: the picture of the run across the top (the four lanes, what played, the
 playhead, what is planned ahead); below it on the left what is playing, what comes next and WHY, and the
 songs (the pool ranked by fit, ✓ mixable / ✗ would be rejected, UP NEXT); on the right the ten dials in
-two columns and the moments - NEXT, STAY, DROP, BREAK, GOOD, BAD. Explanations live in tooltips. No lanes,
-no clips, no stems, no levels: the engines (lib/dj/system.py, lib/dj/remix.py) do that under
-lib/dj/director.py.
+two columns and the moments - NEXT, STAY, the row of five composed moments (SLAM, BREAK, SING, TAKEOVER,
+BRIDGE: press = arm with a countdown, again = go now, right-click = cancel), GOOD, BAD. Explanations live
+in tooltips. No lanes, no clips, no stems, no levels: the engines (lib/dj/system.py, lib/dj/remix.py) do
+that under lib/dj/director.py.
 """
+import os
 import time
 
 from PyQt6.QtCore import Qt, QTimer
@@ -53,8 +55,11 @@ DIAL_LABELS = {
     "length": ("LENGTH", {"45m": "45 m", "90m": "90 m", "3h": "3 h", "night": "night"},
                "how long the arc runs; changing it puts you at the same point of the new length"),
 }
+# (FX is off the surface - the moments carry their own shapes now; the dial still exists for the controller and the web page)
 DIAL_ORDER = ("layers", "mixing", "arc", "length", "energy", "tempo", "pace", "seams", "vocals", "variety", "loops",
-              "moments", "fx", "bass", "tone", "level")
+              "moments", "bass", "tone", "level")
+# the composed moments, in the order they sit on the row: key -> (label, one-song label or None)
+MOMENT_ROW = (("slam", "SLAM"), ("break", "BREAK"), ("sing", "SING"), ("takeover", "TAKEOVER"), ("bridge", "BRIDGE"))
 
 
 class SongMap(QWidget):
@@ -438,38 +443,17 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.queue = QListWidget()
         self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)))
         qcol.addWidget(self.queue, 1)
-        # READY: the songs on decks right now (layered) with a button per stem - THIS song's bassline in, now,
-        # loud ("I don't see how we can make it do big moments where a DJ really amps up the bass with a
-        # bassline from one song while another plays"); a lit button = that song holds the lane, press again
-        # = back to the bed; LOUD makes the next moves loud for a phrase; PHRASE times them to the phrase
-        rh = QHBoxLayout()
-        rlab = QLabel("READY")
-        rlab.setProperty("dim", "true")
-        rlab.setToolTip("layered: the songs on decks and the stems you can bring in from each, on the next bar (or at the phrase); "
-                        "lit = that song holds the lane; press a lit one = back to the bed; right-click any song in the list to stage it "
-                        "and bring a stem in the moment it is ready")
-        rh.addWidget(rlab)
-        rh.addStretch(1)
+        # the stem-by-stem grid (READY) is OFF the main surface (the composed moments replaced it - "a painful
+        # mishmash"); a song's stem still comes in from the right-click menu on the list, loud and on the bar
         self.loud_btn = QPushButton("LOUD")
         self.loud_btn.setCheckable(True)
         self.loud_btn.setChecked(True)
-        self.loud_btn.setProperty("kind", "small")
-        self.loud_btn.setMinimumHeight(20)
-        self.loud_btn.setMaximumHeight(22)
-        self.loud_btn.setToolTip("stem moves come in +30 % for a phrase, then settle to their level")
-        rh.addWidget(self.loud_btn)
+        self.loud_btn.setVisible(False)
         self.phrase_btn = QPushButton("PHRASE")
         self.phrase_btn.setCheckable(True)
-        self.phrase_btn.setProperty("kind", "small")
-        self.phrase_btn.setMinimumHeight(20)
-        self.phrase_btn.setMaximumHeight(22)
-        self.phrase_btn.setToolTip("stem moves land at the next phrase instead of the next bar")
-        rh.addWidget(self.phrase_btn)
-        qcol.addLayout(rh)
+        self.phrase_btn.setVisible(False)
         self.ready_grid = QGridLayout()
-        self.ready_grid.setSpacing(3)
         self._ready_rows = {}
-        qcol.addLayout(self.ready_grid)
         lists.addLayout(qcol, 2)
         self.found.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.found.customContextMenuRequested.connect(self._song_menu)
@@ -528,17 +512,25 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.mood_chips = {}
         right.addLayout(self.mood_row)
         QTimer.singleShot(1500, self._fill_tags)
-        # OVER THE NEXT SONGS: programs that step the dials at every song change (a bed change when layered)
+        # OVER THE NEXT SONGS: one PROGRAM box (the 2×4 grid of programs left the surface), a song count, stop
         from lib.dj.director import PROGRAMS
-        # (a header row with the song count and stop; the seven programs on two rows of four - eleven buttons
-        #  on one line squeezed the whole column unreadable)
         prow = QHBoxLayout()
         prow.setSpacing(4)
-        ph = QLabel("NEXT SONGS")
+        ph = QLabel("PROGRAM")
         ph.setProperty("dim", "true")
+        ph.setFixedWidth(64)
         ph.setToolTip("a program over the next few songs: the dials it names step at every song change (layered: every bed change), "
                       "the rest stay yours, and your dials come back when it ends; pick how many songs, then the program")
         prow.addWidget(ph)
+        self.prog_box = QComboBox()
+        self.prog_box.addItem("none", None)
+        for key, (label, tip, _fn) in PROGRAMS.items():
+            self.prog_box.addItem(label, key)
+            self.prog_box.setItemData(self.prog_box.count() - 1, tip, Qt.ItemDataRole.ToolTipRole)
+        self.prog_box.setMinimumHeight(22)
+        self.prog_box.setToolTip(ph.toolTip())
+        self.prog_box.activated.connect(lambda i: self._program(self.prog_box.itemData(i)))
+        prow.addWidget(self.prog_box, 1)
         self.prog_n = QButtonGroup(self)
         self.prog_n.setExclusive(True)
         for n in (2, 3, 4):
@@ -552,7 +544,6 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             b.setToolTip(f"over {n} songs")
             self.prog_n.addButton(b, n)
             prow.addWidget(b)
-        prow.addStretch(1)
         self.prog_cancel = QPushButton("stop")
         self.prog_cancel.setProperty("kind", "small")
         self.prog_cancel.setMinimumHeight(20)
@@ -563,41 +554,55 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.prog_cancel.setVisible(False)
         prow.addWidget(self.prog_cancel)
         right.addLayout(prow)
-        pgrid = QGridLayout()
-        pgrid.setSpacing(4)
         self.prog_btns = {}
-        for i, (key, (label, tip, _fn)) in enumerate(PROGRAMS.items()):
-            b = QPushButton(label)
-            b.setCheckable(True)
-            b.setProperty("kind", "small")
-            b.setMinimumHeight(20)
-            b.setMaximumHeight(22)
-            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            b.setToolTip(tip)
-            b.clicked.connect(lambda _c, k=key: self._program(k))
-            self.prog_btns[key] = b
-            pgrid.addWidget(b, i // 4, i % 4)
-        right.addLayout(pgrid)
         self.prog_lbl = QLabel("")
         self.prog_lbl.setProperty("dim", "true")
         self.prog_lbl.setWordWrap(True)
         self.prog_lbl.setMaximumHeight(34)
         right.addWidget(self.prog_lbl)
+        # THE MOMENTS: NEXT / STAY, then the five composed moments (press = arm: the picture draws the choreography
+        # in gold and the button counts down to the one; press again = go now; right-click = cancel), GOOD / BAD
         mom = QGridLayout()
         mom.setSpacing(6)
         self.buttons = {}
-        for (label, fn, kind, r, c) in (("NEXT", self._next, "go", 0, 0), ("HOLD", self._hold, None, 0, 1),
-                                        ("DROP", self._drop, "hot", 0, 2), ("BREAK", self._break, None, 0, 3),
-                                        ("GOOD", lambda: self.director and self.director.rate(True), "good", 1, 0),
-                                        ("BAD", lambda: self.director and self.director.rate(False), "bad", 1, 2)):
+        for (label, fn, kind, c) in (("NEXT", self._next, "go", 0), ("HOLD", self._hold, None, 1)):
             b = QPushButton(label)
-            b.setMinimumHeight(30 if r == 0 else 26)
+            b.setMinimumHeight(28)
             if kind:
                 b.setProperty("kind", kind)
             b.clicked.connect(fn)
-            mom.addWidget(b, r, c, 1, 1 if r == 0 else 2)
+            mom.addWidget(b, 0, c * 5, 1, 5)
+            self.buttons[label] = b
+        self.moment_btns = {}
+        from lib.dj.remix import MOMENTS
+        for i, (key, label) in enumerate(MOMENT_ROW):
+            b = QPushButton(label)
+            b.setCheckable(True)
+            b.setMinimumHeight(30)
+            b.setProperty("kind", "hot")
+            b.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            b.setToolTip(f"{label}: {MOMENTS[key][2]}\n\npress = arm (lands on the drop or hook ahead, else the next phrase; the picture shows it in gold, "
+                         "the button counts down) · press again = go now · right-click = cancel")
+            b.clicked.connect(lambda _c, k=key: self._moment(k))
+            b.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda _p, k=key: self._moment_cancel(k))
+            mom.addWidget(b, 1, i * 2, 1, 2)
+            self.moment_btns[key] = b
+        for (label, fn, kind, c) in (("GOOD", lambda: self.director and self.director.rate(True), "good", 0),
+                                     ("BAD", lambda: self.director and self.director.rate(False), "bad", 1)):
+            b = QPushButton(label)
+            b.setMinimumHeight(26)
+            b.setProperty("kind", kind)
+            b.clicked.connect(fn)
+            mom.addWidget(b, 2, c * 5, 1, 5)
             self.buttons[label] = b
         right.addLayout(mom)
+        self.moment_lbl = QLabel("")
+        self.moment_lbl.setProperty("dim", "true")
+        self.moment_lbl.setWordWrap(True)
+        self.moment_lbl.setMaximumHeight(34)
+        self.moment_lbl.setToolTip("the armed moment: whose, where it lands, and what refused the last one")
+        right.addWidget(self.moment_lbl)
         self.verdict_lbl = QLabel("")
         self.verdict_lbl.setProperty("dim", "true")
         self.verdict_lbl.setWordWrap(True)
@@ -698,14 +703,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         return self._lib
 
     def _label_moments(self, mode):
-        """The moments say what they do, in the mode we are in (the detail in the tooltip)."""
+        """The moments say what they do, in the mode we are in (the detail in the tooltip). One song at a time
+        only the first moment works: the autoDJ's DROP (a build into the next song's drop)."""
         one = mode != "layered"
         texts = {
             "NEXT": ("NEXT SONG", "move on to the next song at the next phrase") if one
                     else ("NEXT MOVE", "the conductor's next lane move on the next bar"),
             "HOLD": ("STAY", "one more phrase of this song before moving on" if one else "freeze the lanes for a phrase"),
-            "DROP": ("DROP", "a short build, then the next song's drop, cold" if one else "every part to the newest song on the next bar"),
-            "BREAK": ("BREAK", "needs two or three songs layered" if one else "strip to one part for four bars, then all back"),
             "GOOD": ("👍 GOOD", "that was good - the DJ does more of it"),
             "BAD": ("👎 BAD", "that was bad - the DJ does less of it"),
         }
@@ -713,8 +717,34 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             if self.buttons[k].text() != t:
                 self.buttons[k].setText(t)
             self.buttons[k].setToolTip(tip)
-        self.buttons["BREAK"].setEnabled(not one)
+        for key, label in MOMENT_ROW:
+            b = self.moment_btns[key]
+            if one:
+                b.setEnabled(key == "slam")
+                if key == "slam" and b.text() != "DROP":
+                    b.setText("DROP")
+            else:
+                b.setEnabled(True)
+                if key == "slam" and b.text() == "DROP":
+                    b.setText(label)
         self._moments_mode = mode
+
+    def _moment(self, key):
+        """Press = arm; the armed one pressed again = go now."""
+        if self.director is None:
+            self.err_lbl.setText("press START first")
+            self.moment_btns[key].setChecked(False)
+            return
+        ok, msg = self.director.arm_moment(key)
+        self.moment_lbl.setText(msg if ok else f"{key.upper()} refused: {msg}")
+        if not ok:
+            self.moment_btns[key].setChecked(False)
+
+    def _moment_cancel(self, key):
+        if self.director is None:
+            return
+        ok, msg = self.director.moment_cancel()
+        self.moment_lbl.setText(msg)
 
     # -- mood chips -----------------------------------------------------------------------------------------------
     def _pool_tracks(self):
@@ -858,6 +888,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
     def _midi_open(self):
         self.midi = None
         self._midi_note = ""
+        if os.environ.get("DJ_NO_MIDI"):
+            return                                    # headless smokes never take the controller from a live planner
         try:
             from lib.midi_controller import KorgNanoKontrol2
             ctl = KorgNanoKontrol2(auto_connect=True)
@@ -911,9 +943,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 elif name == "stop":
                     d.hold()
                 elif name == "record":
-                    d.drop()
+                    d.arm_moment("slam")               # REC = SLAM (one song: DROP); again = go now
                 elif name == "cycle":
-                    d.break_()
+                    d.arm_moment("break")              # CYCLE = BREAK routine; again = go now
                 elif name == "track_prev":
                     d.rate(False)
                 elif name == "track_next":
@@ -1048,12 +1080,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
     def _program(self, key):
         if self.director is None:
             self.err_lbl.setText("press START first")
-            for b in self.prog_btns.values():
-                b.setChecked(False)
+            self.prog_box.setCurrentIndex(0)
             return
-        p = self.director.program
-        if p is not None and p["key"] == key:
-            self.director.cancel_program()            # the lit program pressed again = stop
+        if key is None:
+            self.director.cancel_program()            # "none" = stop
             return
         self.director.start_program(key, n=self.prog_n.checkedId() or 3)
 
@@ -1227,16 +1257,33 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                + (f"   ·   ⚠ DOUBLED: {', '.join(doubled)} (two songs' {'stems' if doubled != ['mix'] else 'mixes'} at once)" if doubled else "")
                                + (f"   ·   {last[:60]}" if last else "")
                                + (f"   ·   {self._midi_note}" if getattr(self, "_midi_note", "") else ""))
-        try:
-            self._fill_ready(st.get("ready") or [])
-        except Exception as e:  # noqa: BLE001
-            self.err_lbl.setText(f"ready: {type(e).__name__}: {e}")
+        # the moments: the armed one lit with its countdown, the rest plain
+        mo = st.get("moment")
+        for key, label in MOMENT_ROW:
+            b = self.moment_btns[key]
+            armed = bool(mo and mo.get("kind") == key)
+            base = "DROP" if (key == "slam" and st.get("mode") != "layered") else label
+            text = (f"{label} {'▶' if mo['started'] else 'in'} {max(0, mo['in_bars'])}" if armed else base)
+            if b.text() != text:
+                b.setText(text)
+            if b.isChecked() != armed:
+                b.setChecked(armed)
+        if mo:
+            words = f"{mo['label']} ({mo['who']}): {'running' if mo['started'] else 'armed'}, the one in {mo['in_bars']} bars on {mo['what']}"
+            if mo.get("other") and mo["kind"] in ("takeover", "bridge"):
+                words += f" of {mo['other'][:24]}"
+            if self.moment_lbl.text() != words:
+                self.moment_lbl.setText(words)
+        elif getattr(self, "_moment_was", None):
+            self.moment_lbl.setText("")
+        self._moment_was = bool(mo)
         # the program over the next songs: which is lit, where it stands
         ps = st.get("program")
-        for k, b in self.prog_btns.items():
-            want = bool(ps and ps.get("key") == k)
-            if b.isChecked() != want:
-                b.setChecked(want)
+        want_i = self.prog_box.findData(ps.get("key")) if ps else 0
+        if self.prog_box.currentIndex() != max(0, want_i):
+            self.prog_box.blockSignals(True)
+            self.prog_box.setCurrentIndex(max(0, want_i))
+            self.prog_box.blockSignals(False)
         self.prog_cancel.setVisible(bool(ps))
         if ps:
             steps = ps.get("steps") or []

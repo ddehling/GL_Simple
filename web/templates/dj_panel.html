@@ -321,9 +321,16 @@
             <div class="transport" style="margin-top:8px">
                 <button class="btn skip" id="dj-dr-next-btn" title="one song: move on at the next phrase · layered: the next lane move">▶▶ NEXT</button>
                 <button class="btn" id="dj-dr-hold" title="stay on this: the next seam or move waits a phrase">STAY</button>
-                <button class="btn go" id="dj-dr-drop" title="one song: build and land on the drop · layered: every part to the newest song">✦ DROP</button>
-                <button class="btn" id="dj-dr-break" title="layered: strip to one part for four bars">BREAK</button>
             </div>
+            <div class="transport" style="margin-top:6px" id="dj-dr-moments">
+                <button class="btn go" data-moment="slam" title="one song: build and land on the next song's drop · layered: bass and drums out for two bars, a beat of nothing, back louder on the one · press again = go now">SLAM</button>
+                <button class="btn" data-moment="break_routine" title="layered: drums and bass out eight bars, the drums back and the lows sweep away, the drums tighten, half a bar of nothing, all back louder on the one · press again = go now">BREAK</button>
+                <button class="btn" data-moment="sing" title="layered: at the hook, bass and drums out for two bars, the vocal alone; back louder">SING</button>
+                <button class="btn" data-moment="takeover" title="layered: the other song's bassline takes over on the one, loud; its drums follow at the phrase">TAKEOVER</button>
+                <button class="btn" data-moment="bridge" title="layered: the bed fades under this vocal, the other song's drums come in, a beat of nothing, its bass and drums slam on the one">BRIDGE</button>
+                <button class="btn" data-moment="moment_cancel" title="disarm the moment; a running one is undone on the bar">✕</button>
+            </div>
+            <div class="now-sub" id="dj-dr-moment"></div>
             <div class="transport" style="margin-top:6px">
                 <button class="btn" id="dj-dr-good">👍 GOOD</button>
                 <button class="btn" id="dj-dr-bad">👎 BAD</button>
@@ -1303,8 +1310,7 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         $("dj-director-start").onclick = () => emit("director_start");
         $("dj-dr-next-btn").onclick = () => emit("director_act", "next");
         $("dj-dr-hold").onclick = () => emit("director_act", "hold");
-        $("dj-dr-drop").onclick = () => emit("director_act", "drop");
-        $("dj-dr-break").onclick = () => emit("director_act", "break");
+        document.querySelectorAll("#dj-dr-moments [data-moment]").forEach((b) => { b.onclick = () => emit("director_act", b.dataset.moment); });
         $("dj-dr-good").onclick = () => emit("director_rate", true);
         $("dj-dr-bad").onclick = () => emit("director_rate", false);
         $("dj-dr-arc").onclick = (ev) => {
@@ -1322,6 +1328,14 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             $("dj-dr-now").textContent = now.title ? `${now.title}  —  ${now.artist || ""}  ${Math.round(now.bpm || 0)} bpm ${now.camelot || ""}` : "…";
             $("dj-dr-next").textContent = nx.title ? `NEXT ${nx.title} — ${nx.artist || ""}` + (nx.eta_s != null ? ` in about ${Math.round(nx.eta_s)} s` : "") + (nx.how ? ` · ${nx.how}` : "") : "";
             $("dj-dr-intent").textContent = d.intent || "";
+            const mo = d.moment;
+            const keyOf = {slam: "slam", break: "break_routine", sing: "sing", takeover: "takeover", bridge: "bridge"};
+            document.querySelectorAll("#dj-dr-moments [data-moment]").forEach((b) => {
+                const armed = !!(mo && keyOf[mo.kind] === b.dataset.moment);
+                b.classList.toggle("go", armed || (b.dataset.moment === "slam" && !mo));
+                if (b.dataset.moment !== "moment_cancel") b.textContent = armed ? `${mo.label} ${mo.started ? "▶" : "in"} ${Math.max(0, mo.in_bars)}` : b.dataset.moment.replace("_routine", "").toUpperCase();
+            });
+            $("dj-dr-moment").textContent = mo ? `${mo.label} (${mo.who}): ${mo.started ? "running" : "armed"}, the one in ${mo.in_bars} bars on ${mo.what}` : "";
             const lanes = d.lanes || {};
             $("dj-dr-lanes").textContent = Object.keys(lanes).length ? Object.entries(lanes).map(([ln, t]) => `${ln}: ${t || "-"}`).join("   ") : "";
             $("dj-dr-why").innerHTML = (d.why || []).map((w) => `<div>${w}</div>`).join("");

@@ -281,6 +281,43 @@ def main():
     clash = [m for _, m in rc.moves[t_bm:] if "clash" in m]
     check((len(took) >= 1 and len(followed) >= 1) or bool(clash),
           f"BASS MOMENT: {len(took)} bassline takeovers, {len(followed)} drums followed" + (f" (voice refused: {clash[0][:50]})" if clash and not took else ""))
+    # THE COMPOSED MOMENTS: SLAM (two bars: bass + drums out, a beat of nothing, back loud on the one) and the
+    # BREAK routine (sixteen: take away, build with the sweep and the tightening loop, the hole, the one) - each
+    # armed, landing within four phrases, its take-away and its one in the log, the bed's drums measured out then back
+    for kind, lead in (("slam", 2), ("break", 16)):
+        t_m, k_m = len(rc.moves), len(audio)
+        ok_m, msg_m = rc.arm_moment(kind)
+        st_m = rc.moment_status()
+        in_bars = st_m["in_bars"] if st_m else None
+        Bm = rc._moment["B"] if rc._moment else None
+        for _ in range((in_bars or lead) + 8):
+            pump(int(bars * RATE) // block)
+            if rc._moment is None:
+                break
+        landed = [m for _, m in rc.moves[t_m:] if "on the one" in m]
+        away = [m for _, m in rc.moves[t_m:] if kind.upper() in m and " out" in m]
+        pics = [pic for k, _mst, pic in tel_hist if k_m <= k <= len(audio) and Bm in pic]
+        g_dr = [float((pic[Bm][1] or {}).get("drums", 1.0)) for pic in pics]
+        went_out = any(g < 0.05 for g in g_dr)
+        came_back = went_out and any(g > 0.5 for g in g_dr[max(i for i, g in enumerate(g_dr) if g < 0.05):])
+        check(ok_m and in_bars is not None and lead <= in_bars <= 4 * rc.change_bars + lead + 10 and landed and away and rc._moment is None and went_out and came_back,
+              f"{kind.upper()}: {msg_m}; armed {in_bars} bars out, take-away {len(away)}, the one {len(landed)}, drums out {went_out} / back {came_back}, done {rc._moment is None}"
+              + (f" ({rc.last_error})" if rc.last_error else ""))
+        paced(int(rc.change_bars * bars * RATE) // block)
+    # a two-song moment when a second song is there: TAKEOVER (the other bassline on the one, its drums at the phrase)
+    t_m = len(rc.moves)
+    ok_t, msg_t = rc.arm_moment("takeover")
+    if ok_t:
+        Vt = rc._moment["V"]
+        in_t = rc.moment_status()["in_bars"]
+        for _ in range(in_t + rc.change_bars + 6):
+            pump(int(bars * RATE) // block)
+            if rc._moment is None:
+                break
+        check(rc._moment is None and rc.lanes.get("bass") == Vt and rc.lanes.get("drums") == Vt,
+              f"TAKEOVER: {msg_t}; bass -> {rc.lanes.get('bass')} drums -> {rc.lanes.get('drums')} (other song {Vt}), done {rc._moment is None}")
+    else:
+        print(f"  --   TAKEOVER not armed here: {msg_t} (not judged)")
     # a tempo journey: lean hot, span 4 %: the clock climbs in half-percent steps, every song inside the wall
     bpm0 = rc.master_bpm
     rc.set_energy_lean(0.4)
