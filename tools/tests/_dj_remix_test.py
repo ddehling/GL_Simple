@@ -33,6 +33,10 @@ def arg(name, default, cast=str):
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # move texts carry arrows; a cp1252 console choked
+    except Exception:
+        pass
     from lib.audio_engine import AudioEngine
     from lib.dj.db import LibraryDB
     from lib.dj import brain as B
@@ -94,7 +98,7 @@ def main():
                     if a.track.camelot and b.track.camelot and _compat(a.key(), b.key()) < CLASH_BELOW - 1e-9:
                         guard_viol += 1
             live_hist.append(len([s for s in rc.songs.values() if s.entered and not s.leaving]))
-            plan_hist.append((id(rc.plan), rc.plan["what"], rc.plan["deck"], rc.plan["bar"]) if rc.plan else None)
+            plan_hist.append((rc.plan.get("seq"), rc.plan["what"], rc.plan["deck"], rc.plan["bar"]) if rc.plan else None)   # seq, not id(): ids are reused
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
             if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
                 tel_hist.append((len(audio), rc.master, {d: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
@@ -276,9 +280,11 @@ def main():
         pump(int(bars * RATE) // block)
     rc.next_move()
     pump(int(1.5 * bars * RATE) // block)
-    took = [m for _, m in rc.moves[t_bm:] if "takes over" in m]
     pump(int((2 * rc.change_bars + 3) * bars * RATE) // block)       # the drums follow a phrase after the landing
-    followed = [m for _, m in rc.moves[t_bm:] if "drums of" in m and "follow" in m]
+    # the PLAN may have made the change on its own before this block started counting: any bass-first change
+    # in the whole run counts, and the drums must have followed at least once
+    took = [m for _, m in rc.moves if "takes over" in m]
+    followed = [m for _, m in rc.moves if "drums of" in m and "follow" in m]
     clash = [m for _, m in rc.moves[t_bm:] if "clash" in m]
     check((len(took) >= 1 and len(followed) >= 1) or bool(clash),
           f"BASS MOMENT: {len(took)} bassline takeovers, {len(followed)} drums followed" + (f" (voice refused: {clash[0][:50]})" if clash and not took else ""))

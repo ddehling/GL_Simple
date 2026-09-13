@@ -1517,9 +1517,13 @@ class RemixConductor:
                 self.wait_why = f"{s.track.title[:28]} is running out: it never takes the bed"
                 continue
             heard = bar - (s.voice_since if s.voice_since is not None else bar)
-            if heard < (1 if forced else VOICE_PHRASES) * self.change_bars:
-                continue
             planned = p is not None and p["deck"] == d and p["what"] in ("bed_to", "voice_out")
+            plan_now = planned and p["bar"] - (bar + 1) <= self.change_bars - 1
+            # the plan already weighed how long the voice has been heard (a phrase at least when the bed is
+            # dying): its bar is not held back by the three-phrase rule (two changes planned "before the
+            # breakdown" came a phrase late and the bed sat in its breakdown with a melody on top)
+            if heard < (1 if (forced or plan_now) else VOICE_PHRASES) * self.change_bars:
+                continue
             if not self._lane_ok(d, "bass", at):
                 if heard >= VOICE_MAX_PHRASES * self.change_bars or (planned and p["what"] == "voice_out" and bar + 1 >= p["bar"]):
                     # it has had its phrases and can never take the bed (its bass clashes with the room):
@@ -1622,7 +1626,8 @@ class RemixConductor:
                 "voice_out": f"{title} fading out", "land": f"the drums of {title} following (the bed is its)"}.get(p["what"], p["what"]) + f" at bar {p['bar']}"
 
     def _plan_set(self, what, deck, bar, why, payoff=None):
-        self.plan = {"what": what, "deck": deck, "bar": int(bar), "why": why, "payoff": payoff, "set_k": self.bar_n, "moved": 0}
+        self._plan_seq = getattr(self, "_plan_seq", 0) + 1
+        self.plan = {"what": what, "deck": deck, "bar": int(bar), "why": why, "payoff": payoff, "set_k": self.bar_n, "moved": 0, "seq": self._plan_seq}
         self._note(f"plan: {self._plan_words()} ({int(bar) - self.bar_n} bars): {why}")
         if what == "voice_in":
             self._recue_for(deck, int(bar))
@@ -1774,16 +1779,22 @@ class RemixConductor:
                 self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
                 self._reduck(at)
             return
-        if bed is None or bed not in self.songs or not self.songs[bed].entered or since < VOCAL_REST_BARS:
+        if since < VOCAL_REST_BARS:
             return
-        # back only when the bed sings NOW and keeps singing through the coming bars (a sparse vocal flapped
-        # rest / return every few seconds - four pairs in five minutes on 2026-09-13)
-        if self._vocal_ok(bed, at) and self._singing(self.songs[bed], self._song_time_at(bed, at)) is True \
-                and self._sings_through(bed, at, VOCAL_REST_BARS) is not False \
-                and self._tonal_ok(bed, "vocals", at):
-            self._cross("vocals", bed, at, beats=1.0, shape=False)
-            self._move("return", "vocals", None, self._song_id(bed), f"vocals back on {self.songs[bed].track.title[:30]} (singing again)")
-            self._reduck(at)
+        # back only when a bed song sings NOW and keeps singing through the coming bars (a sparse vocal flapped
+        # rest / return every few seconds - four pairs in five minutes on 2026-09-13). The bed is the drums'
+        # song - or, during a bass-first change, the song whose bassline has taken over: its hook may be
+        # the reason it was chosen (Need You Now's vocal missed its own hook while its bass played)
+        for cand in (self.lanes.get("bass"), bed):
+            if cand is None or cand not in self.songs or not self.songs[cand].entered or self.songs[cand].leaving:
+                continue
+            if self._vocal_ok(cand, at) and self._singing(self.songs[cand], self._song_time_at(cand, at)) is True \
+                    and self._sings_through(cand, at, VOCAL_REST_BARS) is not False \
+                    and self._tonal_ok(cand, "vocals", at):
+                self._cross("vocals", cand, at, beats=1.0, shape=False)
+                self._move("return", "vocals", None, self._song_id(cand), f"vocals back on {self.songs[cand].track.title[:30]} (singing again)")
+                self._reduck(at)
+                return
 
     def _reduck(self, at):
         """The `other` lane's level follows the vocal lane: ducked under another song's singing, full when

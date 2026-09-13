@@ -808,6 +808,26 @@ fills the library's level reference offline; nine more flag kinds (bass, energy,
 queue, control; good_bass, good_calm, good_level). Gate: VOCAL LANE flaps ≤ 1, duck count printed. Not run:
 the user was live. The 8-second-groove drop is already excluded by ff80d1f's min_groove_bars.
 
+**Five more (session 2b6b2b, 11:57-12:01) and the clash measurement (2026-09-13 noon).** Two of the five
+exposed a bug in the new plan: a bed change decided "before the breakdown" (bar 109, bar 172) was still held
+back by the executor's three-phrase rule, so both came a phrase late and the bed sat in its breakdown with a
+melody on top → `plan_now` waives VOICE_PHRASES when the plan's bar is within the phrase. "vocals wrong"
+twice: Birds Mind's bass and vocal at x2.0 against the first song's levels (the library reference now
+fills: `measure_levels` pass), and Need You Now's vocal missed its own hook while only its bass had taken
+over → the vocal lane's return considers the bass holder (the incoming bed) as well as the drums'. THE
+CLASH FLAGS (nine, then ten): at every one the stored section-chroma fit was 0.76-0.97 (same Camelot key
+in all) - far above CLASH_BELOW 0.55. A bar-level probe from the stems (the bed's sounding bass+vocals vs
+the voice's `other`, 16 bars around each flag, per-bar chroma cosine) scored the flagged alignment below
+its shifted controls in only 2 of 9, and the baselines killed the measure: self pairs (a song against its
+own melody 32 bars later) median 0.62, random same-key pairs 0.51, random ANY-key pairs 0.60, flagged 0.49.
+Neither chroma measure hears what the ear called a clash. What the ten share is structural: 10/10 had
+another song's FULL `other` stem over the bed, 8/10 while the bed's own vocal was on, levels 0.45-1.4 on
+the melody and up to 2.0 on the vocal. Conclusion for the philosophy (awaiting the user's yes): "a melody
+over a singer" is the clash - arrivals should come through the VOCAL (an acapella over an instrumental
+bed), through the BASS (the swap the user asked for) or through `other` only over an instrumental bed and
+at a texture level; the per-bar clash watch stays (it is cheap and honest) but will rarely fire. Gate after
+all of today's changes: ALL OK (the PLAN check now keys plans by a sequence number, not id()).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
