@@ -126,7 +126,7 @@ def main():
             # A SONG KEEPS ITS OWN BALANCE: while one song holds every lane (no boost, no moment, no break),
             # its four stem gains are one factor - equal within 2 %
             holders = {rc.lanes.get(ln) for ln in ("drums", "bass", "other", "vocals")}
-            if len(holders) == 1 and None not in holders and rc._moment is None and rc._break is None and not rc.lane_boost and not rc._clash_duck if hasattr(rc, "_clash_duck") else False:
+            if len(holders) == 1 and None not in holders and rc._moment is None and rc._break is None and not rc.lane_boost and not getattr(rc, "_clash_duck", None):
                 dk = next(iter(holders))
                 g = (decks.get(dk) or {}).get("stem_gains") or {}
                 vals = [float(g.get(ln, 0.0)) for ln in ("drums", "bass", "other", "vocals")]
