@@ -66,8 +66,9 @@ or running; afterwards the arrangement waits a phrase.
 - **SLAM** (2 bars) - bass and drums out for the last two bars, a beat of nothing, everything back louder.
   One song at a time this button reads **DROP**: the autoDJ's build into the next song's drop.
 - **BREAK** (16 bars) - drums and bass out for eight bars while the melody or vocal stays; the drums come
-  back and the lows sweep away over eight; the drums tighten (two bars, one, half); half a bar of nothing;
-  everything back louder on the one.
+  back thin and their lows return over eight; half a bar of nothing; everything back louder on the one.
+  (The loop-tightening and high-pass-sweep builds exist behind two switches in the conductor and are off:
+  the first live BREAK with them was "painful in its execution".)
 - **SING** (at the hook) - bass and drums out for two bars, the vocal alone for the room; back louder on the
   third bar. Needs a song singing with a hook ahead.
 - **TAKEOVER** - the other song's bassline takes over on the one, loud, at its drop or hook; its drums follow

@@ -690,6 +690,14 @@ LOUD/PHRASE, the FX dial and the 2×4 program grid are OFF the surface (one PROG
 song menu still brings one stem. nanoKONTROL2 REC/CYCLE = SLAM/BREAK. Show page: the five + ✕. Gate:
 SLAM and BREAK armed (landing within four phrases + lead), take-away and the one in the log, the bed's drums
 measured out then back in the deck telemetry; TAKEOVER when a second song is there (bass then drums on it).
+First live minutes: "the music shut off totally for many seconds" (two candidates: my smoke's decode helper
+running at normal priority beside the restarted planner, or an auto BREAK whose take-away left an unmeasured
+melody alone - guards for both: a silence watchdog undoes a running moment after a bar and a half of nothing,
+BREAK refuses an unmeasured melody, the DJ's first moment waits the gap from START, headless runs write no
+log and take no controller), then "the break that just happened was painful in its execution" → MOMENT_TIGHTEN
+and MOMENT_SWEEP OFF (the ear's verdict on stutter builds stands; the whole-deck high-pass thinned the melody
+and vocal too); the BREAK's build is now the drums back thin (the deck's low shelf at the carve) with their
+lows returning over eight bars, the bass stem waiting for the one. Which part hurt is still to be named.
 
 ## Rules carried over (they were earned)
 

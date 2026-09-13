@@ -103,8 +103,8 @@ RATED_KINDS = ("enter", "cross", "cross_new", "rest", "return", "drop", "break",
 # phrase). key -> (label, lead bars before the one, what it does)
 MOMENTS = {
     "slam": ("SLAM", 2, "bass and drums out for the last two bars, a beat of nothing, everything back louder on the one"),
-    "break": ("BREAK", 16, "drums and bass out for eight bars (the melody stays); the drums back and the lows sweep away over eight, "
-                          "the drums tighten into the last bars; half a bar of nothing; everything back louder on the one"),
+    "break": ("BREAK", 16, "drums and bass out for eight bars (the melody stays); the drums back thin and their lows return over eight; "
+                          "half a bar of nothing; everything back louder on the one"),
     "sing": ("SING", 2, "at the hook: bass and drums out for two bars, the vocal alone for the room to sing; back louder on the third bar"),
     "takeover": ("TAKEOVER", 1, "the other song's bassline takes over on the one, loud, at its drop or hook; its drums follow at the phrase"),
     "bridge": ("BRIDGE", 8, "the bed fades out under this song's vocal; the other song's drums come in under it; a beat of nothing; "
@@ -112,8 +112,10 @@ MOMENTS = {
 }
 MOMENT_BOOST = 1.25              # bass and drums come back this much louder for a phrase (the peak guard keeps the bus honest)
 MOMENT_LOOK_PHRASES = 4          # a moment lands on the target song's drop or hook when one comes within this many phrases
-MOMENT_TIGHTEN = True            # the BREAK's build tightens the bed's loop 2 -> 1 -> half a bar (the drum-roll effect, from the real stem)
-MOMENT_SWEEP = True              # ...and a high-pass sweep on the bed over the build (a mixer move)
+MOMENT_TIGHTEN = False           # the BREAK's build may tighten the bed's loop 2 -> 1 -> half a bar (the drum-roll effect) - OFF: the
+                                 # user heard the first live BREAK as "painful in its execution"; a stutter build stays rejected
+MOMENT_SWEEP = False             # ...or high-pass sweep the whole bed deck over the build - OFF for the same reason (it thins the
+                                 # melody and vocal too); the build is the drums back thin, their lows returning (the deck's low shelf)
 
 
 def _compat(c1, c2):
@@ -1945,8 +1947,13 @@ class RemixConductor:
                 if MOMENT_SWEEP:
                     ev += [{"at": at, "cmd": "filter", "deck": B, "mode": "hp", "cutoff_hz": 50.0, "ramp_s": 0.0, "q": 0.9},
                            {"at": at + int(0.05 * RATE), "cmd": "filter", "deck": B, "cutoff_hz": 420.0, "ramp_s": 7.5 * 4 * self._beat_s()}]
+                else:
+                    # the drums come back THIN (the deck's low shelf at the carve) and their lows return over the
+                    # build - the kick fattens toward the one; the bass stem itself waits for the one
+                    ev += [{"at": at, "cmd": "eq", "deck": B, "low": LOW_CARVE, "ramp_s": 0.01},
+                           {"at": at + int(0.05 * RATE), "cmd": "eq", "deck": B, "low": 1.0, "ramp_s": 7.5 * 4 * self._beat_s()}]
                 self.submix.post_many(ev)
-                self._move("moment", None, self._song_id(B), None, f"BREAK: the build - drums back{', the lows sweep away' if MOMENT_SWEEP else ''}")
+                self._move("moment", None, self._song_id(B), None, f"BREAK: the build - drums back{', the lows sweep away' if MOMENT_SWEEP else ' thin, their lows returning'}")
 
             def tighten(at):
                 mm = M()
@@ -1976,8 +1983,10 @@ class RemixConductor:
                       (-8, build), (-4, tighten),
                       (-1, lambda at: self._m_hole(at + 2 * beat_c, 2, keep_vocal=True)),
                       (0, payoff_one)]
-            marks = [(-16, -8, ["drums", "bass"], "BREAK: drums + bass out"), (-8, -4, ["drums"], "build: drums back, lows sweep"),
-                     (-4, 0, ["drums", "bass"], "tighten 2·1·½"), (-1, 0, list(STEMS), "hole"), (0, None, list(STEMS), "on the one, loud")]
+            marks = [(-16, -8, ["drums", "bass"], "BREAK: drums + bass out"), (-8, 0, ["drums"], "build: drums back thin, lows return")]
+            if MOMENT_TIGHTEN:
+                marks.append((-4, 0, ["drums", "bass"], "tighten 2·1·½"))
+            marks += [(-1, 0, list(STEMS), "hole"), (0, None, list(STEMS), "on the one, loud")]
         elif kind == "takeover":
             def hole_bass(at):
                 mm = M()
