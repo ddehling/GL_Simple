@@ -273,7 +273,8 @@ def scan_library(music_root, workers=None, force=False, progress_cb=None,
 # the next vocal-curves pass re-measured all of them on GPU - the "scanning
 # tools redo everything" loop.
 _KEEP_AXES_KEYS = ("vocal", "vocal_src", "vc", "vc_hop", "grid_refined_v",
-                   "secchroma", "hook", "measure_v")      # lib/dj/measure.py: from the stems, minutes per library
+                   "secchroma", "hook", "measure_v",      # lib/dj/measure.py: from the stems, minutes per library
+                   "stem_rms")                            # lib/dj/remix.py: per-stem body levels remembered as songs are mounted
 
 
 def _vocal_snapshot(db, abs_path):

@@ -766,6 +766,28 @@ play_history: 668 rows on 09-12, 120 ended, an unknown share of them my gates' b
 since 09-11 `fenced:user` (kept, read by nothing); `FRESH_SINCE` = 2026-09-13 - play_counts never looks
 before the first clean day. BAD's tag learning was session-only all along; no moment-tune file exists yet.
 
+**The first eleven flags (2026-09-13, session c7bcc2) and what they taught.** busy at 15 s (the vocal lane
+opened on a silent passage, rested, came back; a voice arrived at bar 9 because the backdated settle was
+nearly spent); clash / dead / wrong song within 40 s of a bass-first bed change that landed on a drop whose
+groove ended 30 s later (the room fell into the new bed's build); wrong song: a voice arrived and looped
+its last 8 bars 16 s later (cued for an entry that came a minute after the cue assumed); level: melody
+trimmed to 0.5 and vocal boosted to 2.0 against the FIRST song's levels; dead: the bed's own breakdown with
+nothing anticipating it; seam / clash / timing: ONE decision - a bass-first change into a song looping its
+last bars - evicted mid-change, drums still followed, roles tangled, a returning vocal at x2 over an
+unducked melody, a loop wrapping under the PLL. Built ("ok"): `_on_way_out` (looping, evicted, leaving, or
+< MIN_RUNWAY_S of body) - never takes the bed, never a lane (bring refuses, `_second_song` skips), an
+in-flight bass-first change aborts (bass back to the drums' song); `_drop_in_bars(min_groove_bars)`: a bed
+change lands on a drop only when the groove after it lasts two phrases; `_bed_dies_in_bars`: the plan takes
+the bed a bar before the current bed's breakdown / outro / body end, and a voice arrives a phrase before it
+when nothing is heard yet; `_recue_for`: the plan re-cues the staged song so its landmark lands ON the
+arrival bar (nobody hears the jump), and an arrival that would leave < 90 s is cued back a phrase; the
+`other` duck only under a vocal that IS singing and `_reduck` on every vocal rest/return; stem levels
+against the LIBRARY's median (`stem_rms` remembered in each track's axes as songs mount, `_library_ref_levels`
+once eight are known, the scanner keeps the key) instead of the first song's; the handover opens the vocal
+lane only where the song sings and keeps two phrases of the bed alone. Tab: GOOD FLAG and BAD FLAG are two
+buttons. Gate: WAY OUT (no bed change into a looping song), re-cue count printed. Not run: the user was live.
+Open: the two chord-clash flags (11:42, 11:44) await an offline re-render and a section-fit measurement.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

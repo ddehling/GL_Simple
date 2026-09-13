@@ -71,6 +71,10 @@ def _block(f):
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")   # the flag glyphs on a cp1252 console
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--kind")
     ap.add_argument("--good", action="store_true", help="only the good flags (the cases to protect)")

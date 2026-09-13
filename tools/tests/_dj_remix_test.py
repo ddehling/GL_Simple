@@ -382,6 +382,13 @@ def main():
         elif ph is not None and prev is not None and ph[0] == prev[0] and ph[3] != prev[3]:
             bar_changes += 1
         prev = ph
+    # a song on its way out never took the bed: every bed change's target had body and no loop at the time
+    bad_targets = [m["text"][:60] for m in rc.move_log if m["kind"] == "bed_to" and m.get("to_id") is not None
+                   and any(("loops its last" in x["text"] or "has looped long enough" in x["text"]) and x.get("from_id") == m["to_id"] and x["t"] <= m["t"]
+                           for x in rc.move_log)]
+    check(not bad_targets, f"WAY OUT: bed changes into a song looping its last bars: {len(bad_targets)} {bad_targets[:2]}")
+    recued = [n for n in rc.log if "cued to" in n and "landmark lands" in n]
+    print(f"  --   staged songs re-cued for their arrival bar: {len(recued)}" + (f" e.g. {recued[0][:70]}" if recued else ""))
     plan_moves = sum(1 for m in rc.move_log if m["kind"] == "plan")
     check(plans >= 2 and bar_changes <= plan_moves and plan_moves <= max(2, plans // 2),
           f"PLAN: {plans} plans decided, {bar_changes} bar changes, {plan_moves} logged plan moves (every change is logged, few plans move)")
