@@ -250,9 +250,31 @@ class ArcStrip(QWidget):
 
 
 class DirectorTab(QWidget):
+    # every command the operator gives is logged as "ui: ..." BEFORE it acts, in the Director's event trail and
+    # the night's log - twice a direction was "ignored" and the log held no trace of the click at all
+    _LOGGED = ("_next", "_hold", "_moment", "_moment_cancel", "_bad", "_flag", "_dial", "_stem", "_program",
+               "_queue", "_queue_selected", "_unqueue", "_queue_top", "_toggle")
+
+    def _wrap_ui(self, fn, name):
+        def wrapped(*a, **k):
+            try:
+                d = self.director
+                if d is not None:
+                    words = " ".join(str(x)[:40] for x in a if not hasattr(x, "pos"))
+                    d._event(f"ui: {name.lstrip('_')} {words}".strip())
+                else:
+                    from lib.dj.session import log_row
+                    log_row({"event": "ui", "text": f"{name.lstrip('_')} (no director)"})
+            except Exception:
+                pass
+            return fn(*a, **k)
+        return wrapped
+
     def __init__(self, planner):
         super().__init__()
         self.setObjectName("perform")
+        for _nm in self._LOGGED:
+            setattr(self, _nm, self._wrap_ui(getattr(self, _nm), _nm))
         # the shared dark style, with every button smaller: less padding, a smaller face
         self.setStyleSheet(STYLE + """
 QWidget#perform QPushButton { padding: 3px 6px; font-size: 10pt; font-weight: 600; border-radius: 5px; }
