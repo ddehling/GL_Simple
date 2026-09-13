@@ -428,12 +428,23 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.sort_box.currentIndexChanged.connect(lambda _i: (setattr(self, "_found_sig", None), self._fill_search()))
         frow.addWidget(self.sort_box)
         frow.addStretch(1)
+        # an explicit button beside the double-click: a list that refilled between two clicks swallowed the
+        # double-click and the queue was "ignored" (flags 2026-09-13)
+        self.queue_btn = QPushButton("▶ UP NEXT")
+        self.queue_btn.setProperty("kind", "small")
+        self.queue_btn.setMinimumHeight(20)
+        self.queue_btn.setMaximumHeight(22)
+        self.queue_btn.setToolTip("put the selected song UP NEXT (Enter or a double-click on the row does the same)")
+        self.queue_btn.clicked.connect(self._queue_selected)
+        frow.addWidget(self.queue_btn)
         left.addLayout(frow)
         lists = QHBoxLayout()
         self.found = QListWidget()
         self.found.setMinimumHeight(80)
         self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))
-        self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click to put it UP NEXT · hover a row for the song's shape")
+        self.found.itemActivated.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))       # Enter
+        self.found.itemPressed.connect(lambda _it: setattr(self, "_found_click_t", time.time()))          # no refill right after a click
+        self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click, Enter or ▶ UP NEXT to queue it · hover a row for the song's shape")
         lists.addWidget(self.found, 3)
         qcol = QVBoxLayout()
         un = QLabel("UP NEXT")
@@ -1286,9 +1297,19 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                                      else "   ✓ fits  ✗ would be rejected") if self.director is not None else "")
                              + (f"   ·   {note}" if note else ""))
 
+    def _queue_selected(self):
+        it = self.found.currentItem()
+        if it is None:
+            self.err_lbl.setText("select a song in the list first")
+            return
+        self._queue(it.data(Qt.ItemDataRole.UserRole))
+
     def _queue(self, tid):
+        if tid is None:
+            return
         if self.director is not None:
             self.director.queue(tid)
+            self.moment_lbl.setText(f"UP NEXT: {self.director.title(int(tid))[:40]}" + (f"  (after {len(self.director.up_next) - 1} more)" if len(self.director.up_next) > 1 else ""))
         else:
             self.err_lbl.setText("press START first")
         self._render_queue()
@@ -1459,7 +1480,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         # the SONGS list re-ranks when its REFERENCE changes (the record, or the last song UP NEXT) and
         # otherwise every 30 s - re-ranking every 3 s reordered the rows under the hand ("things bounce")
         ref_key = ((now or {}).get("title"), tuple(d.up_next[-1:]), (nxt or {}).get("title"))
-        if ref_key != getattr(self, "_songs_ref", None) or self._songs_tick % 120 == 0:
+        if (ref_key != getattr(self, "_songs_ref", None) or self._songs_tick % 120 == 0) \
+                and time.time() - getattr(self, "_found_click_t", 0.0) > 2.0:      # never under a hand that just clicked
             self._songs_ref = ref_key
             self._fill_search()
         if self._songs_tick % 40 == 0:

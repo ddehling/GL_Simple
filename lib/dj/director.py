@@ -1213,6 +1213,8 @@ class Director:
         """The UP NEXT list: the head goes to the autoDJ as its next track (once per song), or is staged
         for the conductor when a deck is free; popped when it plays."""
         if not self.up_next:
+            if self.rc is not None:
+                self.rc.reserve_pick = False
             return
         head = self.up_next[0]
         if self.system is not None and self.system.current is not None:
@@ -1228,12 +1230,20 @@ class Director:
             d = self.rc.deck_of(head)
             if d is not None and self.rc.songs[d].entered:
                 self.up_next.pop(0)
+                self.rc.reserve_pick = False
                 return
             if d is None:
+                # while your head is not on a deck the conductor stages no pick of its own (a free deck is yours)
+                self.rc.reserve_pick = True
                 ok, msg = self.rc.stage_track(head)
-                if not ok and msg not in ("no free deck - eject one first", "already on a deck"):
+                if ok:
+                    self._event(f"up next {self.title(head)[:30]}: {msg}")
+                elif msg not in ("no free deck - eject one first", "already on a deck"):
                     self._event(f"up next {self.title(head)}: {msg}")
                     self.up_next.pop(0)
+                    self.rc.reserve_pick = False
+            else:
+                self.rc.reserve_pick = False
 
     def _loops_one(self):
         """The LOOPS dial in one-song mode: the autoDJ's LOOP LAYER - a drum loop cut from another record

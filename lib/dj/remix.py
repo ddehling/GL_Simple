@@ -228,6 +228,8 @@ class RemixConductor:
         self._arr_k = None               # bar of the arrangement's last move
         self._calm_until = None          # no arrangement move before this bar (a phrase of plain play after a moment)
         self.plan = None                 # THE PLAN: the one next arrangement event, decided once and kept (see _plan_check)
+        self._user_picks = set()         # track ids the operator staged (UP NEXT, a right-click): they arrive before the conductor's own picks
+        self.reserve_pick = False        # the Director holds an UP NEXT that is not on a deck yet: the conductor stages no pick of its own
         self._verdict_forced_until = 0.0 # moves made because of a BAD are not rateable until this wall time (hear them first)
         self._force_move = False
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
@@ -466,6 +468,7 @@ class RemixConductor:
             {"cmd": "echo", "deck": deck, "active": False},
         ])
         song = Song(deck, track)
+        song.user_pick = track.id in self._user_picks
         rms = dict(rms)
         song.env = rms.pop("_env", None)
         song.vox_sections = rms.pop("_vox_sections", None)
@@ -1143,7 +1146,7 @@ class RemixConductor:
         # silent), so a NEXT or a dial turn is heard on the next bar, not after a decode. The cap governs
         # how many are HEARD at once (the entry in _one_move), not how many are ready.
         staged_waiting = [s for s in live if not s.entered] + list(self._decoding.values()) + list(self._pending.values())
-        if self.auto > 0.0 and free and not staged_waiting:
+        if self.auto > 0.0 and free and not staged_waiting and not self.reserve_pick:
             nxt = self._pick_next()
             if nxt is not None:
                 self._decode(nxt, free[0])
@@ -1928,6 +1931,7 @@ class RemixConductor:
         max_voices = 2 if self.blend >= 0.5 else 1
         bed_s = self.songs.get(bed) if bed is not None else None
         waiting = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None and not s.entered and not s.evicted]
+        waiting.sort(key=lambda x: not getattr(self.songs[x], "user_pick", False))   # YOUR pick first, whatever staged earlier
         if waiting and len(voices) < max_voices and bed_s is not None:
             d = waiting[0]
             s = self.songs[d]
@@ -2177,6 +2181,7 @@ class RemixConductor:
         free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
         if not free:
             return False, "no free deck - eject one first"
+        self._user_picks.add(t.id)                    # yours: it arrives before anything the conductor picked itself
         self._decode(t, free[0])
         self._note(f"{t.title} staging on {free[0].upper()} (your pick)")
         return True, f"{t.title} → deck {free[0].upper()}"
