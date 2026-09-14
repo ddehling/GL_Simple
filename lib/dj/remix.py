@@ -62,6 +62,7 @@ import time
 import numpy as np
 
 from lib.dj.submix import DJSubmix, RATE
+from lib.dj.record import RecordPlay
 
 STEMS = ("drums", "bass", "other", "vocals")
 TONAL = ("bass", "other", "vocals")
@@ -183,6 +184,7 @@ class Song:
         self.voice_since = None          # bar count since it has been a voice
         self.bed_since = None            # bar count since it holds the bed (drums + bass)
         self.bed_lands_k = None          # bar count when a planned bed change lands on it (the strip is running)
+        self.play_from_k = None          # the record policy: the bar its play as THE RECORD began (its minimum play counts from here)
 
     def held(self, lanes):
         return [s for s in STEMS if lanes.get(s) == self.deck]
@@ -191,7 +193,7 @@ class Song:
         return _shift(self.track.camelot, self.shift) if self.track.camelot else ""
 
 
-class RemixConductor:
+class RemixConductor(RecordPlay):
     def __init__(self, db, music_root, library, theme=None, seed=None):
         from lib.dj.brain import Brain
         from lib.dj.themes import get_theme
@@ -242,7 +244,9 @@ class RemixConductor:
         self.auto = 1.0                  # autopilot amount: 1 = the conductor moves every phrase, 0 = only the operator moves
         self.cross_beats = XFADE_BEATS   # how a lane crosses (the Director's mixing dial: cut / blend / morph)
         self.avoid_ids = set()           # songs played tonight by any engine (the Director's memory): never picked again
-        self.policy = "arrangement"      # "arrangement" (a bed and voices, one change at a time) | "free" (any lane, any song)
+        self.policy = "record"           # "record" (THE RECORD PLAYS: one song whole, one seam per record - lib/dj/record.py) |
+                                         # "arrangement" (a bed and voices, one change at a time; superseded 2026-09-13) | "free" (any lane)
+        self._record_init()
         self.fx_level = 1.0              # the Director's FX dial: the chance a move gets a shape (0 = plain crossfades)
         self._cands_cache = (0.0, None, [])
         self._cue_req = {}               # deck -> song time to open / stage at (the timeline player's exact starts)
@@ -883,7 +887,10 @@ class RemixConductor:
             if not a or not b:
                 return None
             return float(min(TRIM_MAX, max(TRIM_MIN, a / b)))
-        if self.lanes.get("drums") == deck:
+        # ONE factor for the song holding the drums and for the song holding the bass (in a seam the harmony
+        # and the drums are two songs for a while: each keeps its own balance); per-lane only for a song that
+        # holds neither (a vocal over the record, a part you brought in)
+        if self.lanes.get("drums") == deck or self.lanes.get("bass") == deck:
             f = k("drums")
             if f is None:
                 vals = [x for x in (k(ln) for ln in STEMS) if x is not None]
@@ -894,7 +901,7 @@ class RemixConductor:
     def _lane_gain(self, deck, lane, at=None):
         g = self._trim(deck, lane)
         bed = self.lanes.get("drums")
-        if bed is not None and deck != bed:
+        if bed is not None and deck != bed and self.lanes.get("bass") != deck:
             g = min(g, 1.0)                           # a stem set against another song is never trimmed UP past unity
         if lane == "other":
             if bed is not None and deck != bed and self.lanes.get("bass") != deck:
@@ -936,6 +943,9 @@ class RemixConductor:
             if d is None or d == bed or d not in self.songs or self.songs[d].leaving:
                 if ducked is not None:
                     self._clash_duck.pop(lane, None)
+                    if d is not None and d in self.songs and not self.songs[d].leaving:
+                        # its level back at once (a recalled record kept a vocal at half until the next hygiene pass - the gate)
+                        self.submix.post({"at": at, "cmd": "stem_gains", "deck": d, "gains": {lane: self._lane_gain(d, lane, at)}, "ramp_s": self._beat_s()})
                 continue
             fits = [f for f in (self._pair_fit(bs, self.songs[d], at), self._pair_fit(bs, self.songs[d], ahead)) if f is not None]
             fit = min(fits) if fits else None
@@ -1063,6 +1073,11 @@ class RemixConductor:
         # after the handover - flag 'busy' 2026-09-13)
         played_bars = min(played_bars, max(0, (SETTLE_PHRASES - 2) * self.change_bars))
         song.bed_since = self.bar_n - played_bars
+        # THE RECORD PLAYS: a handed-over record gets credit for what it has played, but the room hears it two
+        # phrases at least before its seam can start (a bassline took over 30 s after the switch, 2026-09-13)
+        played_raw = int((cue or 0.0) / max(self._bar_s(t, cue or 0.0), 1e-6)) if cue is not None else 0
+        song.play_from_k = self.bar_n - min(played_raw, max(0, self._play_min_bars() - 2 * self.change_bars))
+        self.record_deck = deck                       # (record() is the recorder)
         self.brain.note_played(t)
         self._log_play(t)
         self._move("open", None, None, t.id, f"{t.title} opens on {'every lane' if len(open_lanes) == 4 else ', '.join(sorted(open_lanes)) or 'no lane'}: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
@@ -1292,19 +1307,34 @@ class RemixConductor:
         self._recall_step()
         if self._recall is not None:
             return                                    # a recall in progress owns the lanes
-        if getattr(self, "policy", "arrangement") == "arrangement" and not self.hold:
+        policy = getattr(self, "policy", "record")
+        if policy in ("arrangement", "record") and not self.hold:
             self._vocal_tick()
             try:
                 self._clash_tick()
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"clash watch: {type(e).__name__}: {e}"
-            if getattr(self, "_plan_k", None) != self.bar_n:
+            if policy == "arrangement" and getattr(self, "_plan_k", None) != self.bar_n:
                 self._plan_k = self.bar_n             # the plan is decided as soon as there is something to decide, once a bar
                 try:
                     self._plan_check(self._next_bar_clock())
                 except Exception as e:  # noqa: BLE001
                     self.last_error = f"plan: {type(e).__name__}: {e}"
         self._auto_break()
+        if policy == "record":
+            # THE RECORD PLAYS (lib/dj/record.py): the record plays whole; its one seam is planned when the next
+            # record is staged and fires on its bars; NEXT moves the seam to the next phrase
+            if self._force_move:
+                self._force_move = False
+                self.phrase_bars = 0
+                self._record_next()
+            if getattr(self, "_rec_k", None) != self.bar_n or (self.seam is not None and self.seam["state"] == "running"):
+                self._rec_k = self.bar_n
+                try:
+                    self._record_step()
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"record: {type(e).__name__}: {e}"
+            return
         # a move is PLANNED a bar early (shapes need the bar) and lands on the phrase boundary - or on the
         # PLAN's own bar (an arrival or a fade-out decided for a bar inside the phrase is made due there)
         due = self.phrase_bars >= self.change_bars - 1
@@ -1333,6 +1363,9 @@ class RemixConductor:
         change is in flight."""
         if self._break is not None or self.hold or self.user_loop_bars or self._land_k is not None:
             return
+        sm = getattr(self, "seam", None)
+        if sm is not None and (sm["state"] == "running" or sm["bar"] - self.bar_n <= 2 * self.change_bars):
+            return                                    # (a breakdown five seconds before the seam's drums came in - the gate)
         if getattr(self, "_drop_k", None) is not None and self.bar_n - self._drop_k < 4 * self.change_bars:
             return                                    # a DROP is a peak: four phrases of plain play before another moment
         counts = {}
@@ -1627,7 +1660,7 @@ class RemixConductor:
         if a is None or b is None:
             return True
         fits = [f for f in (self._pair_fit(a, b, at), self._pair_fit(a, b, at + 2 * self._bar_clock())) if f is not None]
-        return not fits or min(fits) >= CLASH_BELOW
+        return not fits or min(fits) >= CLASH_BELOW + 0.1      # (+0.1: a vocal carried at the clash line flapped held-down / back-up four times in fifteen seconds)
 
     def _vocal_goes_with(self, d, old, at):
         """At a bed change: the old song's vocal goes out with its harmony when it does not fit the new one.
@@ -2036,6 +2069,8 @@ class RemixConductor:
             return "nothing"
         s = self.songs.get(p["deck"])
         title = s.track.title[:24] if s else "?"
+        if p.get("what") == "seam":
+            return self._seam_words() if self.seam is not None else f"{title} in at bar {p['bar']}"
         return {"voice_in": f"{title} arriving as a voice", "bed_to": f"{title} taking the bed",
                 "voice_out": f"{title} fading out", "land": f"the drums of {title} following (the bed is its)"}.get(p["what"], p["what"]) + f" at bar {p['bar']}"
 
@@ -2410,6 +2445,8 @@ class RemixConductor:
         self.submix.post({"at": at, "cmd": "stem_gains", "deck": od, "gains": {"other": self._lane_gain(od, "other", at)}, "ramp_s": self._beat_s()})
 
     def _one_move_inner(self, at):
+        if getattr(self, "policy", "record") == "record":
+            return self._record_next()
         if getattr(self, "policy", "arrangement") == "arrangement":
             n0 = len(self.move_log)
             tag = self._arrangement_move(at)
@@ -2785,6 +2822,8 @@ class RemixConductor:
             # (the DJ's own TAKEOVER armed in the middle of a drum swap: its "other song" was the harmony
             # already playing, the bed went back to it and the arriving song was thrown out - flags 2026-09-13)
             return False, "a bed change is in flight: the follow comes first"
+        if getattr(self, "seam", None) is not None and self.seam["state"] == "running":
+            return False, "a seam is running: the new record first"
         at = self._next_bar_clock()
         bar_c = self._bar_clock()
         B = self._bed_deck() or self.master
@@ -3504,15 +3543,23 @@ class RemixConductor:
         # ...and MEASURED: the stem kept must actually sound through the break (a voice that just arrived at
         # a sparse bar, a pad that drops out - the gate heard dead bars from a kept `other`): the loudest
         # held stem over the break's span wins, melodic ones with a small edge; nothing loud enough = no break
+        # ...judged in the ROOM, like the BREAK moment: the stem's level (its rms over the body, its envelope
+        # through the break, its gain) against the library's drum level - a vocal kept alone on its own scale
+        # left three dead bars in the gate (2026-09-13)
+        ref_d = float((self.ref_rms or {}).get("drums") or 0.2)
         best, best_lv = None, 0.0
         for ln in order:
             if ln == "vocals" and not (self._vocal_ok(held[ln], at) and self._vocal_ok(held[ln], back_at)):
                 continue
-            lv = self._stem_level_span(held[ln], ln, at, back_at)
-            lv = lv * (1.15 if ln in ("other", "vocals") else 1.0) if lv is not None else (0.5 if ln in ("other", "bass", "drums") else 0.0)
+            e = self._stem_level_span(held[ln], ln, at, back_at)
+            if e is None:
+                continue
+            sr = float((self.songs[held[ln]].stem_rms or {}).get(ln) or 0.0)
+            lv = 2.0 * sr * e * min(self._lane_gain(held[ln], ln, at), 1.0) / max(ref_d, 1e-6)
+            lv *= 1.15 if ln in ("other", "vocals") else 1.0
             if lv > best_lv:
                 best, best_lv = ln, lv
-        if best is None or best_lv < 0.12:
+        if best is None or best_lv < BREAK_LEFT_MIN:
             return False
         keep = best
         back = at + int(bars) * self._bar_clock()
@@ -3884,7 +3931,10 @@ class RemixConductor:
                     "why": p["why"], "payoff": p.get("payoff"), "moved": p.get("moved", 0), "words": self._plan_words(p)}
         out = {"bed": None, "voices": [], "landing_in_bars": None, "wait_why": self.wait_why, "plan": plan,
                "settle_phrases": SETTLE_PHRASES, "voice_phrases": VOICE_PHRASES, "strip": bool(self.strip_before_bed),
-               "calm_phrases": self.calm_phrases,
+               "calm_phrases": self.calm_phrases, "policy": getattr(self, "policy", "record"),
+               "seam": (self._seam_status() if getattr(self, "policy", "record") == "record" else None),
+               "record": (self._record_status() if getattr(self, "policy", "record") == "record" else None),
+               "play_min_s": getattr(self, "play_min_s", None),
                "recue": [list(x) for x in getattr(self, "recue_log", [])[-6:]],
                "follow": ({"deck": self._drums_follow, "lanes": list(getattr(self, "_follow_lanes", ("drums",))), "land_k": self._land_k}
                           if self._drums_follow is not None else None),
@@ -3895,7 +3945,9 @@ class RemixConductor:
             bar = self.bar_n
             at = self._next_bar_clock()
             bed = self._bed_deck()
-            if bed is not None and bed in self.songs:
+            if out.get("record"):
+                out["bed"] = dict(out["record"])
+            elif bed is not None and bed in self.songs:
                 s = self.songs[bed]
                 since = bar - s.bed_since if s.bed_since is not None else None
                 out["bed"] = {"deck": bed, "title": s.track.title, "since_bars": since,

@@ -13,18 +13,21 @@ Press **STOP** to end the night.
 ## The one big switch: LAYERS
 
 - **one** - the autoDJ. One record, seams between records.
-- **two / three** - the playing song is handed to the conductor, which plays PARTS of songs: one song is
-  the **bed** (its drums, bass and melody), other songs are **voices** over it. **Harmony travels
-  together**: a song's bass and melody are one thing, its drums another, a vocal is free. A melody never
-  sounds over another song's bassline, at any level, and never over a singer. So a new song arrives, once
-  the bed has settled, in one of three ways: through its **vocal** over an instrumental bed (an acapella,
-  heard a few phrases before it takes the bed at its own drop or hook), or by the **bass swap** (its
-  bassline and melody take over under the bed's drums, and its vocal if it sings, loud; its drums follow
-  at the phrase). A bed change lands only where the new song's drums and bass are measured playing for two
-  phrases and the bed carries through both; once its first half is in it completes. The old bed song
-  keeps its vocal while it sings and fades out. (A drum swap, new drums under the old harmony, exists
-  behind a switch and is off: its first three were flagged.)
-  The **intent line** says what it is doing and waiting for; the **WHY** lines say why; the picture shows it.
+- **two / three** - the playing song is handed to the conductor, which plays it as **the record**: whole,
+  all four stems, its own balance, for at least the PACE dial's minimum (2:30 / 3:30 / 5:00) and never past
+  its natural out point. When the next record is staged, ONE **seam** is planned and shown: the bar of the
+  record (its mix-out point: a section boundary where its drums still carry), the bar of the next (cued so
+  its drop lands on the bar the seam completes), the seam's length (MIXING: cut = a 4-bar breakdown then a
+  cut; morph = 16 bars; blend = 32; auto = the dice) and its order. The seam is the stem morph over
+  phrases: **drums first** by default (the new drums under the old harmony, the old harmony darkening over
+  the last four bars, then the bassline and melody swap on the one), the **bass swap** for variety (the
+  new bassline and melody under the old drums, the drums follow), or an **acapella lead-in** (the new vocal
+  two phrases before its drums, when the record is instrumental there). **Harmony travels together**: a
+  song's bass and melody are one thing; a melody never sounds over another song's bassline. The old
+  record's vocal carries over only when it fits the new harmony. Between seams nothing moves but the
+  vocal lane following its own singing. (Read docs/DJ_THE_RECORD_PLAYS.md for the whole design.)
+  The **intent line** says what plays, for how long, and the seam ahead; the **WHY** lines say why; the
+  picture shows the seam as a gold bracket with its steps.
 
 Switching back to **one** hands the playing song back to the autoDJ at the same position.
 
@@ -36,8 +39,9 @@ Three kinds, hover any heading for the detail and its live effect.
   yours), LENGTH (how long the arc runs), ENERGY and TEMPO (leans on it), VOCALS (instrumentals to
   singers), VARIETY (how far the next song may roam), and the **MOOD** chips (only songs carrying a lit
   tag may play; none lit = everything; "+N more…" opens the rest).
-- **How it mixes.** MIXING (auto / long blends / hard cuts / stem morphs), PACE (how long records or
-  phrases run), SEAMS (how long the mixes themselves are), LOOPS.
+- **How it mixes.** MIXING (auto / long blends / hard cuts / stem morphs; layered: the seam's kind), PACE
+  (how long records run: layered, the record's minimum play), SEAMS (how long the mixes themselves are:
+  layered, the seam's length scaled by a half or double), LOOPS.
 - **How it plays.** BASS, TONE, LEVEL on the mix bus; MOMENTS (how often the DJ arms its own moments, the
   same five as yours: rare / some / lots). FX is off the surface (the moments carry their own shapes); the
   controller's knob 5 still reaches it.
@@ -90,8 +94,9 @@ stays would be too quiet in the room; the line under the row says which.
 The **MOMENTS** dial (rare / some / lots) makes the DJ arm these same five by itself, spaced as before; you
 see the same countdown and can cancel or replace it. Refusals say why on the line under the row.
 
-- **NEXT** - move on at the next phrase (layered: the next lane move, waits waived).
-- **STAY** - one more phrase of this.
+- **NEXT** - move on at the next phrase (layered: the planned seam starts at the next phrase; with no next
+  record staged yet, nothing).
+- **STAY** - one more phrase of this (layered: a seam due in that phrase moves a phrase later).
 - **👍 GOOD / 👎 BAD** - what to do more or less of. The line underneath says what was rated, what it
   learned (seam-style and move weights, and the song's tags for the next picks) and what it did. BAD acts
   at once. **BAD on a moment asks which of five things hurt** - the hole was too long / it sounded thin /
@@ -115,13 +120,13 @@ after a moment. The intent line counts the lane moves of the last ten minutes.
   case to protect when a rule changes. Review them with `python tools/dj/dj_flags.py` (`--summary`,
   `--good`, `--bad`, `--kind dead`, `--last 5`). SET on the nanoKONTROL2 raises a plain problem flag.
 
-**The plan is decided once.** Layered, the intent line begins with the one next event and its bar - "next:
-Grandma Dance arriving as a voice at bar 120 (14 bars) - once the bed has settled" - and the picture shows
-one ghost mark there. That bar does not drift: it moves only when a rule forces it (the bed turns out to be
-building, a voice's bass clashes), and then the story row says "plan moved" and why. NEXT and a BAD in a
-dead stretch overrule it. A BAD is about the last move only while that move is fresh (two phrases); later it
-means "this stretch": it pushes the music on and blames no move, and the move it causes cannot be rated
-until it has been heard.
+**The plan is decided once.** Layered, the intent line reads "the record: Believe (2:10 played), next:
+Antrea in at bar 212: a 16-bar morph, drums first in 1:40 - at Believe's outro". That bar does not drift:
+it moves only when you press NEXT (the seam at the next phrase), STAY (a phrase later), when UP NEXT
+replaces the next record, or when a moment holds the room at its bar; then the story row says "the seam
+moved" and why. A BAD is about the last move only while that move is fresh (two phrases); later it means
+"this stretch": it pushes the music on and blames no move, and the move it causes cannot be rated until
+it has been heard.
 
 ## Steering the songs (left column)
 
@@ -150,14 +155,14 @@ them back when it ends; choose **none**, or **stop**, to end it early. The inten
 
 ## How songs are balanced (layered)
 
-A song keeps its own balance: the song carrying the drums (the bed, or a song playing alone) is scaled as
-a whole so its drums sit at the library's drum level - it sounds like the record. Only a stem set against
-another song's stems is trimmed on its own toward the library's level for that lane: a voice's vocal over a
-foreign bed, a bassline and melody swapped under foreign drums. On top of that come the roles: the song
-holding the bass is the room's harmony and its melody plays full; a melody on a song holding neither drums
-nor bass (one you brought in by hand) plays at half as a texture; a melody under another song's singing
-steps back further; a voice whose chords clash with the harmony here is held down until they agree; and
-bass and drums come back a quarter louder for a phrase after a moment. Songs holding neither drums nor bass have their lows carved so two
+A song keeps its own balance: the record is scaled as a whole so its drums sit at the library's drum level
+- it sounds like the record - and so is each side of a seam (the song holding the drums and the song
+holding the bass and melody each keep their own balance while they overlap). Only a stem set against
+another song's stems on its own is trimmed toward the library's level for that lane: a vocal over the
+record, a part you brought in by hand. On top of that come the roles: a melody on a song holding neither
+drums nor bass plays at half as a texture; a melody under another song's singing steps back further; a
+voice whose chords clash with the harmony here is held down until they agree; and bass and drums come back
+a quarter louder for a phrase after a moment. Songs holding neither drums nor bass have their lows carved so two
 songs never share the low end. The layered bus is then trimmed up to plus four decibels toward the loudness
 the autoDJ produced, and LEVEL, BASS and TONE sit on the bus last.
 

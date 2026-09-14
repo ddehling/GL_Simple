@@ -156,6 +156,7 @@ MIX_CROSS = {"auto": 2.0, "blend": 4.0, "cut": 0.5, "morph": 2.0}
 ENERGY_LEAN = {"cool": -0.25, "hold": 0.0, "amp": 0.25}
 PACE_X = {"short": 0.6, "normal": 1.0, "long": 1.5}
 PACE_BARS = {"short": 4, "normal": 8, "long": 16}
+PLAY_MIN_S = {"short": 150.0, "normal": 210.0, "long": 300.0}       # the record plays at least this long (quick-mix / club / long blends)
 LOOP_LEVEL = {"off": 0, "some": 1, "lots": 2}
 LAYER_BLEND = {"two": 0.3, "three": 0.85}
 HANDOVER_BEATS = 1.0
@@ -373,7 +374,9 @@ class Director:
         if not getattr(rc, "_seeded", False):
             self._seed_brain(rc.brain)
             rc._seeded = True
-        rc.policy = "arrangement"                     # a bed and voices, one change at a time
+        rc.policy = "record"                          # THE RECORD PLAYS: one song whole, one seam per record (docs/DJ_THE_RECORD_PLAYS.md)
+        rc.set_play_min(PLAY_MIN_S[d["pace"]])
+        rc.set_seam(d["mixing"], SEAM_SPEED[d["seams"]])
         try:
             rc.brain.set_require_tags(self.tags)
         except Exception:
@@ -1756,8 +1759,8 @@ class Director:
                     mark(("BREAK: " if k == "break" else "breakdown: ") + f"{m.get('lane')} alone", k, lanes=[ln for ln in LANES if ln != m.get("lane")])
                 elif k in ("rest", "return"):
                     mark(f"{m.get('lane')} {'rest' if k == 'rest' else 'back'}", k, lanes=[m.get("lane")])
-                elif k in ("loop", "evict", "recall", "save"):
-                    mark(m["text"][:36], k)
+                elif k in ("loop", "evict", "recall", "save", "seam_plan", "seam"):
+                    mark(m["text"][:44], k)
             # the plan ahead: the staged song arrives as a VOICE (the arrangement's `other` lane) at the move
             # the bed's settling allows - one steady ghost, not a lane-hopping one; the story row says what
             # each live song is waiting for
@@ -1775,9 +1778,17 @@ class Director:
                 if arr.get("landing_in_bars"):
                     self.plan_marks.append({"bar": b, "end_bar": b + int(arr["landing_in_bars"]), "lanes": ["drums", "bass"], "ghost": True,
                                             "text": "the new bed lands", "kind": "bed_to"})
+                # THE SEAM (the record policy): its steps as a gold bracket from its first bar
+                sm = arr.get("seam")
+                if sm:
+                    S = b + int(sm["in_bars"])
+                    for mk in sm.get("marks") or []:
+                        self.plan_marks.append({"bar": int(S + mk["off"]), "end_bar": (int(S + mk["end_off"]) if mk.get("end_off") is not None else None),
+                                                "lanes": mk["lanes"], "ghost": True, "kind": "seam", "text": mk["text"]})
+                    plan_in = int(sm["in_bars"])
                 # ONE mark for THE PLAN (decided once, so it stays put): the next event at its bar
                 pl = arr.get("plan")
-                if pl and not arr.get("landing_in_bars"):
+                if pl and not arr.get("landing_in_bars") and not sm:
                     lanes_of = {"voice_in": ["other"], "bed_to": ["drums", "bass"], "voice_out": ["other", "vocals"], "land": ["drums"]}
                     self.plan_marks.append({"bar": b + int(pl["in_bars"]), "end_bar": None, "lanes": lanes_of.get(pl["what"], list(LANES)), "ghost": True,
                                             "text": f"{pl['title'][:18]} " + {"voice_in": "arrives as a voice", "bed_to": f"takes the bed ({pl.get('payoff') or 'at the phrase'})",
@@ -1793,7 +1804,9 @@ class Director:
             if staged:
                 d, s = staged[0]
                 at = b + 1 + left
-                ghost(("layered", s.track.id, at), s.track.id, ["other"], at,
+                sm = (arr.get("seam") if isinstance(arr, dict) else None) or {}
+                first_lanes = {"drums": ["drums"], "bass": ["bass", "other"], "vocal": ["vocals"], "cut": ["drums", "bass", "other"]}.get(sm.get("order"), ["drums"])
+                ghost(("layered", s.track.id, at), s.track.id, first_lanes, at,
                       rc._song_time_at(d, rc._next_bar_clock()) + left * self._bar_len(s.track.id))
             else:
                 no_ghost()
@@ -2109,28 +2122,47 @@ class Director:
                 if staged:
                     bar_s = 4 * 60.0 / max(st.get("master_bpm") or 120, 1)
                     # the ETA counts to the PLAN's bar (decided once), not to the next phrase tick
-                    if plan and plan.get("what") == "voice_in":
+                    if plan and plan.get("what") in ("voice_in", "seam"):
                         eta = max(0, plan["in_bars"]) * bar_s
-                        how = f"arrives as a voice: {plan['why']}"
+                        how = (f"arrives as a voice: {plan['why']}" if plan["what"] == "voice_in" else f"the seam: {plan['words']} - {plan['why']}")
                     else:
                         eta = None
                         how = f"waits: the plan is {plan['words']} first" if plan else "in through one lane"
-                    out["next"] = {"title": (plan["title"] if plan and plan.get("what") == "voice_in" else staged[0]["title"]),
+                    out["next"] = {"title": (plan["title"] if plan and plan.get("what") in ("voice_in", "seam") else staged[0]["title"]),
                                    "artist": staged[0].get("artist"), "eta_s": eta, "how": how}
                 live = [s for s in songs.values() if s.get("entered")]
-                bits = [f"{len(live)} song{'s' if len(live) != 1 else ''} layered", f"a move every {st.get('change_bars')} bars",
-                        "vocal lane free" if self.rc.vocal_freedom > 0.5 else "vocals cautious", f"energy {self.dials['energy']}"]
-                # THE PLAN in words: the one next event and its bar (decided once), then the bed and the voices
                 arr = st.get("arrangement") or {}
+                rec, sm = arr.get("record"), arr.get("seam")
+                if rec is not None:
+                    bar_s = 4 * 60.0 / max(st.get("master_bpm") or 120, 1)
+                    played = rec.get("since_bars") or 0
+                    bits = [f"the record: {rec['title'][:28]} ({int(played * bar_s) // 60}:{int(played * bar_s) % 60:02d} played)"]
+                    if sm:
+                        if sm.get("state") == "running":
+                            bits.append(f"seam: {sm['words']}")
+                        else:
+                            left_s = max(0, sm["in_bars"]) * bar_s
+                            bits.append(f"next: {sm['words']} in {int(left_s) // 60}:{int(left_s) % 60:02d} - {sm['why']}"
+                                        + (f" (its drop {sm['drop_after_bars']} bars after)" if not sm.get("on_landmark") else "")
+                                        + (f", rehearsed {sm['rehearsed']}" if sm.get("rehearsed") else "") + (" (held)" if st.get("hold") else ""))
+                    else:
+                        left = max(0, rec.get("settle_left") or 0)
+                        bits.append("plays on" + (f" ({int(left * bar_s)} s to its minimum)" if left else "") + ": no next record staged yet" + (" (held)" if st.get("hold") else ""))
+                else:
+                    bits = [f"{len(live)} song{'s' if len(live) != 1 else ''} layered", f"a move every {st.get('change_bars')} bars",
+                            "vocal lane free" if self.rc.vocal_freedom > 0.5 else "vocals cautious", f"energy {self.dials['energy']}"]
+                # THE PLAN in words: the one next event and its bar (decided once), then the bed and the voices
                 plan = arr.get("plan")
-                if arr.get("landing_in_bars") is not None:
+                if rec is not None:
+                    pass
+                elif arr.get("landing_in_bars") is not None:
                     bits.append(f"a new bed lands in {arr['landing_in_bars']} bars")
                 elif plan:
                     bits.append(f"next: {plan['words']} ({max(0, plan['in_bars'])} bars) - {plan['why']}" + (" (held)" if st.get("hold") else ""))
                 else:
                     bits.append("nothing planned: the bed plays on" + (" (held)" if st.get("hold") else ""))
                 bed = arr.get("bed")
-                if bed:
+                if bed and rec is None:
                     b = f"bed: {bed['title'][:26]}"
                     if bed.get("since_bars") is not None:
                         b += f" for {bed['since_bars']} bars"

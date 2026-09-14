@@ -53,8 +53,11 @@ def main():
     rc.set_change_bars(4)
     rc.set_blend(0.8)
     rc.set_vocal_freedom(0.6)
-    rc.strip_before_bed = True                            # the philosophy: a breakdown before a new bed lands
-    rc.bass_moments = False                               # (the strip path here; the bass-first path is checked below)
+    # THE RECORD PLAYS (docs/DJ_THE_RECORD_PLAYS.md): one song whole, one seam per record; a short minimum play
+    # here so a four-minute render holds two or three seams; the seam's length and order by the dice
+    rc.policy = "record"
+    rc.set_play_min(arg("--play-min", 60.0, float))
+    rc.set_seam("auto", 1.0)
     ok = rc.start(threaded=False)
     check(ok, "conductor started" + (f" ({rc.last_error})" if not ok else ""))
     if not ok:
@@ -328,24 +331,22 @@ def main():
     same = sum(1 for ln in snap["lanes"] if rc._song_id(rc.lanes.get(ln)) == snap["lanes"].get(ln))
     notes = [m["text"][:90] for m in rc.move_log if m["kind"].startswith("recall")]
     check(rc._recall is None and same >= 2, f"RECALL: {same}/4 lanes back on the saved songs (lanes moved in between: {moved}) {notes[-1:] if notes else ''}")
-    # THE BASS MOMENT: with a voice heard and MOMENTS on, a bed change is bass-first - the bassline takes over
-    # (loud) and the drums follow at the phrase; NEXT forces the change once a voice is there
-    t_bm = len(rc.moves)
-    for _ in range(int(8 * rc.change_bars)):
-        if any(dd != rc.lanes.get("drums") and s.entered and not s.leaving and s.voice_since is not None
-               and rc.bar_n - s.voice_since >= rc.change_bars for dd, s in rc.songs.items()):
+    # NEXT = THE SEAM NOW: with a next record staged, NEXT moves the planned seam to the next phrase and it runs
+    # to its completion (the harmony swap: "the bed passes to")
+    for _ in range(int(12 * rc.change_bars)):        # wait for a next record to be staged and its seam planned
+        if rc.seam is not None:
             break
-        pump(int(bars * RATE) // block)
+        paced(int(bars * RATE) // block)
+    n_seams0 = len(rc.seam_log)
+    had_seam = rc.seam is not None and rc.seam["state"] == "planned"
     rc.next_move()
     pump(int(1.5 * bars * RATE) // block)
-    pump(int((2 * rc.change_bars + 3) * bars * RATE) // block)       # the drums follow a phrase after the landing
-    # the PLAN may have made the change on its own before this block started counting: any bass-first change
-    # in the whole run counts, and the drums must have followed at least once
-    took = [m for _, m in rc.moves if "take over" in m or "takes over" in m]
-    followed = [m for _, m in rc.moves if ("drums of" in m or "bassline and melody of" in m) and "follow" in m]
-    clash = [m for _, m in rc.moves[t_bm:] if "clash" in m]
-    check((len(took) >= 1 and len(followed) >= 1) or bool(clash),
-          f"BASS MOMENT: {len(took)} bassline takeovers, {len(followed)} drums followed" + (f" (voice refused: {clash[0][:50]})" if clash and not took else ""))
+    for _ in range(int(2 * 32 + 3 * rc.change_bars)):
+        if len(rc.seam_log) > n_seams0:
+            break
+        pump(int(bars * RATE) // block)
+    check(len(rc.seam_log) > n_seams0, f"SEAM NOW: NEXT {'moved the planned seam' if had_seam else 'found no seam planned'}; seams completed {n_seams0} -> {len(rc.seam_log)}"
+          + (f" (last: {rc.seam_log[-1]['order']} {rc.seam_log[-1]['len']} bars, landed {rc.seam_log[-1]['err_bars']:+.1f} bars from its landmark)" if rc.seam_log else ""))
     # THE COMPOSED MOMENTS: SLAM (two bars: bass + drums out, a beat of nothing, back loud on the one) and the
     # BREAK routine (sixteen: take away, build with the sweep and the tightening loop, the hole, the one) - each
     # armed, landing within four phrases, its take-away and its one in the log, the bed's drums measured out then back
@@ -355,7 +356,8 @@ def main():
         # a BREAK refused for a measured reason (nothing to take away, what stays too quiet) is tried again a
         # phrase later, up to four phrases, before the run gives up on judging it
         tries = 0
-        rightly = ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left", "in flight")
+        rightly = ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left", "in flight",
+                   "a seam is running", "neither drums nor bass")          # (the last two: a seam's step or a running break has the lanes for a moment)
         while not ok_m and kind == "break" and tries < 4 and any(w in msg_m for w in rightly):
             tries += 1
             paced(int(rc.change_bars * bars * RATE) // block)
@@ -406,18 +408,12 @@ def main():
     st_m = rc.moment_stats.get("takeover") or {}
     check(not ok_o and "not on a deck" in msg_o and sum((st_m.get("refused") or {}).values()) >= 1,
           f"CHOSEN SONG off a deck refused and counted: {msg_o} | stats {rc.moment_stats}")
-    # CALM: with calm_phrases 2 the arrangement moves at most once per two phrases (NEXT and an empty bed lane exempt)
-    rc.calm_phrases = 2
+    # THE RECORD PLAYS: left alone for six phrases, nothing but the seam's own steps and the vocal lane moves
     n_c0, k_c0 = len(rc.move_log), rc.bar_n
     paced(int(6 * rc.change_bars * bars * RATE) // block)
-    # (a bed change's second half - the follow - is the same change; the vocal lane follows the singing bar by
-    #  bar by design and is judged by the VOCAL LANE flap check, not here)
-    arr_moves = [m for m in rc.move_log[n_c0:] if m["kind"] in ("enter", "cross", "cross_new", "voice_in", "bed_to", "voice_out")
-                 and not (m["kind"] == "bed_to" and " follow" in m["text"])]
-    phrases = max(1, (rc.bar_n - k_c0) // rc.change_bars)
-    check(len(arr_moves) <= phrases // 2 + 1, f"CALM: {len(arr_moves)} arrangement moves over {phrases} phrases (at most one per two)"
-          + (f": {[m['text'][:40] for m in arr_moves]}" if len(arr_moves) > phrases // 2 + 1 else ""))
-    rc.calm_phrases = 1
+    stray = [m for m in rc.move_log[n_c0:] if m["kind"] in ("enter", "cross", "cross_new", "voice_out", "evict")]
+    check(not stray, f"RECORD: no arrangement move outside a seam over {max(1, (rc.bar_n - k_c0) // rc.change_bars)} phrases"
+          + (f": {[m['text'][:40] for m in stray]}" if stray else ""))
     # a tempo journey: lean hot, span 4 %: the clock climbs in half-percent steps, every song inside the wall
     bpm0 = rc.master_bpm
     rc.set_energy_lean(0.4)
@@ -450,7 +446,7 @@ def main():
     # -- verdicts --------------------------------------------------------------------------------
     st = rc.status()
     crosses = [m for _, m in rc.moves if any(k in m for k in ("crosses", "enters through", "rests", "returns", "arrives through",
-                                                              "arrives as a voice", "the bed passes", "takes over", "fades out as a voice"))]
+                                                              "arrives as a voice", "arrives:", "the bed passes", "takes over", "fades out as a voice"))]
     check(max(live_hist or [0]) >= 2, f"songs live at once: max {max(live_hist or [0])}")
     if hyg.get("lone_blocks"):
         fr = hyg.get("lone_unequal", 0) / hyg["lone_blocks"]
@@ -507,28 +503,38 @@ def main():
     print(f"  --   clash watch: {len(ducks)} duck/unduck" + (f" e.g. {ducks[0]}" if ducks else ""))
     recued = [n for n in rc.log if "cued to" in n and "landmark lands" in n]
     print(f"  --   staged songs re-cued for their arrival bar: {len(recued)}" + (f" e.g. {recued[0][:70]}" if recued else ""))
-    plan_moves = sum(1 for m in rc.move_log if m["kind"] == "plan")
-    check(plans >= 2 and bar_changes <= plan_moves and plan_moves <= max(2, plans // 2),
-          f"PLAN: {plans} plans decided, {bar_changes} bar changes, {plan_moves} logged plan moves (every change is logged, few plans move)")
-    check(len(crosses) >= 6, f"lane moves: {len(crosses)} ({len(rc.moves)} moves in all)")
+    plan_moves = [m for m in rc.move_log if m["kind"] == "plan"]
+    unforced = [m for m in plan_moves if "NEXT" not in m["text"]]
+    check(plans >= 2 and bar_changes <= len(plan_moves) and len(unforced) <= max(2, plans // 2),
+          f"PLAN: {plans} plans decided, {bar_changes} bar changes, {len(plan_moves)} logged plan moves ({len(unforced)} not yours: every change is logged, few plans move)")
+    check(len(crosses) >= 3, f"lane moves: {len(crosses)} ({len(rc.moves)} moves in all)")
     frac_multi = float(np.mean([1.0 if n >= 2 else 0.0 for n in live_hist])) if live_hist else 0.0
-    # the arrangement lets a new bed settle four phrases alone and waits out a bed's build: at four-bar phrases
-    # that is about half the time with one song by design (the old free policy overlapped most of the time)
-    check(frac_multi > 0.25, f"time with 2+ songs heard: {100 * frac_multi:.0f}% (a new bed settles alone by design)")
-    entered = [m for _, m in rc.moves if "enters through" in m or "arrives as a voice" in m or "arrives through" in m or "as it arrives" in m]
+    # records play whole: two songs are heard together only through the seams (16-32 bars each)
+    check(frac_multi > 0.10, f"time with 2+ songs heard: {100 * frac_multi:.0f}% (records play whole; the seams overlap)")
+    entered = [m for _, m in rc.moves if "enters through" in m or "arrives as a voice" in m or "arrives through" in m or "as it arrives" in m or "arrives:" in m]
     left = [m for _, m in rc.moves if m.endswith("leaves") or "fades out as a voice" in m]
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")
-    # the philosophy of play: bed changes land at the voice's drop when one is near, after a breakdown;
-    # the arrangement says why a phrase passed without a move (settling, building, waiting for a drop)
-    beds = [m for _, m in rc.moves if "the bed passes" in m or "take over" in m or "takes over" in m or "come in under" in m]
-    at_drop = [m for m in beds if "at its drop" in m or "at its hook" in m]
-    strips = [m for m in beds if "drop out for" in m]
-    bass_first = [m for m in beds if "take over" in m or "takes over" in m]
-    drums_first = [m for m in beds if "come in under" in m]
-    follows = [m for _, m in rc.moves if ("drums of" in m or "bassline and melody of" in m) and "follow" in m]
-    check(len(beds) >= 2 and (len(strips) >= 1 or len(bass_first) >= 1),
-          f"bed changes: {len(beds)}, {len(at_drop)} at the voice's payoff, {len(strips)} with a breakdown first, {len(bass_first)} bass-first, "
-          f"{len(drums_first)} drums-first ({len(follows)} followed)")
+    # THE SEAMS: one per record, decided once; each ran to its completion with the new record's landmark on
+    # the completion bar (within a bar) when it could be placed there; the orders the dice chose
+    sl = rc.seam_log
+    orders = {o: sum(1 for s in sl if s["order"] == o) for o in ("drums", "bass", "vocal", "cut")}
+    off_lm = [s for s in sl if s["on_lm"] and s["moved"] == 0 and abs(s["err_bars"]) > 1.5]   # (a seam you moved lands where it can)
+    plans_seam = sum(1 for m in rc.move_log if m["kind"] == "seam_plan")
+    check(len(sl) >= 1 and not off_lm and plans_seam <= len(sl) + 2,
+          f"SEAMS: {len(sl)} completed {orders}, {plans_seam} planned; landmark off by > 1 bar: {len(off_lm)}"
+          + (f" e.g. {off_lm[0]}" if off_lm else "") + (f"; e.g. {sl[0]['a'][:16]} -> {sl[0]['b'][:16]} {sl[0]['order']} {sl[0]['len']} bars {sl[0]['err_bars']:+.1f}" if sl else ""))
+    # PLAY LENGTH: a record not cut short by NEXT or a DROP plays at least the minimum before its seam completes
+    nexts = [m["t"] for m in rc.move_log if (m["kind"] == "plan" and "NEXT" in m["text"]) or m["kind"] in ("drop", "recall", "moment")]
+    done_ts = [(m["t"], m["clock_s"]) for m in rc.move_log if m["kind"] == "bed_to" and ("the bed passes to" in m["text"] or "the record is its" in m["text"])]
+    short = []
+    for i in range(1, len(done_ts)):
+        t0, c0 = done_ts[i - 1]
+        t1, c1 = done_ts[i]
+        if any(t0 <= tn <= t1 for tn in nexts) or c0 is None or c1 is None:
+            continue
+        if c1 - c0 < rc.play_min_s - 2 * bars:
+            short.append(round(c1 - c0))
+    check(not short, f"PLAY LENGTH: {len(done_ts)} record changes, none shorter than {rc.play_min_s:.0f} s unless you asked" + (f": {short}" if short else ""))
     arr = st.get("arrangement") or {}
     check("bed" in arr and "voices" in arr and not arr.get("error"), f"arrangement status: bed {((arr.get('bed') or {}).get('title') or '-')[:24]}, {len(arr.get('voices') or [])} voices, wait: {arr.get('wait_why')}")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")

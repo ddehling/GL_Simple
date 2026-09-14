@@ -981,6 +981,25 @@ BREAK); two script-level (an old bed with nothing left now leaves on the bar its
 loop test counted a departing song; a chosen song off a deck was refused for the in-flight reason first).
 ALL OK: harmony split 0.0 bars, arrivals vocal 1 / bass 9 / melody 0, no dead bars.
 
+**THE RECORD PLAYS (2026-09-13 evening, docs/DJ_THE_RECORD_PLAYS.md, the user's yes twice).** "How can we make
+the system plan well and play tastefully? we keep fighting this overly garbage mixing" → the log's numbers
+(1.5-2.8 min per song, 17-35 lane moves per ten minutes, against a DJ's 4-5 min, one 16-64-bar seam each)
+→ "what is the gap?" → the unit of play was the lane, not the record; principle 8 and the drop-landmark
+were mine, not the literature's; we mixed middles in beats, thirty times an hour, unheard. Built as
+`lib/dj/record.py` (a mixin, `policy = "record"`, the default): one record whole for `play_min_s` (PACE
+150/210/300 s) and never past its OUT; one seam per record, planned when the next record is staged - A's
+OUT at a section boundary where its drums carry through the seam (`_seam_a_bar`), B cued so its landmark
+lands on the completion (`_seam_b_start`, a shorter seam when its drums carry from later, the deferred cue);
+the seam's steps as bar offsets (`_seam_steps`: drums first with the darkening high shelf and the harmony
+swap on the one; the bass swap; the acapella lead-in; the breakdown and cut), fired like a moment; NEXT
+moves the seam to the next phrase, HOLD and a moment move it a phrase; the old vocal carries over only at a
+fit ≥ 0.65; no auto break within two phrases of a seam; `_trim` one factor for the drums holder AND the
+bass holder. The arrangement policy stays in the file behind `policy = "arrangement"`, unused. Gate
+rewritten around it (SEAM NOW, RECORD, SEAMS with the landmark error, PLAY LENGTH): ALL OK on the second
+run (the first fell over a name clash with the recorder) - four seams (drums 2, bass 2), harmony split
+0.6 bars, no dead bars, no move outside a seam, lock p95 ≤ 0.07. Step 2 (the rehearsal render) and step 3
+(the dice on the order, layers three) are next.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
