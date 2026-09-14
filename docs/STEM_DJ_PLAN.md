@@ -903,6 +903,53 @@ started (its payoff re-posts everything); (3) the LONE SONG check read a boost's
 three bars after a boost ends. Telemetry now carries `rate_trim` and `odd_seg` per deck. ALL OK: every
 deck's lock p95 ≤ 0.08, lone songs equal on 100 % of blocks, no dead bars.
 
+**Twenty-one flags from three sessions (2026-09-13 16:54-18:14) and "I feel we just keep regressing".** Four
+mechanisms explained all of them, two of them consequences of the day's own builds. (A) Every clash flag
+(five) plus the low-end flag and a seam were ONE SONG'S MELODY OVER ANOTHER'S BASSLINE, reached from the
+other side: the arrival rule had made the bass swap the usual arrival, and the swap left the old bed's
+melody over the new bass (at 0.5 or full). (B) Five dead/seam flags were the conductor trusting SECTION
+LABELS where the stems disagree: The Long Journey's "groove at 0 s" is a near-silent intro and its
+bassline "took over" thirty seconds after a handover with nothing in it; the DJ's BREAK measured its melody
+against the melody's own quiet scale and left rms 0.02; Lonely Souls took the bed where its drums and bass
+are silent (rms 0.007). (C) Five plan/still flags were one loop: a plan that moves re-cues the song so its
+landmark lands on the new bar, the landmark fails the same check, the plan moves a phrase - Lonely Souls
+eight times, Wild Window five. (D) An evicted bed handed its drums and melody to a sleeping staged song in
+its intro (the 17:31 cascade: vocals, clash, bass). The user's yes to all four:
+
+1. HARMONY TRAVELS TOGETHER. A song's bass and melody are one thing, its drums another, a vocal is free.
+   Every bed change moves bass and melody as a pair: the bass swap (under a singing bed) brings the new
+   melody with the new bass and takes the old melody out with the old bass; the drum swap (under an
+   instrumental bed, new) brings the new drums under the old harmony and the bass and melody follow at the
+   phrase; TAKEOVER and BRIDGE carry the melody with the bass. The "melody held low" arrival is gone (it was
+   flagged clash at 0.5 too). `_lane_gain`: the bass holder's melody is full; a melody on a song holding
+   neither drums nor bass is the texture. The clash tick judges voices against the BASS holder. Gate:
+   HARMONY (melody and bass on one song, two bars of crossing allowed) and ARRIVALS (no melody arrivals).
+2. STEM-BACKED POSITIONS. `_stem_carries` (25th percentile of the drums' and bass's envelopes ≥ 0.35 of
+   their loud level), `_track_steady` (labels, sampled every bar a quarter bar inside the ends - the
+   three-point read passed at 16 bars what it failed at 8), `_steady_at` / `_steady_from` (both). The body
+   start and the landmark are the first place that carries for two phrases; a bed change (plan (b), the
+   arrival paths) lands only where the new song carries; the BREAK needs the bed's drums playing in a
+   groove through the take-away and what stays at ≥ 0.25 of the library's drum level in ABSOLUTE terms
+   (else it tries the next three phrases, then refuses: "nothing to take away", "too quiet there").
+3. THE ARRIVAL BAR DECIDED ONCE FOR BOTH SONGS (`_arrival_bar`): from the settle bar, the first bar where
+   the bed grooves through the change and the arriving song, cued to its landmark, is steady and carries;
+   a song arriving through its vocal is cued to where it SINGS (`_sung_landmark`, plan `sing`). A re-cue
+   that cannot place the landmark (the song has fewer bars before it than the wait) is DEFERRED
+   (`_cue_later`, posted from step, dropped when the plan moves or the song enters) instead of "as early
+   as it goes". A bed change after a handover waits the full settle from the open (`open_k`): the handed
+   song was taken apart 30 s after the switch.
+4. EVICTION hands lanes only to songs that have ENTERED; the lanes a bed change still owes go to the song
+   that owes them (the follow completes there); the melody goes with the bass or rests.
+Flag snapshots now carry the re-cue log and the in-flight follow. Gate: five runs to green. Run one found a
+real hole (a RECALL had put the bass back on the old bed mid-flight; the follow moved only the drums and the
+room sat with the bass on one song and the melody on another for thirty bars - a follow now ends the bed
+WHOLE, and a departing voice hands any bed lane it still holds to the bed) and three text mismatches in the
+gate itself; run three, with the HARMONY check listing its stretches, found that the old harmony kept its
+melody a few bars past its bass at every follow (`_other_free_for` did not count the song giving up the bass
+as free to give); run four's last fail was the CALM count treating a bed change's follow and the vocal lane's
+bar-by-bar rests as separate moves. ALL OK: harmony split for 0.0 bars of the run, arrivals vocal 2 / bass 6 /
+melody 0, no dead bars, every deck's lock p95 ≤ 0.08.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

@@ -338,8 +338,8 @@ def main():
     pump(int((2 * rc.change_bars + 3) * bars * RATE) // block)       # the drums follow a phrase after the landing
     # the PLAN may have made the change on its own before this block started counting: any bass-first change
     # in the whole run counts, and the drums must have followed at least once
-    took = [m for _, m in rc.moves if "takes over" in m]
-    followed = [m for _, m in rc.moves if "drums of" in m and "follow" in m]
+    took = [m for _, m in rc.moves if "take over" in m or "takes over" in m]
+    followed = [m for _, m in rc.moves if ("drums of" in m or "bassline and melody of" in m) and "follow" in m]
     clash = [m for _, m in rc.moves[t_bm:] if "clash" in m]
     check((len(took) >= 1 and len(followed) >= 1) or bool(clash),
           f"BASS MOMENT: {len(took)} bassline takeovers, {len(followed)} drums followed" + (f" (voice refused: {clash[0][:50]})" if clash and not took else ""))
@@ -349,8 +349,16 @@ def main():
     for kind, lead in (("slam", 2), ("break", 16)):
         t_m, k_m = len(rc.moves), len(audio)
         ok_m, msg_m = rc.arm_moment(kind)
-        if not ok_m and kind == "break" and any(w in msg_m for w in ("silent there", "not measured", "nothing would be left")):
-            print(f"  --   BREAK refused here, rightly: {msg_m} (not judged)")
+        # a BREAK refused for a measured reason (nothing to take away, what stays too quiet) is tried again a
+        # phrase later, up to four phrases, before the run gives up on judging it
+        tries = 0
+        while not ok_m and kind == "break" and tries < 4 and any(w in msg_m for w in ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left")):
+            tries += 1
+            paced(int(rc.change_bars * bars * RATE) // block)
+            t_m, k_m = len(rc.moves), len(audio)
+            ok_m, msg_m = rc.arm_moment(kind)
+        if not ok_m and kind == "break" and any(w in msg_m for w in ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left")):
+            print(f"  --   BREAK refused here, rightly, {tries + 1} times: {msg_m} (not judged)")
             continue
         st_m = rc.moment_status()
         in_bars = st_m["in_bars"] if st_m else None
@@ -398,7 +406,10 @@ def main():
     rc.calm_phrases = 2
     n_c0, k_c0 = len(rc.move_log), rc.bar_n
     paced(int(6 * rc.change_bars * bars * RATE) // block)
-    arr_moves = [m for m in rc.move_log[n_c0:] if m["kind"] in ("enter", "cross", "cross_new", "rest", "return", "voice_in", "bed_to", "voice_out")]
+    # (a bed change's second half - the follow - is the same change; the vocal lane follows the singing bar by
+    #  bar by design and is judged by the VOCAL LANE flap check, not here)
+    arr_moves = [m for m in rc.move_log[n_c0:] if m["kind"] in ("enter", "cross", "cross_new", "voice_in", "bed_to", "voice_out")
+                 and not (m["kind"] == "bed_to" and " follow" in m["text"])]
     phrases = max(1, (rc.bar_n - k_c0) // rc.change_bars)
     check(len(arr_moves) <= phrases // 2 + 1, f"CALM: {len(arr_moves)} arrangement moves over {phrases} phrases (at most one per two)"
           + (f": {[m['text'][:40] for m in arr_moves]}" if len(arr_moves) > phrases // 2 + 1 else ""))
@@ -459,11 +470,32 @@ def main():
     vt = [(m["t"], m["kind"]) for m in rc.move_log if m["kind"] in ("rest", "return") and m.get("lane") == "vocals"]
     flaps = sum(1 for i in range(1, len(vt)) if vt[i - 1][1] == "rest" and vt[i][1] == "return" and vt[i][0] - vt[i - 1][0] < 4 * bars)
     check(flaps <= 1, f"VOCAL LANE: {flaps} rest→return flaps under four bars ({len(vt)} vocal moves)")
-    # how songs arrive: through the vocal, the bass (a swap) or the melody over an INSTRUMENTAL bed - never a melody over a singer
+    # how songs arrive: through the vocal, the bass swap (under a singing bed) or the drum swap (under an instrumental
+    # one) - never through a melody: a melody sounds only with its own bass (every clash flag of 2026-09-13)
     arrivals = [m for m in rc.move_log if m["kind"] == "voice_in"]
-    by_lane = {ln: sum(1 for m in arrivals if m.get("lane") == ln) for ln in ("vocals", "bass", "other")}
-    bad_arr = [m["text"][:60] for m in arrivals if m.get("lane") == "other" and "instrumental" not in m["text"]]
-    check(arrivals and not bad_arr, f"ARRIVALS: {by_lane} (vocal / bass swap / melody over an instrumental bed); melody over a singer: {len(bad_arr)}")
+    by_lane = {ln: sum(1 for m in arrivals if m.get("lane") == ln) for ln in ("vocals", "bass", "drums", "other")}
+    bad_arr = [m["text"][:60] for m in arrivals if m.get("lane") == "other"]
+    check(arrivals and not bad_arr, f"ARRIVALS: {by_lane} (vocal / bass swap / drum swap); through a melody: {len(bad_arr)}")
+    # HARMONY TRAVELS TOGETHER: whenever the melody lane and the bass lane are both held, the same song holds them
+    # (a lane crossing a bar after the other is the only exception: two bars' worth of blocks over the run)
+    bar_blocks = max(1, int(rc._bar_clock() / block))
+    harm_viol = [i for i, (dr, ba, ot, vo) in enumerate(lane_hist) if ba is not None and ot is not None and ba != ot]
+    stretches = []
+    for i in harm_viol:
+        if stretches and i == stretches[-1][1] + 1 and lane_hist[i][1:3] == lane_hist[stretches[-1][0]][1:3]:
+            stretches[-1][1] = i
+        else:
+            stretches.append([i, i])
+    ex = "; ".join(f"{a * block / RATE:.0f} s for {(b - a + 1) / bar_blocks:.1f} bars: bass {lane_hist[a][1]} melody {lane_hist[a][2]}" for a, b in stretches[:4])
+    check(len(harm_viol) <= 2 * bar_blocks, f"HARMONY: melody and bass on different songs for {len(harm_viol) / bar_blocks:.1f} bars of the run ({ex})")
+    if stretches:
+        # what the room was at the start of the longest stretch (the per-second picture: deck -> gain, stems, playing, time, title, eq, held)
+        a, b = max(stretches, key=lambda s: s[1] - s[0])
+        pic = next((p for k, _m, p in tel_hist if k >= a), None)
+        print(f"  --   HARMONY longest stretch at {a * block / RATE:.0f} s: " + "; ".join(f"{d}: {v[4]} held {v[6]} gains {v[1]}" for d, v in (pic or {}).items()))
+        near = [m for m in rc.move_log if abs((m.get('clock_s') or -1e9) - a * block / RATE) <= 30.0]
+        for m in near[:8]:
+            print(f"        {m.get('clock_s'):7.1f}s {m['kind']:9s} {m['text'][:110]}")
     ducks = [m["text"][:70] for m in rc.move_log if m["kind"] in ("duck", "unduck")]
     print(f"  --   clash watch: {len(ducks)} duck/unduck" + (f" e.g. {ducks[0]}" if ducks else ""))
     recued = [n for n in rc.log if "cued to" in n and "landmark lands" in n]
@@ -481,13 +513,15 @@ def main():
     check(len(entered) >= 1, f"{len(entered)} songs entered lane by lane, {len(left)} left")
     # the philosophy of play: bed changes land at the voice's drop when one is near, after a breakdown;
     # the arrangement says why a phrase passed without a move (settling, building, waiting for a drop)
-    beds = [m for _, m in rc.moves if "the bed passes" in m or "takes over" in m]
+    beds = [m for _, m in rc.moves if "the bed passes" in m or "take over" in m or "takes over" in m or "come in under" in m]
     at_drop = [m for m in beds if "at its drop" in m or "at its hook" in m]
     strips = [m for m in beds if "drop out for" in m]
-    bass_first = [m for m in beds if "takes over" in m]
-    follows = [m for _, m in rc.moves if "drums of" in m and "follow" in m]
+    bass_first = [m for m in beds if "take over" in m or "takes over" in m]
+    drums_first = [m for m in beds if "come in under" in m]
+    follows = [m for _, m in rc.moves if ("drums of" in m or "bassline and melody of" in m) and "follow" in m]
     check(len(beds) >= 2 and (len(strips) >= 1 or len(bass_first) >= 1),
-          f"bed changes: {len(beds)}, {len(at_drop)} at the voice's payoff, {len(strips)} with a breakdown first, {len(bass_first)} bass-first ({len(follows)} drums followed)")
+          f"bed changes: {len(beds)}, {len(at_drop)} at the voice's payoff, {len(strips)} with a breakdown first, {len(bass_first)} bass-first, "
+          f"{len(drums_first)} drums-first ({len(follows)} followed)")
     arr = st.get("arrangement") or {}
     check("bed" in arr and "voices" in arr and not arr.get("error"), f"arrangement status: bed {((arr.get('bed') or {}).get('title') or '-')[:24]}, {len(arr.get('voices') or [])} voices, wait: {arr.get('wait_why')}")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")

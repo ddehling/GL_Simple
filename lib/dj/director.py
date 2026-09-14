@@ -1156,6 +1156,7 @@ class Director:
                              "lanes": {ln: (rc.songs[d].track.title if d in rc.songs else None) for ln, d in rc.lanes.items()},
                              "lane_boost": {k: list(v) for k, v in rc.lane_boost.items()}, "songs": songs,
                              "plan": arr.get("plan"), "wait_why": arr.get("wait_why"), "moves_10min": arr.get("moves_10min"),
+                             "recue": arr.get("recue"), "follow": arr.get("follow"),
                              "moment": rc.moment_status(), "moment_tune": rc.moment_tune, "breaking": rc._break is not None,
                              "user_loop": rc.user_loop_bars, "hold": rc.hold,
                              "moves": [{"hms": m.get("hms"), "kind": m["kind"], "lane": m.get("lane"), "text": m["text"][:140]} for m in rc.move_log[-10:]]})

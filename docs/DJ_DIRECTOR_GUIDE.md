@@ -14,13 +14,16 @@ Press **STOP** to end the night.
 
 - **one** - the autoDJ. One record, seams between records.
 - **two / three** - the playing song is handed to the conductor, which plays PARTS of songs: one song is
-  the **bed** (its drums and bass), other songs are **voices** over it. A new song arrives once the bed
-  has settled, in one of three ways: through its **vocal** over an instrumental bed, through its **bass**
-  (the swap: its bassline takes over under the bed's drums, loud, and its drums follow at the phrase), or
-  through its **melody** only when the bed is not singing, held low as a texture. Never a melody over a
-  singer. A voice is heard a few phrases and takes the bed at its own drop or hook; the old bed song fades
-  out. The **intent line** says what it is doing and waiting for; the **WHY** lines say why; the picture
-  shows it.
+  the **bed** (its drums, bass and melody), other songs are **voices** over it. **Harmony travels
+  together**: a song's bass and melody are one thing, its drums another, a vocal is free. A melody never
+  sounds over another song's bassline, at any level, and never over a singer. So a new song arrives, once
+  the bed has settled, in one of three ways: through its **vocal** over an instrumental bed (an acapella,
+  heard a few phrases before it takes the bed at its own drop or hook); by the **bass swap** when the bed
+  is singing (its bassline and melody take over under the bed's drums and vocal, loud, and its drums follow
+  at the phrase); or by the **drum swap** when the bed is not (its drums come in under the bed's harmony,
+  and its bassline and melody follow at the phrase). A bed change lands only where the new song's drums and
+  bass are measured playing for two phrases; the old bed song keeps its vocal while it sings and fades out.
+  The **intent line** says what it is doing and waiting for; the **WHY** lines say why; the picture shows it.
 
 Switching back to **one** hands the playing song back to the autoDJ at the same position.
 
@@ -74,10 +77,14 @@ or running; afterwards the arrangement waits a phrase.
   the first live BREAK with them was "painful in its execution".)
 - **SING** (at the hook) - bass and drums out for two bars, the vocal alone for the room; back louder on the
   third bar. Needs a song singing with a hook ahead.
-- **TAKEOVER** - the other song's bassline takes over on the one, loud, at its drop or hook; its drums follow
-  at the phrase. Needs a second song (a voice, or one staged: put one UP NEXT).
+- **TAKEOVER** - the other song's bassline and melody take over on the one, loud, at its drop or hook; its
+  drums follow at the phrase. Needs a second song (a voice, or one staged: put one UP NEXT).
 - **BRIDGE** - the bed fades out under this song's vocal, the other song's drums come in under it, a beat of
-  nothing, its bass and drums slam on the one; the vocal carries over. Needs the bed singing and a second song.
+  nothing, its bass, melody and drums slam on the one; the vocal carries over. Needs the bed singing and a
+  second song.
+
+A BREAK is refused where it would take nothing away (the bed thin or breaking down itself) or where what
+stays would be too quiet in the room; the line under the row says which.
 
 The **MOMENTS** dial (rare / some / lots) makes the DJ arm these same five by itself, spaced as before; you
 see the same countdown and can cancel or replace it. Refusals say why on the line under the row.
@@ -144,11 +151,12 @@ them back when it ends; choose **none**, or **stop**, to end it early. The inten
 
 A song keeps its own balance: the song carrying the drums (the bed, or a song playing alone) is scaled as
 a whole so its drums sit at the library's drum level - it sounds like the record. Only a stem set against
-another song's stems is trimmed on its own toward the library's level for that lane: a voice's melody or
-vocal over a foreign bed, a bassline swapped under foreign drums. On top of that come the roles: a voice's
-melody plays at half as a texture, a melody under another song's singing steps back further, a voice whose
-chords clash with the bed here is held down until they agree, and bass and drums come back a quarter
-louder for a phrase after a moment. Songs holding neither drums nor bass have their lows carved so two
+another song's stems is trimmed on its own toward the library's level for that lane: a voice's vocal over a
+foreign bed, a bassline and melody swapped under foreign drums. On top of that come the roles: the song
+holding the bass is the room's harmony and its melody plays full; a melody on a song holding neither drums
+nor bass (one you brought in by hand) plays at half as a texture; a melody under another song's singing
+steps back further; a voice whose chords clash with the harmony here is held down until they agree; and
+bass and drums come back a quarter louder for a phrase after a moment. Songs holding neither drums nor bass have their lows carved so two
 songs never share the low end. The layered bus is then trimmed up to plus four decibels toward the loudness
 the autoDJ produced, and LEVEL, BASS and TONE sit on the bus last.
 
@@ -158,7 +166,7 @@ the autoDJ produced, and LEVEL, BASS and TONE sit on the bus last.
 on the next bar, loud for a phrase (a song not on a deck is staged first and comes in the moment it is
 ready). The guard still refuses a key clash. The same menu offers **TAKEOVER with this** and **BRIDGE with
 this**: the song is staged if it has to be and the moment arms with it the moment it is ready. With MOMENTS on, the conductor's own bed changes are bass-first:
-the new song's bassline takes over at its drop or hook, loud, and its drums follow a phrase later.
+the new song's bassline and melody take over at its drop or hook, loud, and its drums follow a phrase later.
 
 ## The controller (nanoKONTROL2)
 
