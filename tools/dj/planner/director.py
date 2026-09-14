@@ -133,6 +133,242 @@ class SongMap(QWidget):
             qp.drawLine(QPointF(x(self.pos_s), 0), QPointF(x(self.pos_s), H))
 
 
+class StemViewer(QWidget):
+    """SONG PARTS: a floating window that follows the highlighted song (SONGS or UP NEXT) - its four stems as
+    spectrogram rows in song time, the sections along the top, the drops as white ticks, the hook in gold,
+    where it sings in green, its live position when it is on a deck - and a line of plain words per stem
+    saying where that part is usable ("bass 84 % · out 2:41-3:02 · loudest 1:04-1:36"). Right-click a row:
+    the same commands as the lists (that stem in, TAKEOVER / BRIDGE with it, UP NEXT).
+    (user 2026-09-13: "the songs list doesn't really provide enough information about what stems can be used")"""
+    ROW_H = 54
+    HEAD_H = 30
+    SEC_H = 7
+    WORDS_W = 250
+
+    def __init__(self, tab):
+        super().__init__(tab, Qt.WindowType.Tool)
+        self.tab = tab
+        self.setWindowTitle("Song parts")
+        self.resize(960, self.HEAD_H + self.SEC_H + 4 * self.ROW_H + 30)
+        self.setMinimumSize(560, self.HEAD_H + self.SEC_H + 4 * self.ROW_H + 30)
+        self.setMouseTracking(True)
+        self.setStyleSheet("background: #121216; color: #e6e6ea;")
+        self.track = None
+        self.hover_t = None
+        self._img_cache = {}
+        self._words = {}
+        self._words_for = None
+
+    # -- data -------------------------------------------------------------------------------------------------
+    def set_track(self, t):
+        if t is self.track:
+            return
+        self.track = t
+        self._img_cache.clear()
+        self._words, self._words_for = {}, None
+        self.hover_t = None
+        if t is not None:
+            self.setWindowTitle(f"Song parts - {t.title[:48]}")
+            if getattr(t, "has_stems", False):
+                self.tab.spectro.request(t)
+        self.update()
+
+    def _x(self, t_s, W):
+        return 10 + float(t_s) / max(float(self.track.duration_s), 1e-6) * (W - 20 - self.WORDS_W)
+
+    def _t(self, x, W):
+        return max(0.0, min(float(self.track.duration_s), (x - 10) / max(1.0, W - 20 - self.WORDS_W) * float(self.track.duration_s)))
+
+    def _compute_words(self, sp):
+        """Per stem: share of the body where the part sounds, its longest silence, its loudest half minute."""
+        import numpy as np
+        t = self.track
+        hop = float(sp.get("hop_s") or 0.1)
+        secs = t.sections or []
+        body = [s for s in secs if s.get("kind") not in ("intro", "outro")]
+        b0 = float(body[0]["start_s"]) if body else 0.0
+        b1 = float(body[-1]["end_s"]) if body else float(t.duration_s)
+        out = {}
+        for ln, spec in (sp.get("stems") or {}).items():
+            if spec is None or spec.size == 0:
+                continue
+            e = spec.astype(np.float32).mean(axis=0)               # per frame, 0..255 dB scale
+            top = float(np.percentile(e, 95)) or 1.0
+            lvl = np.clip(e / top, 0.0, 1.0)
+            per_s = int(round(1.0 / hop)) or 1
+            n = len(lvl) // per_s
+            sec_lvl = lvl[:n * per_s].reshape(n, per_s).mean(axis=1)
+            i0, i1 = int(b0), min(n, int(b1))
+            seg = sec_lvl[i0:i1] if i1 > i0 else sec_lvl
+            on = seg >= 0.35
+            share = float(on.mean()) if len(seg) else 0.0
+            # longest silence inside the body
+            best, cur, start, best_start = 0, 0, 0, 0
+            for k, v in enumerate(on):
+                if not v:
+                    if cur == 0:
+                        start = k
+                    cur += 1
+                    if cur > best:
+                        best, best_start = cur, start
+                else:
+                    cur = 0
+            quiet = (i0 + best_start, i0 + best_start + best) if best >= 4 else None
+            # loudest half minute
+            win = 30
+            loud = None
+            if len(sec_lvl) > win:
+                cs = np.cumsum(np.insert(sec_lvl, 0, 0.0))
+                means = (cs[win:] - cs[:-win]) / win
+                k = int(np.argmax(means))
+                loud = (k, k + win)
+            words = [f"{int(round(100 * share))} % of the body"]
+            if quiet:
+                words.append(f"out {_mmss(quiet[0])}-{_mmss(quiet[1])}")
+            if loud:
+                words.append(f"loudest {_mmss(loud[0])}-{_mmss(loud[1])}")
+            out[ln] = {"words": " · ".join(words), "share": share, "lvl": sec_lvl}
+        return out
+
+    def _song_pos(self):
+        d = self.tab.director
+        try:
+            if d is not None and d.rc is not None and self.track is not None:
+                deck = d.rc.deck_of(self.track.id)
+                if deck is not None:
+                    tel = d.rc._tel_deck(deck)
+                    if tel.get("playing"):
+                        return float(tel.get("time_s") or 0.0), d.rc.songs[deck].held(d.rc.lanes)
+        except Exception:
+            pass
+        return None, []
+
+    # -- paint ------------------------------------------------------------------------------------------------
+    def paintEvent(self, ev):
+        from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+        from PyQt6.QtCore import QRectF, QPointF
+        from tools.dj.planner.timeline import SECTION_COLORS, LANE_COLORS, _spec_image
+        p = QPainter(self)
+        W, H = self.width(), self.height()
+        p.fillRect(0, 0, W, H, QColor(18, 18, 22))
+        t = self.track
+        if t is None:
+            p.setPen(QColor(150, 150, 165))
+            p.drawText(QRectF(12, 0, W - 24, H), Qt.AlignmentFlag.AlignVCenter, "highlight a song in SONGS or UP NEXT to see its parts")
+            return
+        f = QFont(self.font())
+        f.setBold(True)
+        f.setPointSizeF(10.5)
+        p.setFont(f)
+        p.setPen(QColor(230, 230, 236))
+        hk = getattr(t, "hook", None)
+        head = f"{t.title}   {t.artist or ''}   {(t.bpm or 0):.1f} bpm  {t.camelot or '?'}   {_mmss(t.duration_s)}"
+        if hk:
+            head += f"   hook {_mmss(hk['start_s'])}"
+        if not getattr(t, "has_stems", False):
+            head += "   (no stems rendered: the autoDJ can play it whole, the conductor cannot use its parts)"
+        p.drawText(QRectF(12, 0, W - 24, self.HEAD_H), Qt.AlignmentFlag.AlignVCenter, head)
+        # the sections band with drop ticks, the hook in gold, singing in green
+        ys = self.HEAD_H
+        secs = t.sections or []
+        for i, s in enumerate(secs):
+            col = QColor(SECTION_COLORS.get(s.get("kind"), QColor(90, 90, 100)))
+            p.fillRect(QRectF(self._x(s["start_s"], W), ys, max(1.0, self._x(s["end_s"], W) - self._x(s["start_s"], W)), self.SEC_H), col)
+        y0 = ys + self.SEC_H + 2
+        sp = self.tab.spectro.get(t.id) if getattr(t, "has_stems", False) else None
+        if sp is not None and self._words_for != t.id:
+            try:
+                self._words = self._compute_words(sp)
+            except Exception:
+                self._words = {}
+            self._words_for = t.id
+        pos, held = self._song_pos()
+        small = QFont(self.font())
+        small.setPointSizeF(8.5)
+        words_x = W - self.WORDS_W - 4
+        for i, ln in enumerate(("drums", "bass", "other", "vocals")):
+            y = y0 + i * self.ROW_H
+            rect = QRectF(10, y + 2, W - 20 - self.WORDS_W, self.ROW_H - 6)
+            drawn = False
+            if sp is not None and (sp.get("stems") or {}).get(ln) is not None:
+                key = (ln, int(rect.width()), int(rect.height()))
+                img = self._img_cache.get(key)
+                if img is None:
+                    img = _spec_image(sp["stems"][ln], LANE_COLORS[ln], 0.0, float(t.duration_s), int(rect.width()), int(rect.height()), sp["hop_s"])
+                    self._img_cache[key] = img
+                if img is not None:
+                    p.drawImage(rect, img)
+                    drawn = True
+            if not drawn:
+                p.fillRect(rect, QColor(28, 28, 34))
+                p.setPen(QColor(150, 150, 165))
+                p.setFont(small)
+                msg = ("no stems" if not getattr(t, "has_stems", False) else
+                       ("analysing the stems…" if (t.id in self.tab.spectro._busy or sp is None) and t.id not in self.tab.spectro.errors else
+                        f"could not read the stems: {self.tab.spectro.errors.get(t.id, '')[:60]}"))
+                p.drawText(rect, Qt.AlignmentFlag.AlignCenter, msg)
+            # the lane name, lit when this song holds the lane right now
+            p.setFont(QFont(self.font().family(), 8, QFont.Weight.Bold))
+            p.setPen(QColor(255, 255, 255) if ln in held else QColor(200, 200, 210, 200))
+            p.drawText(QRectF(14, y + 3, 90, 14), Qt.AlignmentFlag.AlignVCenter, {"other": "MELODY", "vocals": "VOCAL"}.get(ln, ln.upper()) + ("  ● in play" if ln in held else ""))
+            # the words
+            p.setFont(small)
+            p.setPen(QColor(220, 220, 228))
+            w = self._words.get(ln)
+            p.drawText(QRectF(words_x, y + 2, self.WORDS_W, self.ROW_H - 6), Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextWordWrap,
+                       w["words"] if w else ("" if not drawn else "…"))
+        # drops, hook and singing over the rows
+        Hrows = y0 + 4 * self.ROW_H
+        for i, s in enumerate(secs):
+            if i > 0 and s.get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown", "intro"):
+                x = self._x(s["start_s"], W)
+                p.setPen(QPen(QColor(255, 255, 255, 170), 1, Qt.PenStyle.DashLine))
+                p.drawLine(QPointF(x, ys), QPointF(x, Hrows))
+        if hk:
+            length = float(hk.get("end_s", 0) - hk.get("start_s", 0)) or 15.0
+            p.setPen(QPen(QColor(240, 200, 90), 3))
+            for st in (hk.get("starts") or [hk["start_s"]]):
+                p.drawLine(QPointF(self._x(st, W), Hrows + 3), QPointF(self._x(st + length, W), Hrows + 3))
+        vc = (getattr(t, "axes", None) or {}).get("vc") or []
+        hop = float((getattr(t, "axes", None) or {}).get("vc_hop") or 8.0)
+        p.setPen(QPen(QColor(120, 220, 140), 2))
+        yv = y0 + 3 * self.ROW_H + self.ROW_H - 5
+        for tt, v in vc:
+            if v is not None and float(v) >= 0.03:
+                p.drawLine(QPointF(self._x(tt, W), yv), QPointF(self._x(float(tt) + hop, W), yv))
+        # the live position and the hover time
+        if pos is not None:
+            x = self._x(pos, W)
+            p.setPen(QPen(QColor(255, 255, 255), 2))
+            p.drawLine(QPointF(x, ys), QPointF(x, Hrows))
+        if self.hover_t is not None:
+            x = self._x(self.hover_t, W)
+            p.setPen(QPen(QColor(255, 255, 255, 120), 1))
+            p.drawLine(QPointF(x, ys), QPointF(x, Hrows))
+            p.setPen(QColor(230, 230, 236))
+            p.setFont(small)
+            sec = t.section_at(self.hover_t) or {}
+            p.drawText(QRectF(min(x + 4, W - self.WORDS_W - 130), Hrows + 6, 130, 14), Qt.AlignmentFlag.AlignVCenter, f"{_mmss(self.hover_t)}  {sec.get('kind') or ''}")
+        p.setPen(QColor(150, 150, 165))
+        p.setFont(small)
+        p.drawText(QRectF(12, H - 18, W - 24, 14), Qt.AlignmentFlag.AlignVCenter,
+                   "sections along the top · dashed = a drop · gold = the hook · green = singing · right-click a row: that part in, TAKEOVER / BRIDGE with it, UP NEXT")
+
+    def mouseMoveEvent(self, ev):
+        if self.track is not None:
+            self.hover_t = self._t(ev.position().x(), self.width())
+            self.update()
+
+    def leaveEvent(self, ev):
+        self.hover_t = None
+        self.update()
+
+    def contextMenuEvent(self, ev):
+        if self.track is None or self.tab.director is None:
+            return
+        self.tab._song_actions(self.track.id, from_queue=False).exec(ev.globalPos())
+
+
 class ArcStrip(QWidget):
     """The night's arc as a picture: the plan as a curve (with the ENERGY lean on it), the songs that played
     as dots at their energy, the playhead. Click = 'we are here' (both engines' set clocks move); drag up
@@ -471,6 +707,17 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.queue_btn.setToolTip("put the selected song UP NEXT (Enter or a double-click on the row does the same)")
         self.queue_btn.clicked.connect(self._queue_selected)
         frow.addWidget(self.queue_btn)
+        # SONG PARTS: the floating viewer of the highlighted song's stems
+        self.viewer = StemViewer(self)
+        self.view_btn = QPushButton("PARTS")
+        self.view_btn.setCheckable(True)
+        self.view_btn.setProperty("kind", "small")
+        self.view_btn.setMinimumHeight(20)
+        self.view_btn.setMaximumHeight(22)
+        self.view_btn.setToolTip("open the Song parts window: the highlighted song's four stems over time, its sections, hook and singing, "
+                                 "and where each part is usable - follows whatever you highlight in SONGS or UP NEXT")
+        self.view_btn.toggled.connect(self._toggle_viewer)
+        frow.addWidget(self.view_btn)
         left.addLayout(frow)
         lists = QHBoxLayout()
         self.found = QListWidget()
@@ -478,6 +725,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))
         self.found.itemActivated.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))       # Enter
         self.found.itemPressed.connect(lambda _it: setattr(self, "_found_click_t", time.time()))          # no refill right after a click
+        self.found.currentItemChanged.connect(lambda cur, _prev: self._highlighted(cur))
         self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click, Enter or ▶ UP NEXT to queue it · hover a row for the song's shape")
         lists.addWidget(self.found, 3)
         qcol = QVBoxLayout()
@@ -489,6 +737,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)))
         self.queue.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.queue.customContextMenuRequested.connect(self._queue_menu)
+        self.queue.currentItemChanged.connect(lambda cur, _prev: self._highlighted(cur))
         self.queue.setToolTip("your queue, in order, with each song's state (○ ready on a deck, ▸ a part of it in play); "
                               "right-click a song for the same commands as in SONGS; double-click removes it")
         qcol.addWidget(self.queue, 1)
@@ -1076,6 +1325,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
 
     def close(self):
         self._timer.stop()
+        try:
+            self.viewer.hide()
+        except Exception:
+            pass
         self._midi_close()
         if self.director is not None:
             try:
@@ -1153,6 +1406,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 a = m.addAction(word)
                 a.triggered.connect(lambda _c, t=tid, k=kind: self.moment_lbl.setText(self.director.moment_with(t, k)))
         m.addSeparator()
+        v = m.addAction("show its parts (the Song parts window)")
+        v.triggered.connect(lambda _c, t=tid: (self.viewer.set_track(self.track(t)), self.view_btn.setChecked(True), self.viewer.raise_()))
         if from_queue:
             up = m.addAction("▲ play this next (to the top)")
             up.triggered.connect(lambda _c, t=tid: self._queue_top(t))
@@ -1162,6 +1417,25 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             q = m.addAction("put it UP NEXT")
             q.triggered.connect(lambda _c, t=tid: self._queue(t))
         return m
+
+    def _highlighted(self, item):
+        """The Song parts window follows the highlighted row of SONGS or UP NEXT."""
+        if item is None:
+            return
+        tid = item.data(Qt.ItemDataRole.UserRole)
+        if tid is None:
+            return
+        t = self.track(tid)
+        if t is not None:
+            self.viewer.set_track(t)
+
+    def _toggle_viewer(self, on):
+        self.viewer.setVisible(bool(on))
+        if on:
+            cur = self.found.currentItem() or self.queue.currentItem()
+            if cur is not None:
+                self._highlighted(cur)
+            self.viewer.raise_()
 
     def _queue_top(self, tid):
         if self.director is None:
@@ -1568,6 +1842,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.err_lbl.setText(f"ERROR {err}" if err else "")
         if self.follow_btn is None or self.follow_btn.isChecked():
             self.canvas.follow(d.bar())
+        if self.viewer.isVisible():
+            self.viewer.update()                      # its spectrogram arrives in the background; its playhead moves
         for tid in d.tl.tracks():
             if tid and self.spectro.get(tid) is None and tid not in self.spectro._busy and tid not in self.spectro.errors:
                 t = self.track(tid)
