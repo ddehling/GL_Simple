@@ -123,6 +123,16 @@ puts a song UP NEXT. The **filter row** narrows the list: instrumental / vocal, 
 hotter, slower / same / faster, songs with a hook, unheard tonight; the sort box orders it. Hover a row
 for the song's shape and when it last played.
 
+## Seeing a song's parts: PARTS
+
+**PARTS** (in the filter row) opens the **Song parts** window. It follows whatever you highlight in SONGS or
+UP NEXT: the song's four stems as spectrogram rows over its whole length, the sections along the top, the
+drops as dashed lines, the hook in gold, singing in green, and its live position when it is on a deck. Each
+row ends in a line of words: how much of the body that part sounds in, its longest silence, its loudest half
+minute. That is how you know a bassline is worth bringing in, and where. Right-click a row for the same
+commands as the lists: that part in now, TAKEOVER or BRIDGE with the song, UP NEXT. A song without rendered
+stems says so.
+
 ## Over the next few songs: PROGRAM
 
 The **PROGRAM** box: pick 2, 3 or 4 songs, then **BUILD** (energy up song by song, a big moment on the
