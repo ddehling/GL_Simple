@@ -602,7 +602,10 @@ class RemixConductor:
         if self._steady_at(track, env, t, bars, strict, lanes) is not False:
             return t
         bar = self._bar_s(track, t)
-        end = float(track.duration_s) - MIN_RUNWAY_S
+        # ...and leaves the runway PLUS the change itself (two phrases): a landmark with 90 s of body left had
+        # 85 s by the time its drums had come in, the follow read "running out" and the song was gone again -
+        # "songs come in for a few phrases then disappear, replaced by the song they just replaced" (2026-09-13)
+        end = float(track.duration_s) - MIN_RUNWAY_S - 2 * self.change_bars * bar
         if look_s is not None:
             end = min(end, t + look_s)
         ok_kinds = ("groove",) if strict else ("groove", "intro")
@@ -1359,6 +1362,8 @@ class RemixConductor:
                     continue                          # staged and waiting, resting through a BREAK, or the old bed still sounding until the new one lands
                 if getattr(song, "user_k", None) is not None and k - song.user_k < 4 * self.change_bars:
                     continue                          # a song YOU brought in stays on its deck four phrases even while its lane rests (one left 2 s after its vocal paused)
+                if song.voice_since is not None and not song.was_bed and k - song.voice_since < VOICE_MAX_PHRASES * self.change_bars:
+                    continue                          # a VOICE between sung stretches keeps its deck for its phrases (one arrived through its vocal and left 24 s later at the first pause, 2026-09-13)
                 if song.idle_k is None:
                     song.idle_k = k
                 elif k - song.idle_k >= 1:
@@ -1739,9 +1744,11 @@ class RemixConductor:
             self._drums_follow = None
             owed = tuple(getattr(self, "_follow_lanes", ("drums",)))
             words = "drums" if owed == ("drums",) else "bassline and melody"
-            if d is not None and d in self.songs and self._on_way_out(d, at):
-                # the song that took the first half of the bed is running out (looping its last bars, evicted):
-                # the change is abandoned - what it took goes back to the song holding the other half
+            if d is not None and d in self.songs and (self.songs[d].leaving or self.songs[d].evicted or self.songs[d].loop is not None):
+                # the song that took the first half of the bed is looping its last bars, evicted or leaving: the
+                # change is abandoned - what it took goes back to the song holding the other half. (Not for body
+                # left under the runway: the room already hears it; the change completes and the runway rule
+                # loops it later - abandoning sent a song away eight bars after it came, 2026-09-13)
                 taken = [ln for ln in ("drums", "bass", "other") if ln not in owed and self.lanes.get(ln) == d]
                 back = self.lanes.get("drums") if "drums" in owed else self.lanes.get("bass")
                 if back is not None and back in self.songs and not self.songs[back].leaving and back != d and taken:
@@ -1947,7 +1954,7 @@ class RemixConductor:
                 waiting = []
             elif not vocal_path and self._carries_through(d, at, 2 * self.change_bars) is False:
                 g = self._carry_start_bars(d, at)
-                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{s.track.title[:24]} is not carrying there (its drums and bass): it arrives where it does")
+                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{s.track.title[:24]} is not carrying there (its drums and bass): it arrives where it does", recue=False)
                 waiting = []
         if waiting and len(voices) < max_voices:
             d = waiting[0]
@@ -1991,17 +1998,30 @@ class RemixConductor:
         self._plan_seq = getattr(self, "_plan_seq", 0) + 1
         self.plan = {"what": what, "deck": deck, "bar": int(bar), "why": why, "payoff": payoff, "set_k": self.bar_n, "moved": 0, "seq": self._plan_seq, "sing": bool(sing)}
         self._note(f"plan: {self._plan_words()} ({int(bar) - self.bar_n} bars): {why}")
+        try:                                          # every decision in the night log: "the plan is totally unstable" needs its history
+            from lib.dj.session import log_row
+            log_row({"event": "plan", "what": what, "track_id": self._song_id(deck), "bar": int(bar), "in_bars": int(bar) - self.bar_n, "why": why[:120], "sing": bool(sing)})
+        except Exception:
+            pass
         if what == "voice_in":
             self._recue_for(deck, int(bar), sing=sing)
 
-    def _plan_move(self, what, deck, bar, why):
+    def _plan_move(self, what, deck, bar, why, recue=True):
+        """`recue=False`: the bar moved because of where the SONG is (it is not carrying there): it plays on
+        to the new bar from where it is - re-cueing it to its landmark put it back on the same failing spot
+        at every new bar (three moves in a row, 2026-09-13)."""
         p = self.plan
         if p is None:
             return self._plan_set(what, deck, bar, why)
         p.update({"what": what, "deck": deck, "bar": int(bar), "why": why, "moved": p.get("moved", 0) + 1})
         self._move("plan", None, None, self._song_id(deck), f"plan moved: {self._plan_words()} - {why}")
-        if what == "voice_in":
+        if what == "voice_in" and recue:
             self._recue_for(deck, int(bar), sing=bool(p.get("sing")))
+        elif what == "voice_in":
+            self._cue_later.pop(deck, None)
+            s = self.songs.get(deck)
+            if s is not None:
+                s.ready_k = int(bar)
 
     def _cue_to_sounding(self, deck, lane, cue_at):
         """Cue a silent staged song so that `lane` SOUNDS from clock `cue_at` + one bar: a vocal to its hook
@@ -2309,17 +2329,20 @@ class RemixConductor:
             if ub is not None and len(ub) > 2 and ub[2] == "user" and self.bar_n < ub[1]:
                 return
             if since >= self.change_bars and self._vocal_gone(vd, at):
+                self._vocal_last = vd                 # a resting VOICE comes back first when it sings again
                 self._cross("vocals", None, at, beats=2.0, shape=False)
                 self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
                 self._reduck(at)
             return
         if since < VOCAL_REST_BARS:
             return
-        # back only when a bed song sings NOW and keeps singing through the coming bars (a sparse vocal flapped
-        # rest / return every few seconds - four pairs in five minutes on 2026-09-13). The bed is the drums'
-        # song - or, during a bass-first change, the song whose bassline has taken over: its hook may be
-        # the reason it was chosen (Need You Now's vocal missed its own hook while its bass played)
-        for cand in (self.lanes.get("bass"), bed):
+        # back only when a song sings NOW and keeps singing through the coming bars (a sparse vocal flapped
+        # rest / return every few seconds - four pairs in five minutes on 2026-09-13): the voice whose vocal
+        # was resting first (a song that arrived through its vocal), then the bed - the drums' song, or,
+        # during a bass-first change, the song whose bassline has taken over: its hook may be the reason it
+        # was chosen (Need You Now's vocal missed its own hook while its bass played)
+        last = getattr(self, "_vocal_last", None)
+        for cand in (last if (last in self.songs and last != bed and not self.songs[last].was_bed) else None, self.lanes.get("bass"), bed):
             if cand is None or cand not in self.songs or not self.songs[cand].entered or self.songs[cand].leaving:
                 continue
             # (back after two sung bars; the REST needs four silent ones - a vocal with short gaps never rests, so it cannot flap)
