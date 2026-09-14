@@ -571,8 +571,16 @@ class RemixConductor(RecordPlay):
             if i1 - i0 < 2:
                 continue
             seen = True
-            if float(np.percentile(np.asarray(e[i0:i1], dtype=np.float32), 25)) < thr:
+            seg = np.asarray(e[i0:i1], dtype=np.float32)
+            if float(np.percentile(seg, 25)) < thr:
                 good = False
+                continue
+            # ...and never OUT for a bar: the two-second mean must keep above half the line (a 25th percentile
+            # let an eight-bar drum dropout through a 32-bar window; the campaign heard it as a hole)
+            if len(seg) >= 4:
+                sm = np.convolve(seg, np.ones(4, dtype=np.float32) / 4.0, mode="valid")
+                if float(sm.min()) < 0.5 * thr:
+                    good = False
         return good if seen else None
 
     def _track_steady(self, track, t0, bars, strict=False, bad=None):
@@ -895,6 +903,15 @@ class RemixConductor(RecordPlay):
             if f is None:
                 vals = [x for x in (k(ln) for ln in STEMS) if x is not None]
                 f = float(np.exp(np.mean(np.log(vals)))) if vals else 1.0
+            # LEVEL CONTINUITY across records: the factor is the geometric mean of the drums-anchored one and the
+            # one that brings the song's TOTAL (its four stems' rms) to the library's total - two records both at
+            # the library's drum level stepped +10 dB at the swap when the second was bass- and pad-heavy (the
+            # campaign, 2026-09-13); the song's own balance is still kept (one factor)
+            tot_ref = sum(float(self.ref_rms.get(ln) or 0.0) for ln in STEMS)
+            tot_s = sum(float(s.stem_rms.get(ln) or 0.0) for ln in STEMS)
+            if tot_ref > 0.0 and tot_s > 0.0:
+                f_tot = float(min(TRIM_MAX, max(TRIM_MIN, tot_ref / tot_s)))
+                f = float(math.sqrt(f * f_tot))
             return f
         return k(lane) or 1.0
 

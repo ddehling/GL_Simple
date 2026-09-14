@@ -248,6 +248,14 @@ def run_one(policy, seed, seconds, music, play_min, theme):
             inside, outside = steps[i0:i1], np.concatenate([steps[:i0], steps[i1:]])
             rec["lurch_db"] = round(float(inside.max()) if len(inside) else 0.0, 1)
             rec["lurch_solo_db"] = round(float(outside.max()) if len(outside) else 0.0, 1)
+            # the anatomy: the 0.5 s levels (dBFS) from 8 s before the seam to 8 s after the swap, and where the
+            # three biggest steps inside the seam sit, in bars from the seam's first bar (negative = before the swap)
+            rec["rms_db"] = [round(float(20 * np.log10(v + 1e-9)), 1) for v in act]
+            rec["t0_rel_s"] = round((w0 - (blend_c - c0)) / RATE + 0.5, 1)
+            top = sorted(range(i0, i1), key=lambda k: -steps[k])[:3] if i1 > i0 else []
+            rec["worst_steps"] = [(round(((k + 1.5) * w + w0 - (blend_c - c0)) / bar_c, 1), round(float(steps[k]), 1),
+                                   round(float(20 * np.log10(act[k] + 1e-9)), 1), round(float(20 * np.log10(act[k + 1] + 1e-9)), 1)) for k in top]
+            rec["swap_bar"] = round((swap_c - blend_c) / bar_c, 1)
         low = sosfilt(sos_low, seg)
         lr = rms_windows(low, w)
         b0, s0 = int((blend_c - c0 - w0) / w), int((swap_c - c0 - w0) / w)
@@ -389,9 +397,20 @@ def report(out_dir):
             sl = [x for r in rows if r["policy"] == p for x in r.get("seam_log", [])]
             if sl:
                 errs = [abs(x["err_bars"]) for x in sl if x.get("on_lm") and x.get("moved", 0) == 0]
+                offs = [-x["err_bars"] for x in sl if not x.get("on_lm")]
                 orders = {o: sum(1 for x in sl if x["order"] == o) for o in ("drums", "bass", "vocal", "cut")}
-                print(f"{'':12s} orders {orders}; landmark on the completion bar: median error {np.median(errs) if errs else float('nan'):.1f} bars, "
-                      f"within a bar {sum(1 for e in errs if e <= 1.0)}/{len(errs)}")
+                print(f"{'':12s} orders {orders}; landmark on the completion bar: {len(errs)} placed there, median error {np.median(errs) if errs else float('nan'):.1f} bars, "
+                      f"within a bar {sum(1 for e in errs if e <= 1.0)}/{len(errs)}; the other {len(offs)}: the drop {np.median(offs) if offs else 0:+.0f} bars from the completion (median)")
+            whys = {}
+            for r in rows:
+                if r["policy"] != p:
+                    continue
+                for m in r["moves"]:
+                    if m.startswith("the seam:") and " - " in m:
+                        w = m.split(" - ", 1)[1].split(" (")[0]
+                        w = "into A's section" if w.startswith("into ") else ("before A runs out" if w.startswith("before ") else w)
+                        whys[w] = whys.get(w, 0) + 1
+            print(f"{'':12s} where the seams were placed: {whys}")
     print("\n-- the worst seams (for the ear) --")
     for p in pols:
         ss = [(r["seed"], s) for r in rows if r["policy"] == p for s in r["seams"]]

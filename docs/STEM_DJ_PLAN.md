@@ -1000,6 +1000,48 @@ run (the first fell over a name clash with the recorder) - four seams (drums 2, 
 0.6 bars, no dead bars, no move outside a seam, lock p95 ≤ 0.07. Step 2 (the rehearsal render) and step 3
 (the dice on the order, layers three) are next.
 
+**THE RECORD CAMPAIGN (2026-09-13 night, "can you do significant testing and have solid metrics?").**
+`tools/tests/_dj_record_campaign.py`: unattended twelve-minute layered nights rendered headless at 2x,
+three at a time, both policies on the same seeds, measured per SEAM with the instruments the ear exam
+validated (docs/DJ_VERIFICATION.md: isolated-kick flam, dead air min/median, lurch against the pair's own
+steps, double bass) plus harmony split, two drums, the level step across the seam and A's sections under
+it; per RUN the pace, lane moves, songs that came and went, dead bars, clipping, the beat lock. Report with
+Wilson 95 % intervals against the autoDJ's 4,667-seam baseline. Campaign v1 (8 + 8 runs, 22 record seams,
+24 arrangement seams): pace 3.5 vs 4.0 min per record (the record's by construction), lane moves 17 vs 24
+per ten minutes, dead bars 1 vs 11, lock p95 0.075 vs 0.098 - but per seam the record policy was NOT
+better: dead air 13.6 % [5-33] vs 20.8 %, lurch 31.8 % [16-53] vs 29.2 %, both worse than the autoDJ's
+7.3 % / 14.2 %. The seam breakdown said why: the mix-out search put A's section boundary at the seam's
+START and fell back to "before A runs out" for most records, landing five seams of twenty-two in A's build
+or breakdown (dead 0.05, lurch 17 dB), and two records stepped +10 dB at the swap with both at the
+library's drum level (a bass- and pad-heavy record). Fixed: the seam COMPLETES at A's section boundary (the
+new record takes over as A's breakdown or outro would begin) with a scored search for the steadiest stretch
+otherwise; B's pre-landmark search asks only that its drums carry (the bars before a drop are its build);
+`_trim`'s one factor is the geometric mean of the drums-anchored and the total-anchored factor (level
+continuity across records). The kick-flam instrument measured only 9 of 22 seams and is not validated for
+stem seams (after the drum swap A's low band is its bassline, not a kick): the beat lock (median 2-7 ms)
+is the honest sync number there. Campaign v2 (record only, after those fixes): dead bars 0, level step
+worst 10.2 → 7.4 dB, but dead air still 13.6 % and lurch 36 % - the seam ANATOMY (the 0.5 s level series
+per seam, now captured by the campaign) named the remaining classes: (a) the next record's drums
+INTERMITTENT under the old harmony (its pre-drop pattern on and off every bar: the 25th-percentile carry
+test let an eight-bar dropout through a 32-bar window) - the carry test now also needs the two-second mean
+never under half the line; (b) the darkening (high shelf 0.35) opened a 10 dB hole under the new drums and a
+13 dB lurch at the swap - now 0.7; (c) seventeen of thirty seams fell to "before it runs out" because a
+record too short for its minimum play plus a seam had no valid bar - the DJ now mixes out up to four
+phrases before the minimum rather than into the outro; (d) one record's re-cue lost to its own staging cue
+on the same bar, it arrived 72 bars past its landmark, ran out inside its seam, was evicted, and its harmony
+still took the bed (the melody and the bass on different songs for the next 35 bars) - the re-cue waits a
+bar after staging, a PRE-FLIGHT at the seam's first bar moves the seam and cues again when B is more than a
+bar from its place, and a running seam whose B runs out is ABANDONED (its lanes back to A). Campaign v3
+(8 runs, 25 seams): dead air 8.0 % [2-25] (the autoDJ's 7.3 %), dead bars 0 of 2730, harmony split 0,
+two drums 0, level step median −1.0 dB (worst 9.3), placement "into A's section" 13 / "at the phrase" 9 /
+steady 7 / runs-out 2, pace 3.4 min per record, 18 lane moves per ten minutes, lock p95 0.071. Lurch stays
+at 28 % [14-48] - twice the autoDJ - in two classes the anatomy shows: the new record's drop arriving as a
+9-13 dB rise on the one after the old harmony has thinned in its last bars (a musical event the instrument
+counts), and a thin stretch where the new drums alone carry under a fading old harmony. The next lever is
+the ear's, then the rehearsal (step 2), which would hear both before the room does. Run it:
+`python tools/tests/_dj_record_campaign.py --campaign --policies record --seeds 1-8 --seconds 720 --parallel 3`,
+then `--report`; results in logs/record_campaign/, earlier campaigns archived as logs/record_campaign_v*/.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

@@ -17,7 +17,8 @@ from lib.dj.submix import RATE
 
 PLAY_MIN_S = 210.0                     # a record plays at least this long (the club default; PACE bends it)
 SEAM_BARS = {"cut": 4, "morph": 16, "blend": 32}
-DARKEN_HIGH = 0.35                     # the departing harmony's high shelf over the bars before the swap (a fade to darkness)
+DARKEN_HIGH = 0.7                      # the departing harmony's high shelf over the bars before the swap (a fade to darkness; 0.35 opened
+                                       # a 10 dB hole under the new drums and a 13 dB lurch at the swap - the campaign)
 DARKEN_BARS = 4
 VOCAL_LEAD_BARS = 16                   # an acapella lead-in: B's vocal this long before its drums
 ORDER_WORDS = {"drums": "morph, drums first", "bass": "bass swap", "vocal": "acapella lead-in", "cut": "breakdown and cut"}
@@ -104,6 +105,19 @@ class RecordPlay:
             if self.hold or self._moment is not None or self._break is not None or self._recall is not None:
                 self._seam_move(self._phrase_bar_after(bar + 1), "held" if self.hold else "a moment has the room")
                 return
+            # the pre-flight: B must be where the plan put it (within a bar); else the seam moves a phrase and B
+            # is cued again, once - then the seam is dropped and planned afresh
+            sb = self.songs.get(sm["b"])
+            if sb is not None and not sb.entered:
+                at = self._next_bar_clock()
+                want = sm["tb"] if sm["order"] != "vocal" else sm["tb"] - VOCAL_LEAD_BARS * self._bar_s(sb.track, sm["tb"])
+                have = self._song_time_at(sm["b"], at)
+                if abs(have - want) > 1.0 * self._bar_s(sb.track, want):
+                    if sm["moved"] < 2:
+                        self._seam_move(self._phrase_bar_after(bar + 3), f"{sb.track.title[:20]} was {have - want:+.0f} s from its place: cued again")
+                    else:
+                        self._seam_drop(f"{sb.track.title[:20]} never reached its place")
+                    return
             sm["state"] = "running"
             self._seam_fire()
 
@@ -147,10 +161,12 @@ class RecordPlay:
         # its drums do not carry right before its landmark: the LATEST place before it where they carry for the
         # seam - the landmark comes soon after the seam then (searched from its earliest groove, a record was
         # cued to its intro with its drop 96 bars after the seam - the campaign smoke)
+        # (its drums only: the bars before a drop ARE its build, and a build's drums under the old harmony, then
+        #  the drop as the harmony swaps, is the classic mix into the drop)
         step = 4 * bar_b
         tt = t0 - step
         while tt >= 0.0:
-            if self._stem_carries(sb.env, tt, L * bar_b, lanes=("drums",)) is not False and self._track_steady(t, tt, L, bad=("build", "breakdown")) is not False:
+            if self._stem_carries(sb.env, tt, L * bar_b, lanes=("drums",)) is not False:
                 return tt, lm, False, L
             tt -= step
         t_in = self._steady_from(t, sb.env, 0.0, L, strict=False, lanes=("drums",))
@@ -211,32 +227,50 @@ class RecordPlay:
         from lib.dj.remix import RUNWAY_S
         end_a = float(t.duration_s) - RUNWAY_S - 2.0 * bar_a      # the runway loop must not fire inside the seam
         latest = bar + 1 + int(math.floor((end_a - t_now) / max(bar_a, 1e-6))) - L
+        short = ""
         if latest < earliest:
-            return max(bar + 3, latest), f"before {t.title[:22]} runs out"
+            # a record too short for its minimum play AND a seam: the DJ mixes out EARLIER, at the best boundary
+            # before the end, rather than run into the outro (seventeen of thirty campaign seams had fallen to
+            # "before it runs out" here and landed in A's build or breakdown)
+            earliest = max(bar + 1 + max(2, self.change_bars), latest - 4 * self.change_bars)
+            short = " (a short record: before its minimum play)"
+            if latest < earliest:
+                return max(bar + 3, latest), f"before {t.title[:22]} runs out"
         pre = VOCAL_LEAD_BARS if order == "vocal" else 0             # the acapella lead-in is part of the seam too
+        n_win = L + pre
 
-        def ok(K):
+        def unsteady(K):
+            """How much of A's stretch under the seam is wrong for it: the share of bars in a build or a breakdown,
+            plus a half when its drums do not carry through (0 = clean)."""
             tK = t_now + (K - pre - bar - 1) * bar_a
-            return (self._steady_at(t, sa.env, tK, L + pre, strict=False, lanes=("drums",)) is not False
-                    and self._track_steady(t, tK, L + pre, bad=("build", "breakdown")) is not False)
-        # its mix-out point: the first section boundary that works (an outro's start, the groove after a breakdown)
+            bad = 0
+            for i in range(n_win):
+                if (t.section_at(tK + (i + 0.25) * bar_a) or {}).get("kind") in ("build", "breakdown"):
+                    bad += 1
+            car = self._stem_carries(sa.env, tK, n_win * bar_a, lanes=("drums",))
+            return bad / max(n_win, 1) + (0.5 if car is False else 0.0)
+        # 1. the seam COMPLETES at a section boundary of A - the new record takes over as A's breakdown, build or
+        #    outro would begin (the DJ's mix-out point) - with A steady and its drums carrying all the way there
+        #    (the first version put A's boundary at the seam's START and fell back to "before it runs out" for
+        #    most records, which landed the seam in A's build or breakdown five times in twenty-two - the campaign)
         for sec in t.sections or []:
             ts = t.nearest_downbeat(float(sec["start_s"]))
-            if ts <= t_now + 0.5 * bar_a:
+            K = bar + 1 + int(round((ts - t_now) / max(bar_a, 1e-6))) - L
+            if K < earliest or K > latest:
                 continue
-            K = bar + 1 + int(round((ts - t_now) / max(bar_a, 1e-6)))
-            if K < earliest:
-                continue
-            if K > latest:
-                break
-            if ok(K):
-                return K, f"at {t.title[:22]}'s {sec.get('kind', 'section')}"
+            if unsteady(K) == 0.0:
+                return K, f"into {t.title[:22]}'s {sec.get('kind', 'section')}{short}"
+        # 2. a phrase boundary with a clean stretch
         for K in range(earliest, latest + 1):
-            if (K - k0) % self.change_bars == 0 and ok(K):
-                return K, "at the phrase"
-        for K in range(earliest, latest + 1):
-            if ok(K):
-                return K, "where its drums carry"
+            if (K - k0) % self.change_bars == 0 and unsteady(K) == 0.0:
+                return K, f"at the phrase{short}"
+        # 3. the cleanest stretch there is
+        scored = sorted(((round(unsteady(K), 3), K) for K in range(earliest, latest + 1)), key=lambda x: (x[0], x[1]))
+        if scored:
+            u, K = scored[0]
+            if u == 0.0:
+                return K, f"where it is steady{short}"
+            return K, f"the steadiest stretch left ({int(round(100 * min(u, 1.0)))} % of it unsteady){short}"
         return latest, f"before {t.title[:22]} runs out"
 
     def _plan_seam(self, a, b):
@@ -289,9 +323,14 @@ class RecordPlay:
         if t_at_K < 0.0:
             t_at_K, K = sm["tb"], sm["drums_bar"]
         n = K - (self.bar_n + 1)
+        at = self._next_bar_clock()
+        if self._clock() < int(sb.staged_at or 0) + self._bar_clock() // 2:
+            # its staging cue and start land on the coming bar: a re-cue on the same bar lost to them (a record
+            # arrived 72 bars past its landmark and ran out inside its own seam - the campaign); a bar later
+            at += self._bar_clock()
+            n -= 1
         if n < 2:
             return
-        at = self._next_bar_clock()
         cue, later = self._cue_plan(sm["b"], t_at_K, n, at)
         self._cue_later.pop(sm["b"], None)
         if later is not None:
@@ -373,9 +412,35 @@ class RecordPlay:
         self._seam_marks = marks
         return steps
 
+    def _seam_abandon(self, why):
+        """A running seam whose new record is running out (looping its last bars, evicted, leaving): what it
+        took goes back to the old record, it leaves, the seam is dropped. (An evicted song's harmony took the
+        bed while its drums had gone back to the old record: the melody and the bass on different songs for the
+        next seam - the campaign.)"""
+        sm = self.seam
+        a, b = sm["a"], sm["b"]
+        at = self._next_bar_clock()
+        back = []
+        if a in self.songs and not self.songs[a].leaving:
+            for ln in ("drums", "bass", "other", "vocals"):
+                if self.lanes.get(ln) == b and (ln != "vocals" or self._vocal_ok(a, at)):
+                    self._cross(ln, a, at, beats=1.0, shape=False)
+                    back.append(ln)
+                elif self.lanes.get(ln) == b:
+                    self._cross(ln, None, at, beats=1.0, shape=False)
+        if b in self.songs and not self.songs[b].leaving:
+            self._leave_song(b, at + 2 * self._bar_clock())
+        self._hygiene(at + int(self._beat_s() * RATE))
+        self._move("seam", None, self._song_id(b), self._song_id(a), f"the seam abandoned: {why}" + (f" ({', '.join(back)} back)" if back else ""))
+        self.seam, self.plan = None, None
+
     def _seam_fire(self):
         sm = self.seam
         if sm is None:
+            return
+        sb = self.songs.get(sm["b"])
+        if sb is None or sb.leaving or sb.evicted or sb.loop is not None:
+            self._seam_abandon(f"{sb.track.title[:22] if sb else 'the new record'} is running out")
             return
         for off, name in sm["steps"]:
             if off in sm["fired"]:
