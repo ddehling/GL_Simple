@@ -18,11 +18,12 @@ Press **STOP** to end the night.
   together**: a song's bass and melody are one thing, its drums another, a vocal is free. A melody never
   sounds over another song's bassline, at any level, and never over a singer. So a new song arrives, once
   the bed has settled, in one of three ways: through its **vocal** over an instrumental bed (an acapella,
-  heard a few phrases before it takes the bed at its own drop or hook); by the **bass swap** when the bed
-  is singing (its bassline and melody take over under the bed's drums and vocal, loud, and its drums follow
-  at the phrase); or by the **drum swap** when the bed is not (its drums come in under the bed's harmony,
-  and its bassline and melody follow at the phrase). A bed change lands only where the new song's drums and
-  bass are measured playing for two phrases; the old bed song keeps its vocal while it sings and fades out.
+  heard a few phrases before it takes the bed at its own drop or hook), or by the **bass swap** (its
+  bassline and melody take over under the bed's drums, and its vocal if it sings, loud; its drums follow
+  at the phrase). A bed change lands only where the new song's drums and bass are measured playing for two
+  phrases and the bed carries through both; once its first half is in it completes. The old bed song
+  keeps its vocal while it sings and fades out. (A drum swap, new drums under the old harmony, exists
+  behind a switch and is off: its first three were flagged.)
   The **intent line** says what it is doing and waiting for; the **WHY** lines say why; the picture shows it.
 
 Switching back to **one** hands the playing song back to the autoDJ at the same position.

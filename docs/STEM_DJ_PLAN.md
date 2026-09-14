@@ -950,6 +950,21 @@ as free to give); run four's last fail was the CALM count treating a bed change'
 bar-by-bar rests as separate moves. ALL OK: harmony split for 0.0 bars of the run, arrivals vocal 2 / bass 6 /
 melody 0, no dead bars, every deck's lock p95 ≤ 0.08.
 
+**Live on the harmony build (2026-09-13 19:31-19:42), eight flags.** "The plan is totally unstable" / "songs
+come in for a few phrases then disappear again, replaced by the song they just replaced": (1) a bed change
+was ABANDONED at the follow because the arriving song had under 90 s of body by then (its landmark was
+allowed with 90 s left; the change ate into it) - a follow now abandons only a song looping, evicted or
+leaving, and every chosen position leaves the runway plus two phrases; (2) a song that arrived through its
+vocal left 24 s later at the first pause (the vocal came back only on the bed) - a voice keeps its deck for
+its phrases and the vocal returns to it first; (3) "not carrying there" re-cued the song to the same
+landmark at every move - a move caused by where the song is no longer re-cues; (4) the DJ's own TAKEOVER
+armed in the middle of a drum swap, chose the harmony already playing as its "other song", and handed the
+bed back to it - no moment arms while a bed change is in flight, and a two-song moment's other song is
+never the bass holder; (5) the DRUM SWAP (new that evening): its first three were flagged seam, dead and
+clash within three minutes (one arrived eight bars before the harmony's breakdown; the bed check now covers
+both phrases of a change) - OFF behind `DRUM_SWAP`; every non-vocal arrival is the bass swap. Every plan
+decision now goes to the night log as a `plan` row. Gate pending (the planner was live).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

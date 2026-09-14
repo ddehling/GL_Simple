@@ -128,6 +128,9 @@ MOMENT_TIGHTEN = False           # the BREAK's build may tighten the bed's loop 
                                  # user heard the first live BREAK as "painful in its execution"; a stutter build stays rejected
 MOMENT_SWEEP = False             # ...or high-pass sweep the whole bed deck over the build - OFF for the same reason (it thins the
                                  # melody and vocal too); the build is the drums back thin, their lows returning (the deck's low shelf)
+DRUM_SWAP = False                # an instrumental arriving under an instrumental bed through its DRUMS (the bass and melody follow
+                                 # at the phrase) - OFF: its first three live ones were flagged seam, dead and clash within three
+                                 # minutes (2026-09-13 19:39-19:41); every arrival that is not a vocal is the bass swap
 # the ear's five words on a moment (BAD on a moment asks which) and the ONE number each word moves - see tune_moment
 MOMENT_WORDS = {"hole": "the hole was too long", "thin": "it sounded thin", "long": "it went on too long",
                 "beat": "the return was off the beat", "place": "it landed in the wrong place"}
@@ -1947,7 +1950,9 @@ class RemixConductor:
             # breakdown (two builds at once was flagged twice); a song taking half the bed must be steady and
             # its drums and bass actually playing for two phrases from there (one took the bed where they
             # were silent: rms 0.007 - flag 'seam' 2026-09-13)
-            bed_grooves = bed is None or self._groove_through(bed, at, self.change_bars) is not False
+            # (a bed change takes two phrases - the arrival and the follow - and the bed must carry through
+            #  both: a drum swap arrived eight bars before the harmony's breakdown and the room went thin)
+            bed_grooves = bed is None or self._groove_through(bed, at, (1 if vocal_path else 2) * self.change_bars) is not False
             if not bed_grooves and not bed_out:
                 g = self._groove_start_bars(bed, at)
                 self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{self.songs[bed].track.title[:24]} is building or breaking down: it arrives when that is over")
@@ -1966,13 +1971,14 @@ class RemixConductor:
                 self._move("voice_in", "vocals", self._song_id(frm), s.track.id, f"{s.track.title} arrives through its vocal over the instrumental bed", shape=tag)
                 return tag
             if bed is not None and bed in self.songs and not self._on_way_out(d, at) and self._land_k is None and self._drums_follow is None:
-                if not bed_sings:
+                if not bed_sings and DRUM_SWAP:
                     s.voice_since = bar
                     return self._bed_to(d, at, None, None, drums_first=True)
                 if self._lane_ok(d, "bass", at):
                     s.voice_since = bar
                     return self._bed_to(d, at, None, None, bass_first=True)
-                self.wait_why = f"{s.track.title[:28]} waits: the bed is singing and its bassline would clash under that vocal"
+                self.wait_why = (f"{s.track.title[:28]} waits: the bed is singing and its bassline would clash under that vocal" if bed_sings
+                                 else f"{s.track.title[:28]} waits: its bassline would clash with the room")
             else:
                 self.wait_why = f"{s.track.title[:28]} waits: no lane it can take yet"
         # (no random rests: "too busy, and too happy to have large sections of vocal rest" - user 2026-09-12;
@@ -2298,7 +2304,7 @@ class RemixConductor:
             Ak = A + k
             at_k = at + (Ak - bar - 1) * bar_c
             bed_ok = (b is None or b.loop is not None or (bed_dead is not None and Ak >= bar + 1 + bed_dead)
-                      or self._groove_through(bed, at_k, self.change_bars) is not False)
+                      or self._groove_through(bed, at_k, (1 if sing else 2) * self.change_bars) is not False)
             if Ak - (bar + 1) >= 2:
                 song_ok = self._steady_at(s.track, s.env, lm, 2 * self.change_bars, strict=True, lanes=lanes) is not False
             else:
@@ -2665,7 +2671,7 @@ class RemixConductor:
     # song's drop or hook within four phrases, else its next phrase far enough away) and counted down.
     def _second_song(self, bed):
         """The other song for a two-song moment: the newest VOICE heard, else a song staged and waiting."""
-        live = [(d, s) for d, s in self.songs.items() if d != bed and not s.leaving and s.staged_at is not None and not self._on_way_out(d)]
+        live = [(d, s) for d, s in self.songs.items() if d != bed and d != self.lanes.get("bass") and not s.leaving and s.staged_at is not None and not self._on_way_out(d)]
         voices = [(d, s) for d, s in live if s.entered]
         if voices:
             return max(voices, key=lambda ds: ds[1].entered_k or 0)[0]
@@ -2695,7 +2701,7 @@ class RemixConductor:
     def _refusal_key(msg):
         for key in ("key clash", "chords clash", "no hook", "not singing", "no second song", "still decoding", "no vocal on a lane",
                     "nothing would be left", "not measured", "silent there", "too quiet there", "nothing to take away", "no drop or hook",
-                    "neither drums nor bass", "not on the lane"):
+                    "neither drums nor bass", "not on the lane", "in flight", "already the room's harmony"):
             if key in msg:
                 return key
         return msg[:40]
@@ -2732,6 +2738,10 @@ class RemixConductor:
             if self._moment["kind"] == kind and not self._moment["started"]:
                 return self.moment_go()
             self.moment_cancel()
+        if self._land_k is not None and self.bar_n < self._land_k:
+            # (the DJ's own TAKEOVER armed in the middle of a drum swap: its "other song" was the harmony
+            # already playing, the bed went back to it and the arriving song was thrown out - flags 2026-09-13)
+            return False, "a bed change is in flight: the follow comes first"
         at = self._next_bar_clock()
         bar_c = self._bar_clock()
         B = self._bed_deck() or self.master
@@ -2762,6 +2772,8 @@ class RemixConductor:
             V = V or self._second_song(B)
             if V is None:
                 return False, "no second song on a deck (put one UP NEXT)"
+            if self.lanes.get("bass") == V:
+                return False, f"{self.songs[V].track.title[:24]}'s bassline is already the room's harmony"
             why = self.why_not("bass", V)
             if why:
                 return False, f"{self.songs[V].track.title[:24]}: {why}"
