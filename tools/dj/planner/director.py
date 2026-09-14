@@ -256,11 +256,23 @@ class DirectorTab(QWidget):
                "_queue", "_queue_selected", "_unqueue", "_queue_top", "_toggle")
 
     def _wrap_ui(self, fn, name):
+        import inspect
+        try:
+            params = list(inspect.signature(fn).parameters.values())
+            varargs = any(p.kind == p.VAR_POSITIONAL for p in params)
+            n_pos = sum(1 for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD))
+        except (TypeError, ValueError):
+            varargs, n_pos = True, 0
+
         def wrapped(*a, **k):
+            # Qt hands `clicked` a `checked` bool: a handler that takes no arguments must not see it (a bound
+            # method connected directly is trimmed by PyQt; a wrapper is not - START broke on it)
+            if not varargs:
+                a = a[:n_pos]
             try:
                 d = self.director
                 if d is not None:
-                    words = " ".join(str(x)[:40] for x in a if not hasattr(x, "pos"))
+                    words = " ".join(str(x)[:40] for x in a if not hasattr(x, "pos") and not isinstance(x, bool))
                     d._event(f"ui: {name.lstrip('_')} {words}".strip())
                 else:
                     from lib.dj.session import log_row
