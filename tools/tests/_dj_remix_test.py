@@ -86,7 +86,7 @@ def main():
     next(gen)
     gen.send(256)
 
-    audio, errs, guard_viol, live_hist, lane_hist, tel_hist, plan_hist = [], {}, 0, [], [], [], []
+    audio, errs, guard_viol, live_hist, lane_hist, tel_hist, plan_hist, user_hist = [], {}, 0, [], [], [], [], []
     hyg = {"vocal_blocks": 0, "vocal_silent": 0, "carve_blocks": 0, "carve_open": 0}
     block = 4410
 
@@ -146,6 +146,7 @@ def main():
                     hyg.pop(k, None)
             plan_hist.append((rc.plan.get("seq"), rc.plan["what"], rc.plan["deck"], rc.plan["bar"]) if rc.plan else None)   # seq, not id(): ids are reused
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
+            user_hist.append(any(len(b) > 2 and b[2] == "user" for b in rc.lane_boost.values()))   # YOUR loud on a lane (a bring): the operator's override
             if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
                 tel_hist.append((len(audio), rc.master, {d: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
                                                           bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1), (rc.songs[d].track.title[:14] if d in rc.songs else "-"),
@@ -251,13 +252,15 @@ def main():
         print(f"  --   NEXT with {n_entered} song heard: nothing to cross to (not judged)")
     # the performance buttons: LOOP 8 holds every song, BREAK rests all lanes but one and restores them,
     # DROP puts every lane on the newest song; GOOD / BAD store verdicts that tilt the weights
-    n_songs = len([s for s in rc.songs.values() if not s.leaving])
     for _ in range(12):                              # a bed change in flight defers the hold to its landing bar
         if rc._land_k is None:
             break
         pump(int(bars * RATE) // block)
     rc.loop(8)
     pump(int(1.5 * bars * RATE) // block)
+    # (an old bed with nothing left leaves on the bar its harmony passes - harmony travels together - so the
+    #  songs that count are the ones still live after the hold was posted)
+    n_songs = len([s for s in rc.songs.values() if not s.leaving and s.entered])
     looped = [d for d, s in rc.songs.items() if (rc._tel_deck(d).get("loop") is not None) and not s.leaving]
     check(rc.user_loop_bars == 8 and len(looped) >= min(2, n_songs), f"LOOP 8: {len(looped)} of {n_songs} songs looping")
     rc.loop(8)                                     # again = release
@@ -352,12 +355,13 @@ def main():
         # a BREAK refused for a measured reason (nothing to take away, what stays too quiet) is tried again a
         # phrase later, up to four phrases, before the run gives up on judging it
         tries = 0
-        while not ok_m and kind == "break" and tries < 4 and any(w in msg_m for w in ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left")):
+        rightly = ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left", "in flight")
+        while not ok_m and kind == "break" and tries < 4 and any(w in msg_m for w in rightly):
             tries += 1
             paced(int(rc.change_bars * bars * RATE) // block)
             t_m, k_m = len(rc.moves), len(audio)
             ok_m, msg_m = rc.arm_moment(kind)
-        if not ok_m and kind == "break" and any(w in msg_m for w in ("silent there", "too quiet there", "nothing to take away", "not measured", "nothing would be left")):
+        if not ok_m and kind == "break" and any(w in msg_m for w in rightly):
             print(f"  --   BREAK refused here, rightly, {tries + 1} times: {msg_m} (not judged)")
             continue
         st_m = rc.moment_status()
@@ -479,7 +483,10 @@ def main():
     # HARMONY TRAVELS TOGETHER: whenever the melody lane and the bass lane are both held, the same song holds them
     # (a lane crossing a bar after the other is the only exception: two bars' worth of blocks over the run)
     bar_blocks = max(1, int(rc._bar_clock() / block))
-    harm_viol = [i for i, (dr, ba, ot, vo) in enumerate(lane_hist) if ba is not None and ot is not None and ba != ot]
+    # (a stem YOU brought in loud is the operator's override - a bassline under another song's melody on request -
+    #  and is not the arrangement's doing: those blocks, and a bar after the release, are not judged)
+    user_near = [any(user_hist[max(0, i - bar_blocks):i + 1]) for i in range(len(lane_hist))]
+    harm_viol = [i for i, (dr, ba, ot, vo) in enumerate(lane_hist) if ba is not None and ot is not None and ba != ot and not user_near[i]]
     stretches = []
     for i in harm_viol:
         if stretches and i == stretches[-1][1] + 1 and lane_hist[i][1:3] == lane_hist[stretches[-1][0]][1:3]:

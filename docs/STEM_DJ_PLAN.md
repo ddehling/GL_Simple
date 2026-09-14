@@ -963,7 +963,23 @@ bed back to it - no moment arms while a bed change is in flight, and a two-song 
 never the bass holder; (5) the DRUM SWAP (new that evening): its first three were flagged seam, dead and
 clash within three minutes (one arrived eight bars before the harmony's breakdown; the bed check now covers
 both phrases of a change) - OFF behind `DRUM_SWAP`; every non-vocal arrival is the bass swap. Every plan
-decision now goes to the night log as a `plan` row. Gate pending (the planner was live).
+decision now goes to the night log as a `plan` row. Then four more (19:45-19:46, still on the old process):
+(6) 'still' - the plan for Antrea moved three times in two minutes, one bed obstacle at a time (a build,
+then a breakdown after a short groove, then a build): the arrival-time re-read now runs the same joint
+search as plan time (`_arrival_bar`, twelve phrases) and moves ONCE to the first bar where both songs
+carry; a VOCAL may arrive over the bed's breakdown (room for a voice), a bed change may not; (7) 'clash' +
+'seam' - the old bed's vocal carried over a new harmony two keys away (fit 0.48), the clash tick ducked it
+to half and the ear still heard it: at every bed change the old vocal goes out with its harmony unless it
+fits the new one (`_vocal_fits`, pair fit ≥ CLASH_BELOW here and two bars on); (8) 'seam' on a bass swap
+at rms 0.09 - the harmony's melody ducked to half under the old song's vocal (by design) over a quiet
+groove; noted, not changed. Gate on the four commits since the last green: three runs. Run one - the
+gate's own script (its HARMONY check counted the scripted BRING, the operator's override; its BREAK test
+did not retry after the new "in flight" refusal). Run two - one real hole: the strip before a bed lands
+measured only the voice's stem on its own scale and a vocal's gap left one dead bar (it now measures what
+stays in the room, the voice's lanes and the old melody, against the library's drum level, like the
+BREAK); two script-level (an old bed with nothing left now leaves on the bar its harmony passes, so the
+loop test counted a departing song; a chosen song off a deck was refused for the in-flight reason first).
+ALL OK: harmony split 0.0 bars, arrivals vocal 1 / bass 9 / melody 0, no dead bars.
 
 ## Rules carried over (they were earned)
 

@@ -571,14 +571,16 @@ class RemixConductor:
                 good = False
         return good if seen else None
 
-    def _track_steady(self, track, t0, bars, strict=False):
+    def _track_steady(self, track, t0, bars, strict=False, bad=None):
         """Is the song steady (by its section map) from its own time `t0` for `bars` bars - not in a build,
-        a breakdown or an outro (`strict`: a groove proper, no intro either)? Sampled every bar, a quarter
-        bar inside both ends (a landmark's downbeat sits a hair before its section's boundary and read as
-        the build before it). None without a section map."""
+        a breakdown or an outro (`strict`: a groove proper, no intro either; `bad`: your own list of the
+        kinds that count as unsteady)? Sampled every bar, a quarter bar inside both ends (a landmark's
+        downbeat sits a hair before its section's boundary and read as the build before it). None without
+        a section map."""
         if not track.sections:
             return None
-        bad = ("build", "breakdown", "outro") + (("intro",) if strict else ())
+        if bad is None:
+            bad = ("build", "breakdown", "outro") + (("intro",) if strict else ())
         bar = self._bar_s(track, t0)
         n = max(1, int(round(bars)))
         for i in range(n + 1):
@@ -1505,7 +1507,7 @@ class RemixConductor:
                 return 0
         return 0
 
-    def _groove_through(self, deck, at, bars, strict=False):
+    def _groove_through(self, deck, at, bars, strict=False, bad=None):
         """Is the song on `deck` carrying steadily at clock `at` and still `bars` bars later - not in a build,
         a breakdown or an outro (`strict`: a groove proper, no intro either - what an ARRIVING song must be
         in)? None when it has no section map. A bed change or an arrival lands only where both songs carry
@@ -1515,7 +1517,7 @@ class RemixConductor:
         s = self.songs.get(deck)
         if s is None:
             return None
-        return self._track_steady(s.track, self._song_time_at(deck, at), bars, strict)
+        return self._track_steady(s.track, self._song_time_at(deck, at), bars, strict, bad)
 
     def _carries_through(self, deck, at, bars, strict=True, lanes=("drums", "bass")):
         """The song on `deck` steady by its labels AND carrying by its stems from clock `at` for `bars` bars
@@ -1617,6 +1619,24 @@ class RemixConductor:
             return h, "hook"
         return d, ("drop" if d is not None else None)
 
+    def _vocal_fits(self, new_d, old_d, at):
+        """May the old song's VOCAL carry over the NEW harmony (the song on `new_d`)? Only when their chords
+        fit here and two bars on (an old bed's vocal carried over a harmony two keys away, was ducked to half
+        by the clash tick and still flagged clash and seam - 2026-09-13). Unknown = yes."""
+        a, b = self.songs.get(new_d), self.songs.get(old_d)
+        if a is None or b is None:
+            return True
+        fits = [f for f in (self._pair_fit(a, b, at), self._pair_fit(a, b, at + 2 * self._bar_clock())) if f is not None]
+        return not fits or min(fits) >= CLASH_BELOW
+
+    def _vocal_goes_with(self, d, old, at):
+        """At a bed change: the old song's vocal goes out with its harmony when it does not fit the new one.
+        Returns a phrase for the move text, or ''."""
+        if old is None or old == d or self.lanes.get("vocals") != old or self._vocal_fits(d, old, at):
+            return ""
+        self._cross("vocals", None, at, beats=2.0, shape=False)
+        return "; its vocal goes with the old harmony (it does not fit the new)"
+
     def _other_free_for(self, d, frm=None):
         """May the melody lane go to `d` with its bass? From the bed, from the song giving up the bass (`frm`,
         or the bass holder now - the melody travels with the bass), from nobody, from a voice that has had its
@@ -1664,6 +1684,7 @@ class RemixConductor:
                     self._cross("other", d, land, beats=1.0, shape=False)
                 self._follow_lanes = ("drums",)
                 lane, text = "bass", f"the bassline and melody of {s.track.title} take over {why}, loud; its drums follow at the phrase"
+                text += self._vocal_goes_with(d, old, land)
             bars_to_land = int(round((land - at) / max(bar_c, 1))) + 1
             self._land_k = self.bar_n + bars_to_land + self.change_bars
             self._land_at = land
@@ -1677,12 +1698,21 @@ class RemixConductor:
                 strip_at, land = at, at + STRIP_BARS * bar_c
             # the breakdown must be HEARD: something the voice plays through the strip (its lane's stem over
             # the span), else the bed crosses plainly - a silent breakdown is dead air, not tension
-            voice_lanes = [ln for ln in ("other", "vocals") if self.lanes.get(ln) == d]
-            lv = max([self._stem_level_span(d, ln, strip_at, land) or 0.0 for ln in voice_lanes] or [0.0])
-            if lv < 0.3:                              # a third of the stem's own loud level, through the whole strip
+            # ...measured in the ROOM: the stem's level (its rms over the body, its envelope through the strip, its
+            # gain) against the library's drum level - what stays through the strip is the voice's lanes and
+            # the old bed's melody (a strip over a vocal's gap left a dead bar in the gate, 2026-09-13)
+            ref_d = float((self.ref_rms or {}).get("drums") or 0.2)
+            stays = [(d, ln) for ln in ("other", "vocals") if self.lanes.get(ln) == d] + [(old, "other")] * int(self.lanes.get("other") == old)
+            lv = 0.0
+            for dd, ln in stays:
+                e = self._stem_level_span(dd, ln, strip_at, land)
+                if e is None:
+                    continue
+                lv = max(lv, 2.0 * float((self.songs[dd].stem_rms or {}).get(ln) or 0.0) * e * min(self._lane_gain(dd, ln, strip_at), 1.0))
+            if lv < BREAK_LEFT_MIN * ref_d:
                 strip = False
                 land = at + int(round(d_bars)) * bar_c if d_bars else at
-                self._note(f"no breakdown before {s.track.title}'s bed: its voice would be too quiet ({lv:.2f})")
+                self._note(f"no breakdown before {s.track.title}'s bed: what stays would be too quiet ({lv / max(ref_d, 1e-6):.2f} of the drums' level)")
         moved = ("drums", "bass") + (("other",) if other_ok else ())
         if strip:
             beats = DROP_BEATS if self.cross_beats <= 1.0 else 1.0
@@ -1705,6 +1735,8 @@ class RemixConductor:
             if old is not None and old in self.songs:
                 self.submix.post({"at": land, "cmd": "eq", "deck": old, "low": LOW_CARVE, "ramp_s": self._beat_s()})
             text = f"the bed passes to {s.track.title} {why}: its drums, bass and melody under the voice"
+        if old is not None and old in self.songs:
+            text += self._vocal_goes_with(d, old, land)
         # bars until the landing, counted from NOW: the move is planned a bar before `at`
         bars_to_land = int(round((land - at) / max(bar_c, 1))) + 1
         self._land_k = self.bar_n + bars_to_land if bars_to_land > 1 else None
@@ -1772,13 +1804,16 @@ class RemixConductor:
                     if self.lanes.get(ln) == d or (ln == "other" and not self._other_free_for(d, old)):
                         continue
                     tag = self._cross(ln, d, at) or tag
+                extra = ""
                 if old is not None and old in self.songs and old != d:
                     self.songs[old].was_bed, self.songs[old].voice_since, self.songs[old].bed_since = True, bar, None
                     # its lows go with its last low lane - now, not at the hygiene pass two beats later
                     self.submix.post({"at": at, "cmd": "eq", "deck": old, "low": LOW_CARVE, "ramp_s": self._beat_s()})
+                    if "bass" in owed:
+                        extra = self._vocal_goes_with(d, old, at)   # the harmony changes here (a drum swap's follow)
                 # (the clock stays with the old song until it leaves - _leave_song passes it; passing it here
                 #  re-synced the audible old bed with a snap and it sat 0.3 beat off for twenty seconds)
-                self._move("bed_to", owed[0], self._song_id(old), self._song_id(d), f"the {words} of {self.songs[d].track.title} follow: the bed is its", shape=tag)
+                self._move("bed_to", owed[0], self._song_id(old), self._song_id(d), f"the {words} of {self.songs[d].track.title} follow: the bed is its{extra}", shape=tag)
                 return tag
         # THE PLAN: the one next event, decided once (calm and the settle baked into its bar) and kept until it
         # is done or a rule moves it (logged) - the countdown the operator sees counts to THIS bar
@@ -1916,13 +1951,14 @@ class RemixConductor:
                     self._plan_move("voice_in", p["deck"], bar + 1 + self.change_bars, "cued back: it would have arrived with no body left")
                     self._recue_for(p["deck"], bar + 1 + self.change_bars)
                     waiting = []
-                elif bed_kind == "build" and not bed_out:
-                    # the plan reckoned without this build (a section map can be off): it moves once to the build's end
-                    t_now = self._song_time_at(bed, at)
-                    sec = bed_s.track.section_at(t_now) or {}
-                    end_bars = int(math.ceil((float(sec.get("end_s", t_now)) - t_now) / max(self._bar_s(bed_s.track, t_now), 1e-6))) if sec else self.change_bars
-                    self._plan_move("voice_in", p["deck"], bar + 1 + max(1, end_bars), f"{bed_s.track.title[:24]} is building to its drop: nothing arrives on top of it")
-                    waiting = []
+                elif not bed_out:
+                    # the bed's map ahead is re-read ONCE for both songs on the bar (a build the plan reckoned
+                    # without, a breakdown after a short groove): the plan moves to the first bar where both
+                    # carry, not one obstacle at a time (three moves in two minutes - flag 'still' 2026-09-13)
+                    A2 = self._arrival_bar(p["deck"], bed, bar + 1, at, self._bar_clock(), self._bed_dies_in_bars(bed, at), bool(p.get("sing")))
+                    if A2 > bar + 1:
+                        self._plan_move("voice_in", p["deck"], A2, f"{bed_s.track.title[:24]} is building or breaking down: it arrives when both songs carry")
+                        waiting = []
         if waiting and len(voices) < max_voices:
             d = waiting[0]
             s = self.songs[d]
@@ -1952,10 +1988,13 @@ class RemixConductor:
             # were silent: rms 0.007 - flag 'seam' 2026-09-13)
             # (a bed change takes two phrases - the arrival and the follow - and the bed must carry through
             #  both: a drum swap arrived eight bars before the harmony's breakdown and the room went thin)
-            bed_grooves = bed is None or self._groove_through(bed, at, (1 if vocal_path else 2) * self.change_bars) is not False
+            # (a VOCAL may arrive over the bed's breakdown - that is room for a voice; a bed change may not:
+            #  the new harmony under a breakdown's missing drums is a thin room)
+            bed_grooves = bed is None or self._groove_through(bed, at, (1 if vocal_path else 2) * self.change_bars,
+                                                              bad=(("build", "outro") if vocal_path else None)) is not False
             if not bed_grooves and not bed_out:
-                g = self._groove_start_bars(bed, at)
-                self._plan_move("voice_in", d, bar + 1 + (g if g else self.change_bars), f"{self.songs[bed].track.title[:24]} is building or breaking down: it arrives when that is over")
+                A2 = self._arrival_bar(d, bed, bar + 1, at, self._bar_clock(), self._bed_dies_in_bars(bed, at), vocal_path)
+                self._plan_move("voice_in", d, A2 if A2 > bar + 1 else bar + 1 + self.change_bars, f"{self.songs[bed].track.title[:24]} is building or breaking down: it arrives when both songs carry")
                 waiting = []
             elif not vocal_path and self._carries_through(d, at, 2 * self.change_bars) is False:
                 g = self._carry_start_bars(d, at)
@@ -2300,11 +2339,13 @@ class RemixConductor:
         bar = self.bar_n
         lm = self._sung_landmark(s.track, s.env) if sing else self._landmark(s.track, s.env)
         lanes = ("drums", "bass")
-        for k in range(0, 6 * self.change_bars + 1):
+        for k in range(0, 12 * self.change_bars + 1):
             Ak = A + k
             at_k = at + (Ak - bar - 1) * bar_c
+            # a vocal may arrive over the bed's breakdown (room for a voice); a bed change needs the bed steady
+            # through both its phrases
             bed_ok = (b is None or b.loop is not None or (bed_dead is not None and Ak >= bar + 1 + bed_dead)
-                      or self._groove_through(bed, at_k, (1 if sing else 2) * self.change_bars) is not False)
+                      or self._groove_through(bed, at_k, (1 if sing else 2) * self.change_bars, bad=(("build", "outro") if sing else None)) is not False)
             if Ak - (bar + 1) >= 2:
                 song_ok = self._steady_at(s.track, s.env, lm, 2 * self.change_bars, strict=True, lanes=lanes) is not False
             else:
@@ -2738,6 +2779,8 @@ class RemixConductor:
             if self._moment["kind"] == kind and not self._moment["started"]:
                 return self.moment_go()
             self.moment_cancel()
+        if other is not None and (other not in self.songs or self.songs[other].leaving or self.songs[other].staged_at is None):
+            return False, "that song is not ready on a deck" if other in self.songs else "that song is not on a deck"
         if self._land_k is not None and self.bar_n < self._land_k:
             # (the DJ's own TAKEOVER armed in the middle of a drum swap: its "other song" was the harmony
             # already playing, the bed went back to it and the arriving song was thrown out - flags 2026-09-13)
