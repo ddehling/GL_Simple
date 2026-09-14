@@ -856,6 +856,8 @@ class RemixConductor:
             if self.bar_n >= until:
                 del self.lane_boost[lane]
                 d = self.lanes.get(lane)
+                if self._moment is not None and self._moment.get("started"):
+                    continue                          # a moment owns the stems now (a restore re-opened a take-away's muted drums; its payoff re-posts everything)
                 if d is not None and d in self.songs:
                     self.submix.post({"at": self._next_bar_clock(), "cmd": "stem_gains", "deck": d,
                                       "gains": {lane: self._lane_gain(d, lane)}, "ramp_s": 4 * self._beat_s()})

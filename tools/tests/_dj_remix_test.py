@@ -126,7 +126,11 @@ def main():
             # A SONG KEEPS ITS OWN BALANCE: while one song holds every lane (no boost, no moment, no break),
             # its four stem gains are one factor - equal within 2 %
             holders = {rc.lanes.get(ln) for ln in ("drums", "bass", "other", "vocals")}
-            if len(holders) == 1 and None not in holders and rc._moment is None and rc._break is None and not rc.lane_boost and not getattr(rc, "_clash_duck", None):
+            if rc.lane_boost:
+                hyg["boost_seen"] = len(audio)        # a boost's end ramps four beats: no balance reading inside that
+            last_move_age = (len(audio) * block / RATE) - (rc.move_log[-1].get("clock_s") or -1e9) if rc.move_log else 1e9
+            if len(holders) == 1 and None not in holders and rc._moment is None and rc._break is None and not rc.lane_boost and not getattr(rc, "_clash_duck", None) \
+                    and len(audio) - hyg.get("boost_seen", -10 ** 9) >= 3 * rc._bar_clock() / block and last_move_age >= 2 * rc._bar_clock() / RATE:   # (the restore lands at the next bar and ramps a bar)
                 dk = next(iter(holders))
                 g = (decks.get(dk) or {}).get("stem_gains") or {}
                 vals = [float(g.get(ln, 0.0)) for ln in ("drums", "bass", "other", "vocals")]
@@ -147,7 +151,8 @@ def main():
                                                           bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1), (rc.songs[d].track.title[:14] if d in rc.songs else "-"),
                                                           round(float((t.get("eq") or [1.0])[0]), 2), (rc.songs[d].held(rc.lanes) if d in rc.songs else []),
                                                           round(float(t.get("rate") or 0.0), 4), (round(float(t["beat_phase"]), 3) if t.get("beat_phase") is not None else None),
-                                                          t.get("loop") is not None, round(float(t.get("rate_trim") or 0.0), 5) if t.get("rate_trim") is not None else None)
+                                                          t.get("loop") is not None, round(float(t.get("rate_trim") or 0.0), 5) if t.get("rate_trim") is not None else None,
+                                                          bool(t.get("odd_seg")))
                                                       for d, t in decks.items()}))
             # the vocal rule, as heard: the vocal lane open on a song that is not singing there (by the
             # conductor's own measured singing map); a stretch counts once it outlasts 1.5 phrases - the
@@ -558,8 +563,8 @@ def main():
                 for kk, master, pic in [r for r in tel_hist if k0 - 30 <= r[0] <= k1 + 10][::2]:
                     p, pm = pic.get(sl), pic.get(master)
                     err = ((p[8] - pm[8] + 0.5) % 1.0 - 0.5) if (p and pm and p[8] is not None and pm[8] is not None) else None
-                    print(f"         {kk * block / RATE:.0f}s master {master} ph{pm[8] if pm else '-'} rate{pm[7] if pm else '-'} loop{pm[9] if pm else '-'} | {sl}={p[4] if p else '-'} g{p[0] if p else '-'} "
-                          f"ph{p[8] if p else '-'} rate{p[7] if p else '-'} trim{p[10] if p else '-'} loop{p[9] if p else '-'} lanes{p[6] if p else '-'} err {None if err is None else round(err, 3)}")
+                    print(f"         {kk * block / RATE:.0f}s master {master} ph{pm[8] if pm else '-'} rate{pm[7] if pm else '-'} t{pm[3] if pm else '-'} odd{pm[11] if pm else '-'} | {sl}={p[4] if p else '-'} g{p[0] if p else '-'} "
+                          f"ph{p[8] if p else '-'} rate{p[7] if p else '-'} trim{p[10] if p else '-'} t{p[3] if p else '-'} odd{p[11] if p else '-'} lanes{p[6] if p else '-'} err {None if err is None else round(err, 3)}")
         check(ok_lock, f"deck {sl} lock: median {med:.3f} beat, p95 {p95:.3f} (n {len(settled)})")
     x = np.concatenate(audio, axis=0)
     peak = float(np.abs(x).max())

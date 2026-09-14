@@ -482,8 +482,8 @@ class DJSubmix:
         # a 1.2 % tempo wobble on an audible bed for the whole segment (measured 2026-09-13). While either
         # deck sits in such a segment the loop holds: no trim, no nudge, no snap.
         if _odd_segment(slave) or _odd_segment(master):
-            slave.rate_trim *= 0.9
-            return
+            return                       # the trim stays as it is: it is the learned tempo (decaying it let a deck
+                                         # drift half a beat across a 20 s segment and slew back audibly after)
         # The PLL's target carries the kick-alignment bias (see
         # _sync_bias_beats, computed once at sync start): zero error =
         # the KICKS are in register, not the grids.
@@ -763,6 +763,8 @@ class DJSubmix:
                 "time_s": round(d.source_time_s(), 3) if d.ready else 0.0,
                 "beat_phase": round(d.beat_phase(), 4) if d.ready else 0.0,
                 "rate": round(d.effective_rate(), 5),
+                "rate_trim": round(float(getattr(d, "rate_trim", 0.0) or 0.0), 5),
+                "odd_seg": _odd_segment(d),          # inside a mis-tracked grid segment: the PLL holds there
                 "gain": round(d.gain, 4),
                 "eq": [round(float(g), 3) for g in d.eq.gains],
                 # DSP state the EQ numbers can't show - a stuck sweep

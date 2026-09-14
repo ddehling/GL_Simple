@@ -893,6 +893,16 @@ every stem gain is capped at 1.6. The vocal at x2 again → the VOCAL REFERENCE 
 sing (vocal stem ≥ a fifth of the drums' median). A "filter out" exit was flagged as a bad seam → FX
 default "none" (plain crossfades; the dial is off the surface, the controller's knob still reaches it).
 
+**The gate on the afternoon's dozen commits (2026-09-13 17:00).** First run: the boost-step crash the user
+hit live (a three-field boost unpacked as two - after any stem brought in loud the conductor's step raised
+every tick and nothing moved: the true shape of "my direction was ignored" all afternoon), fixed before the
+run. Three fails then: (1) a slave crossing its MIS-TRACKED GRID SEGMENT drifted half a beat - the PLL hold
+had DECAYED its trim to zero, and the trim was the learned tempo: the hold now freezes the trim; (2) a boost's
+restore posted during a running moment's take-away re-opened the muted drums: no restore while a moment has
+started (its payoff re-posts everything); (3) the LONE SONG check read a boost's restore ramp - it skips
+three bars after a boost ends. Telemetry now carries `rate_trim` and `odd_seg` per deck. ALL OK: every
+deck's lock p95 ≤ 0.08, lone songs equal on 100 % of blocks, no dead bars.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
