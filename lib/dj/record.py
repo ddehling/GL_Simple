@@ -144,6 +144,15 @@ class RecordPlay:
         t0 = lm - L * bar_b
         if t0 >= 0.0 and self._stem_carries(sb.env, t0, 0.5 * L * bar_b, lanes=("drums",)) is not False:
             return t0, lm, True, L
+        # its drums do not carry right before its landmark: the LATEST place before it where they carry for the
+        # seam - the landmark comes soon after the seam then (searched from its earliest groove, a record was
+        # cued to its intro with its drop 96 bars after the seam - the campaign smoke)
+        step = 4 * bar_b
+        tt = t0 - step
+        while tt >= 0.0:
+            if self._stem_carries(sb.env, tt, L * bar_b, lanes=("drums",)) is not False and self._track_steady(t, tt, L, bad=("build", "breakdown")) is not False:
+                return tt, lm, False, L
+            tt -= step
         t_in = self._steady_from(t, sb.env, 0.0, L, strict=False, lanes=("drums",))
         if t_in is None:
             t_in = max(0.0, t0)
@@ -199,15 +208,17 @@ class RecordPlay:
             earliest = max(earliest, bar + 1 + VOCAL_LEAD_BARS + 2)
         if sa.loop is not None:
             return max(bar + 3, earliest if earliest - bar < 2 * self.change_bars else bar + 3), f"{t.title[:22]} is looping its last bars"
-        end_a = float(t.duration_s) - 2.0 * bar_a
+        from lib.dj.remix import RUNWAY_S
+        end_a = float(t.duration_s) - RUNWAY_S - 2.0 * bar_a      # the runway loop must not fire inside the seam
         latest = bar + 1 + int(math.floor((end_a - t_now) / max(bar_a, 1e-6))) - L
         if latest < earliest:
             return max(bar + 3, latest), f"before {t.title[:22]} runs out"
+        pre = VOCAL_LEAD_BARS if order == "vocal" else 0             # the acapella lead-in is part of the seam too
 
         def ok(K):
-            tK = t_now + (K - bar - 1) * bar_a
-            return (self._steady_at(t, sa.env, tK, L, strict=False, lanes=("drums",)) is not False
-                    and self._track_steady(t, tK, L, bad=("build", "breakdown")) is not False)
+            tK = t_now + (K - pre - bar - 1) * bar_a
+            return (self._steady_at(t, sa.env, tK, L + pre, strict=False, lanes=("drums",)) is not False
+                    and self._track_steady(t, tK, L + pre, bad=("build", "breakdown")) is not False)
         # its mix-out point: the first section boundary that works (an outro's start, the groove after a breakdown)
         for sec in t.sections or []:
             ts = t.nearest_downbeat(float(sec["start_s"]))
