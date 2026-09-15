@@ -94,6 +94,22 @@ stays would be too quiet in the room; the line under the row says which.
 The **MOMENTS** dial (rare / some / lots) makes the DJ arm these same five by itself, spaced as before; you
 see the same countdown and can cancel or replace it. Refusals say why on the line under the row.
 
+**The events (layered).** At MOMENTS some, every record gets ONE event; at lots, two; at rare, none. They
+come from the **pairings** computed once from the stems for every record in the pool (`python
+tools/dj/dj_pairings.py --all`, and the planner's analysis stage keeps them current): the other songs whose
+vocal sits over this record's instrumental groove, and the songs whose bassline swaps under its drums. The
+DJ stages the song, and the event arms: an **ACAPELLA** (another record's vocal over the groove for two to
+four phrases, then gone) or a **TAKEOVER** with that song at its drop, after which it is the record. The
+intent line says "event in 40 bars: the vocal of X over this groove (fit 0.81)"; the picture draws it in
+gold; you can cancel it like any moment. See docs/DJ_PAIRINGS.md.
+
+**Your instructions are orders (2026-09-14).** A song you ask for is refused only when it is not on a deck.
+Right-click a part in: a staged song is cued to where that part sounds, whatever its cursor says; a key
+clash is said in the story row, not obeyed. NEXT completes a running seam on the next bar, starts a planned
+one at the next phrase, and with nothing staged it stages the DJ's pick and seams as soon as it is ready.
+UP NEXT is the next record, ahead of the DJ's own pick, and takes the DJ's silent staged song's deck when
+none is free. TAKEOVER or BRIDGE with a song of yours takes the room from a seam in flight.
+
 - **NEXT** - move on at the next phrase (layered: the planned seam starts at the next phrase; with no next
   record staged yet, nothing).
 - **STAY** - one more phrase of this (layered: a seam due in that phrase moves a phrase later).

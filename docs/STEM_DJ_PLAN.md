@@ -1042,6 +1042,51 @@ the ear's, then the rehearsal (step 2), which would hear both before the room do
 `python tools/tests/_dj_record_campaign.py --campaign --policies record --seeds 1-8 --seconds 720 --parallel 3`,
 then `--report`; results in logs/record_campaign/, earlier campaigns archived as logs/record_campaign_v*/.
 
+**The first live set on the record policy (2026-09-14 17:32-17:52, "terrible set, lots of flags", eleven).**
+The night log and the re-cue log in the flags told it in order. (1) The record opened without its vocal lane
+(the opener's "vocals only where singing" rule) - the record plays WHOLE now: all four lanes are its from the
+first bar, the vocal tick never rests the record's own vocal, and `_room_never_empty` gives any lane with
+nobody back to the record every bar. (2) Birds Mind became the record with 70 s of body left and its own
+seam began 16 s later ("before it runs out"): the pick gate now needs the minimum play plus the runway after
+a candidate's body start. (3) Blinding Lights' vocal rode across two seams over two harmonies it never fitted
+(three clash flags): at a seam's first step any vocal or melody belonging to neither record goes out. (4)
+The auto break fired on the new record's own breakdown eleven seconds after it took over (drums alone, rms
+0.03): no auto break in the record policy - the record's breakdown is its arrangement. (5) THE SILENCE:
+Funk Is Love's seam start was computed at its very first bar (a bass swap from a bassless intro: the carry
+test asked for drums, the bass swap brings the bass first), every re-cue went to 0.0 s, the pre-flight found
+it a phrase out of place and moved the seam a phrase at a time - eleven times - until Grandma Dance ran out
+and was evicted with no entered song to take its lanes; every lane rested and the room was silent for twenty
+seconds. Now: B's seam start is never under two bars in and is found where the stems the seam brings FIRST
+carry (bass for the bass swap and the cut); a record looping its last bars fires its seam NOW as a cut
+whatever B's place; an eviction with nobody entered enters the staged song whole; and the room-never-empty
+rule enters a staged song whole when no record is left. Gate ALL OK on those; the fourth campaign is
+reported below.
+
+**"Even when it was working it was pretty boring… basically an automixer with slightly longer overlapped
+transitions. It also basically refused instructions I gave it" (2026-09-14).** Both true. The log: Beam
+Me Up's vocal asked for twice and refused "running out (0 s of body left)" - a staged deck's cursor sat at
+the song's end before its cue landed and a rule for a playing song was applied; NEXT answered "the seam is
+already running" and did nothing. And the record policy IS an automixer with stem seams; the events that
+justify layered mode had been pushed out to a few an hour because they clashed. The user's "ok, do it" on
+two things: (1) COMMANDS ARE ORDERS - `bring` refuses only a song that is not on a deck (a staged song is
+cued to where its part sounds whatever its cursor says; a key clash is said, not obeyed), NEXT completes a
+running seam on the next bar / starts a planned one at the next phrase / with nothing staged stages the
+DJ's pick and seams as soon as it is ready, UP NEXT takes the DJ's silent staged song's deck when none is
+free and replaces the seam's next record, your TAKEOVER or BRIDGE takes the room from a seam in flight, a
+stale "NEXT: …" no longer sits in the WHY panel; (2) THE PAIRINGS (docs/DJ_PAIRINGS.md): `tools/dj/
+dj_pairings.py` computes once, from the stems, per record the songs whose vocal sits over its instrumental
+grooves (VOCAL OVER: key fit ≥ 0.68 over ≤ 2 semitones, tempo ±6 %, a sung stretch ≥ 8 bars, the hook a
+bonus, the record instrumental there) and whose bass and melody swap under its drums (BASS UNDER: fit, the
+wall, the bass carrying 16 bars from the landmark, the minimum play after it) - `--envelopes` (the 2 Hz
+stem envelopes to .stems/<id>/env.npz, parallel, resumable, ~50 min once), `--pairs` (arithmetic on the
+per-song measures → .stems/pairings.json), `--show`. The conductor's `_event_step` arms one event per
+record at MOMENTS some (two at lots): a VOCAL OVER becomes the new ACAPELLA moment (the other song staged
+with `stage_for_bar` so its sung stretch begins on a phrase where the record is instrumental; in for two to
+four phrases; out; it leaves unless it is UP NEXT), a BASS UNDER the TAKEOVER moment at its drop (it is then
+the record). The SONGS list stars the pairings of the record playing ("its vocal sits over this record
+(0.81)"); the Song parts window's words say which vocals sit over a song and where its own parts sit.
+Gate: the EVENTS check (skipped without the pairings file).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
