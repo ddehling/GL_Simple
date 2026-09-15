@@ -1100,7 +1100,14 @@ planned events came too late) and a late-ready event moves to the next phrase; t
 under -45 dBFS (a record's own quiet breakdown at library level read -40 to -45); a deck whose stored bpm
 was 1.5 % off its grid sat at the PLL's 1.2 % trim cap and drifted half a beat in a minute, twice - the cap
 is 2 % and the run-in tempo calibration accepts snaps up to 60 s apart (a slow drift never resnapped inside
-12 s); a deck that reads past its song's end is a stale read, not a song running out.
+12 s); a deck that reads past its song's end is a stale read, not a song running out. Campaign v5 with
+events on: one BASS UNDER per record a phrase in halved the pace (2.5 min per record) and six dead bars
+came back - the bass event now sits at the end of the record's minimum play, as its exit, and the campaign
+records where each dead bar falls. Campaign v6: 36 records, 10 events planned, 8 armed (3 acapellas), pace
+3.2 min per record, 10 lane moves per ten minutes, dead bars 0, dead air 4.3 % [1-21] (under the autoDJ's
+7.3 %), double bass 0, harmony split 0, lock p95 0.078, the landmark within a bar 9/11 - and lurch 43 %
+[26-63], still two to three times the autoDJ's, in the same two classes (the new record's drums thin or
+intermittent under the old harmony; the drop's rise on the one). That is the next lever, after the ear.
 
 ## Rules carried over (they were earned)
 
