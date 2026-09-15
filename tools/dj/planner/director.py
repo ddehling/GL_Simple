@@ -228,6 +228,24 @@ class StemViewer(QWidget):
             if loud:
                 words.append(f"loudest {_mmss(loud[0])}-{_mmss(loud[1])}")
             out[ln] = {"words": " · ".join(words), "share": share, "lvl": sec_lvl}
+        # the pairings (docs/DJ_PAIRINGS.md): which vocals sit over this record, which basslines swap under it,
+        # and where this song's own vocal and bassline sit on other records
+        try:
+            pr = self.tab._pairings_for(t.id)
+            if pr:
+                vo = [x["title"][:18] for x in (pr.get("vocal_over") or [])[:3]]
+                bu = [x["title"][:18] for x in (pr.get("bass_under") or [])[:3]]
+                if vo and "other" in out:
+                    out["other"]["words"] += f" · vocals that sit over it: {', '.join(vo)}"
+                if bu and "drums" in out:
+                    out["drums"]["words"] += f" · basslines that swap under it: {', '.join(bu)}"
+            inv = self.tab._pairings_inverse(t.id)
+            if inv.get("vocal") and "vocals" in out:
+                out["vocals"]["words"] += f" · sits over: {', '.join(inv['vocal'][:3])}"
+            if inv.get("bass") and "bass" in out:
+                out["bass"]["words"] += f" · swaps under: {', '.join(inv['bass'][:3])}"
+        except Exception:
+            pass
         return out
 
     def _song_pos(self):
@@ -1000,6 +1018,64 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self._own_db = LibraryDB(self.planner.music_dir)
         return self._own_db
 
+    def _pairings(self):
+        """The pairing lists (docs/DJ_PAIRINGS.md) from <music>/.stems/pairings.json, re-read when the file changes."""
+        import json
+        import os
+        path = os.path.join(self.planner.music_dir, ".stems", "pairings.json")
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            return None
+        if getattr(self, "_pair_mtime", None) != mt:
+            try:
+                self._pair_data = json.load(open(path, encoding="utf-8"))
+                self._pair_mtime = mt
+                self._pair_inv = None
+            except Exception:  # noqa: BLE001
+                self._pair_data = None
+        return getattr(self, "_pair_data", None)
+
+    def _pairings_for(self, tid):
+        p = self._pairings()
+        return ((p.get("records") or {}).get(str(int(tid)))) if p else None
+
+    def _pairings_inverse(self, tid):
+        """Where this song's own vocal and bassline sit: {"vocal": [record titles], "bass": [...]}."""
+        p = self._pairings()
+        if not p:
+            return {}
+        if getattr(self, "_pair_inv", None) is None:
+            inv = {}
+            for rid, rec in (p.get("records") or {}).items():
+                for x in rec.get("vocal_over") or []:
+                    inv.setdefault(int(x["id"]), {"vocal": [], "bass": []})["vocal"].append((x["score"], rec["title"][:18]))
+                for x in rec.get("bass_under") or []:
+                    inv.setdefault(int(x["id"]), {"vocal": [], "bass": []})["bass"].append((x["score"], rec["title"][:18]))
+            for v in inv.values():
+                v["vocal"] = [t for _, t in sorted(v["vocal"], key=lambda st: -st[0])]
+                v["bass"] = [t for _, t in sorted(v["bass"], key=lambda st: -st[0])]
+            self._pair_inv = inv
+        return self._pair_inv.get(int(tid), {})
+
+    def _fits_now(self):
+        """{song id: words} for the songs whose parts sit on the RECORD playing now."""
+        out = {}
+        try:
+            rc = self.director.rc if self.director is not None else None
+            if rc is None or getattr(rc, "record_deck", None) not in rc.songs:
+                return out
+            rec = self._pairings_for(rc.songs[rc.record_deck].track.id)
+            if not rec:
+                return out
+            for x in rec.get("vocal_over") or []:
+                out[int(x["id"])] = f"its vocal sits over this record ({x['fit']})"
+            for x in rec.get("bass_under") or []:
+                out.setdefault(int(x["id"]), f"its bassline swaps under this record ({x['fit']})")
+        except Exception:
+            pass
+        return out
+
     def _library(self):
         if self.director is not None:
             return self.director.library
@@ -1568,7 +1644,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         except Exception as e:  # noqa: BLE001
             self.err_lbl.setText(f"songs: {type(e).__name__}: {e}")
             return
-        sig = tuple((r["id"], r["ok"], r["why"]) for r in rows)
+        fits = self._fits_now()
+        sig = tuple((r["id"], r["ok"], r["why"], fits.get(r["id"])) for r in rows)
         if sig == getattr(self, "_found_sig", None):
             return
         self._found_sig = sig
@@ -1576,6 +1653,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.found.clear()
         for r in rows:
             mark = "" if r["ok"] is None else ("✓  " if r["ok"] else "✗  ")
+            if r["id"] in fits:
+                mark = "★ " + mark                    # a PAIRING with the record playing: its vocal sits over it, or its bassline swaps under it
+                r["why"] = (fits[r["id"]] + ("; " + r["why"] if r.get("why") else ""))
             if "energy" in r:
                 # two lines: who it is and what it is like; then why it fits or not
                 e = r.get("energy") or 0.0

@@ -1085,7 +1085,22 @@ with `stage_for_bar` so its sung stretch begins on a phrase where the record is 
 four phrases; out; it leaves unless it is UP NEXT), a BASS UNDER the TAKEOVER moment at its drop (it is then
 the record). The SONGS list stars the pairings of the record playing ("its vocal sits over this record
 (0.81)"); the Song parts window's words say which vocals sit over a song and where its own parts sit.
-Gate: the EVENTS check (skipped without the pairings file).
+Gate: the EVENTS check (skipped without the pairings file). The envelope pass ran once (1204 stem tracks,
+47 min, two workers); the first pairing pass left 906 records without an instrumental groove - a sample of
+sixty said why: the silent line (0.05) called a separated vocal stem's constant bleed floor "singing" (26),
+the strict carry test refused fills (19), and 12 bars would have done where 16 did not (15) - so the quiet
+test asks for little over the SINGING line (mean ≥ 0.12 under 15 %, p90 under 0.3), a record's own groove
+is not held to the two-second minimum, and 12 bars suffice: 460 of 1205 records now have a vocal that sits
+over them, 1194 a bassline that swaps under them. Twelve gate runs followed the orders and events build,
+each finding one thing: a user SLAM or BREAK mid-seam had abandoned the seam (three in a row) - now
+refused, only a two-song moment with another song takes the room; a user TAKEOVER with the seam's own next
+record hands over instead of abandoning; a record looping its last bars is not evicted while its next
+record is on its way; the events' lead is four phrases (a decode is real seconds - at two, all four
+planned events came too late) and a late-ready event moves to the next phrase; the gate's dead bar is
+under -45 dBFS (a record's own quiet breakdown at library level read -40 to -45); a deck whose stored bpm
+was 1.5 % off its grid sat at the PLL's 1.2 % trim cap and drifted half a beat in a minute, twice - the cap
+is 2 % and the run-in tempo calibration accepts snaps up to 60 s apart (a slow drift never resnapped inside
+12 s); a deck that reads past its song's end is a stale read, not a song running out.
 
 ## Rules carried over (they were earned)
 

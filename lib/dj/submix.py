@@ -36,7 +36,8 @@ TEL_HIST_FRAMES = RATE * 2       # 2s of telemetry history for the visuals
 # comfortably slower than the ~0.7s measurement delay).
 PLL_TC = 2.0                     # seconds to slew a measured error away
 PLL_KI = 0.012                   # integral gain (learns the tempo bias)
-PLL_MAX_TRIM = 0.012             # +/- 1.2% - real house grids drift this much
+PLL_MAX_TRIM = 0.02              # +/- 2 % - real house grids drift 1.2 %; a stored bpm 1.5 % off its grid sat a deck at the
+                                 # old cap and drifted it half a beat in a minute (two gate runs, 2026-09-14)
 PLL_DEADBAND = 0.004             # beats
 ODD_SEG_RATIO = 0.03             # a grid segment whose period is off the song's dominant period by more than this is
                                  # a mis-track (a half-time breakdown read as 66 bpm): the PLL holds through it
@@ -516,11 +517,13 @@ class DJSubmix:
                 # flam class this was built for is now excluded from
                 # blends entirely by the grid-confidence wall, so gentle
                 # correction suffices.
-                if 3.0 <= dt <= 12.0:
+                # (up to 60 s between snaps: a SLOW drift - a bpm 1.5 % off its grid, 0.006 beat/s - never reached a
+                #  resnap inside 12 s and was never calibrated; a deck staged silent for a minute is the ideal time)
+                if 3.0 <= dt <= 60.0:
                     corr = float(np.clip(-grid_err * beat_s / dt,
                                          -0.005, 0.005))
                     if abs(corr) > 0.0015 \
-                            and abs(self._cal_applied + corr) <= 0.01:
+                            and abs(self._cal_applied + corr) <= 0.02:
                         slave.rate *= (1.0 + corr)
                         self._cal_applied += corr
                         self._stat_cals += 1

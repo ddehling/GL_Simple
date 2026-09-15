@@ -377,6 +377,7 @@ class Director:
         rc.policy = "record"                          # THE RECORD PLAYS: one song whole, one seam per record (docs/DJ_THE_RECORD_PLAYS.md)
         rc.set_play_min(PLAY_MIN_S[d["pace"]])
         rc.set_seam(d["mixing"], SEAM_SPEED[d["seams"]])
+        rc.set_event_rate({"rare": 0, "some": 1, "lots": 2}[d["moments"]])   # the EVENTS per record, from the pairing lists (docs/DJ_PAIRINGS.md)
         try:
             rc.brain.set_require_tags(self.tags)
         except Exception:
@@ -1759,7 +1760,7 @@ class Director:
                     mark(("BREAK: " if k == "break" else "breakdown: ") + f"{m.get('lane')} alone", k, lanes=[ln for ln in LANES if ln != m.get("lane")])
                 elif k in ("rest", "return"):
                     mark(f"{m.get('lane')} {'rest' if k == 'rest' else 'back'}", k, lanes=[m.get("lane")])
-                elif k in ("loop", "evict", "recall", "save", "seam_plan", "seam"):
+                elif k in ("loop", "evict", "recall", "save", "seam_plan", "seam", "event_plan", "event"):
                     mark(m["text"][:44], k)
             # the plan ahead: the staged song arrives as a VOICE (the arrangement's `other` lane) at the move
             # the bed's settling allows - one steady ghost, not a lane-hopping one; the story row says what
@@ -2148,6 +2149,9 @@ class Director:
                     else:
                         left = max(0, rec.get("settle_left") or 0)
                         bits.append("plays on" + (f" ({int(left * bar_s)} s to its minimum)" if left else "") + ": no next record staged yet" + (" (held)" if st.get("hold") else ""))
+                    evp = rec.get("event")
+                    if evp:
+                        bits.append(f"event in {max(0, evp['in_bars'])} bars: {evp['why']}")
                 else:
                     bits = [f"{len(live)} song{'s' if len(live) != 1 else ''} layered", f"a move every {st.get('change_bars')} bars",
                             "vocal lane free" if self.rc.vocal_freedom > 0.5 else "vocals cautious", f"energy {self.dials['energy']}"]

@@ -26,7 +26,7 @@ STEMS = ("drums", "bass", "other", "vocals")
 SING_ON, SING_OFF = 0.12, 0.05          # the conductor's lines (lib/dj/remix.py)
 CARRY_ENV = 0.35
 MIN_SUNG_BARS = 8
-MIN_GROOVE_BARS = 16
+MIN_GROOVE_BARS = 12                   # (16 left 906 of 1205 records without a place for a vocal - a sample: 15 of 60 would pass at 12)
 MIN_BASS_BARS = 16
 KEY_FIT_MIN = 0.68                      # ENTRY_FIT: what an arriving tonal stem must fit
 SHIFTS = (0, 1, -1, 2, -2)
@@ -109,7 +109,10 @@ def _downbeat(t, x):
         return float(x)
 
 
-def _carries(env, lane_names, t0, span_s, thr=CARRY_ENV):
+def _carries(env, lane_names, t0, span_s, thr=CARRY_ENV, strict=True):
+    """The conductor's carry test (lib/dj/remix.py _stem_carries): the 25th percentile over the line and,
+    `strict`, the two-second mean never under 0.6 of it (what a part brought in under another song needs);
+    not strict for a record's own groove (it plays whole - a fill is not a dropout)."""
     seen, good = False, True
     for ln in lane_names:
         e = env.get(ln)
@@ -123,7 +126,7 @@ def _carries(env, lane_names, t0, span_s, thr=CARRY_ENV):
         if float(np.percentile(seg, 25)) < thr:
             good = False
             continue
-        if len(seg) >= 4 and float(np.convolve(seg, np.ones(4, dtype=np.float32) / 4.0, mode="valid").min()) < 0.5 * thr:
+        if strict and len(seg) >= 4 and float(np.convolve(seg, np.ones(4, dtype=np.float32) / 4.0, mode="valid").min()) < 0.6 * thr:
             good = False
     return good if seen else None
 
@@ -207,8 +210,11 @@ def _instrumental_grooves(t, env):
             # quiet = not SINGING there: less than a third of the half-seconds over the silent line (a lone ad-lib
             # or bleed spike at 0.14 split a 47-second instrumental groove into pieces too short to use)
             vseg = np.asarray(vox[i0:i1], dtype=np.float32) if (vox is not None and len(vox) >= 4 and i1 > i0) else None
-            quiet = vseg is None or (float(np.mean(vseg >= SING_OFF)) < 0.3 and float(np.percentile(vseg, 90)) < 0.25)
-            carry = _carries(env, ("drums", "bass"), x, step) is not False
+            # quiet = not SINGING there: little of it over the singing line (a separated vocal stem carries a
+            # constant bleed floor between the silent and the singing lines - the silent line called 26 of 60
+            # instrumental stretches sung); a lone ad-lib spike is not singing either
+            quiet = vseg is None or len(vseg) == 0 or (float(np.mean(vseg >= SING_ON)) < 0.15 and float(np.percentile(vseg, 90)) < 0.3)
+            carry = _carries(env, ("drums", "bass"), x, step, strict=False) is not False
             if quiet and carry:
                 cur = [x, x + step] if cur is None else [cur[0], x + step]
             else:

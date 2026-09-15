@@ -89,6 +89,7 @@ def run_one(policy, seed, seconds, music, play_min, theme):
         rc.policy = "record"
         rc.set_play_min(play_min)
         rc.set_seam("auto", 1.0)
+        rc.set_event_rate(arg("--events", 1, int))       # one EVENT per record from the pairing lists (MOMENTS some)
     else:
         rc.policy = "arrangement"
         rc.bass_moments = True
@@ -321,7 +322,16 @@ def run_one(policy, seed, seconds, music, play_min, theme):
     for sl, rows in errs.items():
         if len(rows) >= 20:
             lock[sl] = {"med": round(float(np.median(rows)), 3), "p95": round(float(np.percentile(rows, 95)), 3), "n": len(rows)}
+    dead_where = []
+    for i, r_db in enumerate(rms_b):
+        if r_db < -40.0:
+            t_dead = (max(0, opened_clock - c0) + (i + 1) * nb) / RATE
+            near = [m["text"][:70] for m in ml if m.get("clock_s") is not None and abs(m["clock_s"] - t_dead) < 12.0]
+            dead_where.append({"t": round(t_dead), "db": round(r_db, 1), "near": near[-3:]})
+    events = [m["text"][:110] for m in ml if m["kind"] in ("event_plan", "event")]
+    acap = [m["text"][:110] for m in ml if m["kind"] == "moment" and m["text"].startswith("ACAPELLA")]
     out = {"policy": policy, "seed": seed, "seconds": seconds, "play_min": play_min, "theme": theme,
+           "events": events, "acapella_steps": len(acap), "event_log": list(getattr(rc, "event_log", [])), "dead_where": dead_where[:8],
            "records": len(gaps) + 1, "min_per_record": round(float(np.mean(gaps)) / 60.0, 2) if gaps else round(seconds / 60.0, 2),
            "shortest_record_s": round(float(min(gaps)), 0) if gaps else None,
            "lane_moves_per_10min": round(10.0 * len(lane_moves) / max(seconds / 60.0, 1e-6), 1),
@@ -411,6 +421,23 @@ def report(out_dir):
                         w = "into A's section" if w.startswith("into ") else ("before A runs out" if w.startswith("before ") else w)
                         whys[w] = whys.get(w, 0) + 1
             print(f"{'':12s} where the seams were placed: {whys}")
+    print("\n-- the events (docs/DJ_PAIRINGS.md) --")
+    for p in pols:
+        rs = [r for r in rows if r["policy"] == p]
+        planned = sum(1 for r in rs for e in r.get("events", []) if e.startswith("event in"))
+        armed = sum(1 for r in rs for e in r.get("events", []) if e.startswith("the event:"))
+        refused = [e for r in rs for e in r.get("events", []) if e.startswith("the event refused")]
+        acap = sum(r.get("acapella_steps", 0) for r in rs)
+        recs = sum(r["records"] for r in rs)
+        print(f"{p:12s} records {recs}, events planned {planned}, armed {armed}, refused {len(refused)}, acapella steps {acap}"
+              + (f"; e.g. refused: {refused[0][:80]}" if refused else ""))
+        for e in [e for r in rs for e in r.get("events", []) if e.startswith("event in")][:4]:
+            print(f"{'':12s}   {e[:110]}")
+    print("\n-- dead bars (under -40 dBFS), where --")
+    for p in pols:
+        for r in [r for r in rows if r["policy"] == p]:
+            for dw in r.get("dead_where") or []:
+                print(f"  {p} seed {r['seed']}: {dw['t']} s ({dw['db']} dB) near: " + " | ".join(dw["near"]))
     print("\n-- the worst seams (for the ear) --")
     for p in pols:
         ss = [(r["seed"], s) for r in rows if r["policy"] == p for s in r["seams"]]
