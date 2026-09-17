@@ -2970,6 +2970,10 @@ class RemixConductor(RecordPlay):
         V, T, what, hb = None, B, None, None
         if kind in ("slam", "break") and not any(held.get(ln) == B for ln in ("drums", "bass")):
             return False, "the bed holds neither drums nor bass"
+        if kind in ("slam", "break", "sing") and self._break is not None:
+            # your plain BREAK has the room (drums alone): a SLAM on top took the drums too and the room went
+            # silent until the guard undid it (the control gate, 2026-09-16) - said, on the BREAK's one
+            return False, "a BREAK is running: on its one"
         if kind == "acapella" and self.lanes.get("vocals") not in (None, B):
             # a vocal YOU brought stays; a departing record's vocal carrying over the new one gives way (the event
             # refused for the old record's vocal on the lane - the gate, 2026-09-16)
@@ -3429,6 +3433,16 @@ class RemixConductor(RecordPlay):
         if m["B"] not in self.songs or self.songs[m["B"]].leaving:
             self._moment = None
             self._note(f"{m['label']} dropped: the bed left")
+            return False
+        V = m.get("V")
+        if V is not None and V != m["B"] and (V not in self.songs or self.songs[V].leaving):
+            # the other song left before its one (evicted as it looped its last bars): the moment goes with it -
+            # said, not a KeyError at its step (the control gate, 2026-09-16)
+            if m["started"]:
+                self.moment_cancel()
+            else:
+                self._moment = None
+            self._move("moment_cancel", None, self._song_id(m["B"]), None, f"{m['label']} dropped: its song left the decks")
             return False
         if m["started"]:
             # the watchdog: a planned hole is two beats at most - the bus silent for longer than a bar and a

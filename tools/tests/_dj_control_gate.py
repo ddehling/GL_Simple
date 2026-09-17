@@ -77,6 +77,7 @@ def run(music, seed, presses, seconds, verbose):
     seen_err = {"d": None, "rc": None}
 
     pace = {"t0": None, "n0": 0}
+    tel_hist = []                                     # (block index, master, {deck: (gain, stem gains, playing, time_s, title, held)}) once a second
 
     def pump(n):
         # paced at PACE x real time once the first song plays: decodes and stagings are real seconds, and a run
@@ -84,6 +85,12 @@ def run(music, seed, presses, seconds, verbose):
         for _ in range(n):
             audio.append(np.frombuffer(gen.send(BLOCK), dtype=np.float32).reshape(-1, 2).copy())
             d.step()
+            if len(audio) % 10 == 0:
+                decks = (rc.submix.telemetry or {}).get("decks") or {}
+                tel_hist.append((len(audio), rc.master, {dk: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
+                                                          bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1),
+                                                          (rc.songs[dk].track.title[:14] + ("(leaving)" if rc.songs[dk].leaving else ("(staged)" if not rc.songs[dk].entered else "")) if dk in rc.songs else "-"),
+                                                          (rc.songs[dk].held(rc.lanes) if dk in rc.songs else [])) for dk, t in decks.items()}))
             if rc.master is not None:
                 if pace["t0"] is None:
                     pace["t0"], pace["n0"] = time.time(), len(audio)
@@ -279,8 +286,14 @@ def run(music, seed, presses, seconds, verbose):
             if t_dead - shown < 8.0:
                 continue
             shown = t_dead
-            near = [m["text"][:80] for m in rc.move_log if m.get("clock_s") is not None and abs(m["clock_s"] - t_dead) < 10.0]
-            print(f"  seed {seed} DEAD at {t_dead:5.0f}s ({rms[i]:.0f} dB) near: " + " | ".join(near[-4:]), flush=True)
+            near = [f"{m['clock_s']:.0f}s {m['text'][:90]}" for m in rc.move_log if m.get("clock_s") is not None and -25.0 < t_dead - m["clock_s"] < 6.0]
+            print(f"  seed {seed} DEAD at {t_dead:5.0f}s ({rms[i]:.0f} dB)", flush=True)
+            for x in near[-12:]:
+                print(f"          {x}")
+            b0 = int(t_dead * RATE) // BLOCK
+            for k, master, pic in [r for r in tel_hist if b0 - 30 <= r[0] <= b0 + 10][::3]:
+                print(f"          decks at {k * BLOCK / RATE:.0f} s (master {master}): " + "; ".join(
+                    f"{dk}={p[4]} g{p[0]} {p[1]} {'▶' if p[2] else '■'} t{p[3]} held {p[5]}" for dk, p in pic.items()), flush=True)
     d.stop(0.1)
     return {"seed": seed, "rows": rows, "dead_bars": len(dead), "bars": len(rms), "errors": [(round(t), k, e) for t, k, e in errors]}
 
