@@ -36,7 +36,9 @@ BASS_RATE = (0.90, 1.10)                # the tempo wall
 PLAY_MIN_S = 210.0
 RUNWAY_S = 90.0
 TOP_N = 12
-VERSION = 1
+ENERGY_WEIGHT = 0.3                     # a song at the far end of the energy ranks scores 0.7 of one at the record's
+GENRE_BONUS = 1.08                      # a shared genre (MusicBrainz / the file tag) - a tie-break, not a gate
+VERSION = 2
 
 
 def arg(name, default, cast=str):
@@ -95,6 +97,32 @@ def envelopes(music, workers):
     for tid, st in bad[:10]:
         print("  problem", tid, st)
     print(f"envelopes done in {(time.time() - t0) / 60:.1f} min")
+    return len(jobs)
+
+
+def pairs_stale(music):
+    """True when pairings.json is missing, of an older version, or older than an envelope (the analysis stage
+    rebuilds the lists only then - the arithmetic is a minute on 1200 records)."""
+    path = os.path.join(music, ".stems", "pairings.json")
+    if not os.path.exists(path):
+        return True
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.read(200)
+        if f'"version": {VERSION}' not in head:
+            return True
+    except OSError:
+        return True
+    mt = os.path.getmtime(path)
+    root = os.path.join(music, ".stems")
+    try:
+        for name in os.listdir(root):
+            p = os.path.join(root, name, "env.npz")
+            if os.path.exists(p) and os.path.getmtime(p) > mt:
+                return True
+    except OSError:
+        return True
+    return False
 
 
 # -- the per-song measures ---------------------------------------------------------------------------------------
@@ -235,7 +263,12 @@ def measure_song(t, env):
     if getattr(t, "hook", None):
         hook = [float(x) for x in (t.hook.get("starts") or [t.hook.get("start_s")]) if x is not None]
     sung = _sung_stretches(t, env)
+    try:
+        energy = float(t.energy_proxy())
+    except Exception:
+        energy = 0.5
     return {"id": t.id, "title": t.title, "bpm": float(t.bpm or 0.0), "camelot": t.camelot, "duration_s": float(t.duration_s),
+            "energy": energy, "genres": sorted(getattr(t, "genre_set", None) or ()),
             "bar_s": bar, "landmark": lm, "body": _body_start(t, env), "bass_from_landmark": bool(bass_ok),
             "runway_after_landmark": float(t.duration_s) - lm,
             "sung": sung, "hook_starts": hook or [],
@@ -283,6 +316,11 @@ def pairs(music):
             fit, shift = _key_fit(r["camelot"], s["camelot"])
             if fit < KEY_FIT_MIN:
                 continue
+            # the taste terms (2026-09-16): a song of the record's energy (library rank 0..1) over one far from it,
+            # a song of a shared genre a little over a stranger - the key and tempo still decide who is in the list
+            close = 1.0 - ENERGY_WEIGHT * abs(r["energy"] - s["energy"])
+            kin = GENRE_BONUS if (set(r["genres"]) & set(s["genres"])) else 1.0
+            taste = close * kin
             # VOCAL OVER: S's sung stretch on one of R's instrumental grooves
             if VOCAL_RATE[0] <= rate <= VOCAL_RATE[1] and s["sung"] and r["grooves"]:
                 tempo = 1.0 - abs(1.0 - rate) / 0.06 * 0.3
@@ -295,17 +333,19 @@ def pairs(music):
                         if room < MIN_SUNG_BARS:
                             continue
                         length = min(1.0, min(bars, room) / 16.0)
-                        score = fit * tempo * (0.6 + 0.4 * length) * (1.2 if hook else 1.0)
+                        score = fit * tempo * (0.6 + 0.4 * length) * (1.2 if hook else 1.0) * taste
                         if best is None or score > best["score"]:
                             best = {"id": s["id"], "title": s["title"], "score": round(score, 3), "fit": round(fit, 2), "shift": shift, "rate": round(rate, 3),
+                                    "energy": round(s["energy"], 2), "kin": kin > 1.0,
                                     "sung": [round(a, 1), round(b, 1)], "hook": hook, "groove": [round(ga, 1), round(gb, 1)]}
                 if best is not None:
                     vo.append(best)
             # BASS UNDER: S's bass and melody from its landmark under R's drums, S the record after
             if BASS_RATE[0] <= rate <= BASS_RATE[1] and s["bass_from_landmark"] and s["runway_after_landmark"] / max(rate, 1e-6) >= PLAY_MIN_S + RUNWAY_S:
                 tempo = 1.0 - abs(1.0 - rate) / 0.10 * 0.3
-                score = fit * tempo
+                score = fit * tempo * taste
                 bu.append({"id": s["id"], "title": s["title"], "score": round(score, 3), "fit": round(fit, 2), "shift": shift, "rate": round(rate, 3),
+                           "energy": round(s["energy"], 2), "kin": kin > 1.0,
                            "landmark": round(s["landmark"], 1), "runway_s": round(s["runway_after_landmark"], 0)})
         vo.sort(key=lambda x: -x["score"])
         bu.sort(key=lambda x: -x["score"])
@@ -346,7 +386,13 @@ if __name__ == "__main__":
     music = arg("--music", "D:/Devel/music")
     if "--envelopes" in sys.argv or "--all" in sys.argv:
         envelopes(music, arg("--workers", 3, int))
-    if "--pairs" in sys.argv or "--all" in sys.argv:
+    if "--pairs" in sys.argv:
         pairs(music)
+    elif "--all" in sys.argv:
+        # the analysis stage: the lists rebuilt only when an envelope is newer than them or the version moved
+        if pairs_stale(music):
+            pairs(music)
+        else:
+            print("pairings: up to date")
     if "--show" in sys.argv:
         show(music, arg("--show", ""))

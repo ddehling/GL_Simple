@@ -85,6 +85,10 @@ its verdict logged, the landmark of every record on the bar its seam completed (
 ## Build order
 
 1. The record-play engine: IN / OUT points, the seam plan per record, the morph in three orders with the
-   darkening, the intent line and the picture. One piece; the gate rewritten alongside.
-2. The rehearsal render and judge; the fallbacks.
-3. The dice on the order, the acapella lead-in from a third record (layers three), the guide.
+   darkening, the intent line and the picture. One piece; the gate rewritten alongside. BUILT 2026-09-13
+   (lib/dj/record.py).
+2. The rehearsal render and judge; the fallbacks. BUILT 2026-09-16 (lib/dj/rehearse.py: the render from
+   the decks' stems at bar granularity, mono, decimated, in a thread; the hole and lurch judges from the
+   campaign; the fallbacks move a phrase twice, swap the order, then the cut; `rehearsal_log`).
+3. The dice on the order, the acapella lead-in from a third record (layers three), the guide. The dice
+   and the guide BUILT; the third record's vocal became the EVENTS (docs/DJ_PAIRINGS.md).

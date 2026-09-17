@@ -16,6 +16,7 @@ import time
 
 from lib.dj.submix import RATE
 
+MIN_RUNWAY_S = 90.0                    # (lib/dj/remix.py's: a landmark must leave this much body)
 PLAY_MIN_S = 210.0                     # a record plays at least this long (the club default; PACE bends it)
 SEAM_BARS = {"cut": 4, "morph": 16, "blend": 32}
 DARKEN_HIGH = 0.7                      # the departing harmony's high shelf over the bars before the swap (a fade to darkness; 0.35 opened
@@ -43,9 +44,23 @@ class RecordPlay:
         self._event_pending = None         # {"kind", "track_id", "bar", "bars", "why", "t"} staged and waiting to arm
         self._event = None                 # the event the armed moment reads (its bar and length)
         self.event_log = []
+        self.event_pref = {"vocals": "some", "energy": "hold"}   # the VOCALS and ENERGY dials steer the events
+        self.rehearsal_log = []            # every rehearsal's verdict (lib/dj/rehearse.py)
+        self.silence_log = []              # the bars where the record itself was silent (its own breakdown)
+        self._silent_since = None
+        self._rehearsal_result = None
+        self._rehearsing = None
 
     def set_event_rate(self, n):
         self.event_rate = int(max(0, n))
+
+    def set_event_pref(self, vocals=None, energy=None):
+        """VOCALS: none = no vocal events, some = a vocal first when one fits, lots = vocals first and two of them
+        at MOMENTS lots; ENERGY: cool / amp lean the pairing toward a calmer / hotter song."""
+        if vocals is not None:
+            self.event_pref["vocals"] = vocals
+        if energy is not None:
+            self.event_pref["energy"] = energy
 
     def _load_pairings(self):
         import json
@@ -88,16 +103,26 @@ class RecordPlay:
         cb = self.change_bars
         if pend is not None:
             sm_ = self.seam
-            if time.time() - pend["t"] > 150.0 or (sm_ is not None and bar > sm_["bar"] - 3 * cb):
-                self._event_pending = None
-                self._note("the event's song never became ready in time: dropped")
-                return
             d = self.deck_of(pend["track_id"])
+            # dropped: its song never became ready, the seam it sits before is too close, it moved late three
+            # times, or the ROOM CHANGED under it - the record is another song now, or the event's own song
+            # became the record (your DROP onto it: the pending takeover then blocked every seam, and the record
+            # ran out into 57 dead bars - the gate, 2026-09-16)
+            if time.time() - pend["t"] > 150.0 or (sm_ is not None and bar > sm_["bar"] - 3 * cb) \
+                    or pend.get("record") != sa.track.id or d == self.record_deck or pend.get("late", 0) >= 3:
+                self._event_pending = None
+                why = ("the room changed" if (pend.get("record") != sa.track.id or d == self.record_deck)
+                       else ("it came too late three times" if pend.get("late", 0) >= 3
+                             else ("its seam is too close" if (sm_ is not None and bar > sm_["bar"] - 3 * cb) else "its song never became ready in time")))
+                self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"the event is dropped: {why}")
+                return
             s = self.songs.get(d) if d else None
             if s is None or s.staged_at is None or self._clock() < int(s.staged_at) + self._bar_clock():
                 return
             if self._moment is not None or (self.seam is not None and self.seam["state"] == "running"):
                 return
+            if bar < pend["bar"] - 2 * cb:
+                return                                # armed two phrases before its bar (the countdown), not the moment its song is ready
             if bar >= pend["bar"] - 1:
                 # ready late (a decode is real seconds): the event moves to the next phrase; the acapella's song
                 # jumps so its sung stretch still begins on that bar
@@ -105,6 +130,7 @@ class RecordPlay:
                 if pend["kind"] == "acapella" and pend.get("want_t") is not None:
                     self.jump(d, float(pend["want_t"]), K2)
                 pend["bar"] = K2
+                pend["late"] = int(pend.get("late", 0)) + 1
                 if sm_ is not None and K2 > sm_["bar"] - 2 * cb:
                     self._event_pending = None
                     self._note("the event came too late for this record: dropped")
@@ -140,15 +166,40 @@ class RecordPlay:
         busy = {s.track.id for s in self.songs.values()} | {t.id for t in self._decoding.values()} | {p[0].id for p in self._pending.values()}
         busy |= set(getattr(self, "avoid_ids", ()) or ())
         n_done = int(getattr(sa, "events_done", 0))
-        kinds = ["vocal", "bass"]
+        pref_v = self.event_pref.get("vocals", "some")
+        # VOCALS none: no vocal events; some: a vocal first when one fits, else the bass swap; lots: vocals only
+        # (two acapellas at MOMENTS lots) - the bass swap only when no vocal fits at all
+        kinds = ["bass"] if pref_v == "none" else ["vocal", "bass"]
+        used = getattr(sa, "events_used", None)
+        if used is None:
+            used = sa.events_used = set()
+        busy |= used
+        lean = self.event_pref.get("energy", "hold")
+        e_rec = None
+        try:
+            e_rec = float(sa.track.energy_proxy())
+        except Exception:
+            pass
+
+        def _leaned(cands):
+            # ENERGY cool / amp: the candidates re-ranked toward a calmer / hotter song (within the fit)
+            if lean == "hold" or e_rec is None:
+                return cands
+            sgn = -1.0 if lean == "cool" else 1.0
+            return sorted(cands, key=lambda c: -(c["score"] + 0.15 * sgn * ((c.get("energy") or e_rec) - e_rec)))
+        seam_bar = sm["bar"]
         for kind in kinds:
-            cands = rec.get("vocal_over" if kind == "vocal" else "bass_under") or []
+            cands = _leaned(rec.get("vocal_over" if kind == "vocal" else "bass_under") or [])
+            win_start, win_end = start_min, end_max
+            if kind == "bass" and pref_v == "lots" and n_done == 0 and (rec.get("vocal_over") or []):
+                continue                              # VOCALS lots: the first event is a vocal or nothing yet
             if kind == "bass":
                 # a BASS UNDER changes the record: it is the record's EXIT, at the end of its minimum play, not a
                 # phrase into it (one event per record at a phrase in halved the pace: 2.5 min per record - the
-                # fifth campaign); it replaces the seam where the seam would have been
-                start_min = max(start_min, k0 + self._play_min_bars() - 2 * cb)
-                if end_max - start_min < cb:
+                # fifth campaign); it takes the seam's own bar - the seam is dropped when it is planned
+                win_start = max(bar + 4 * cb, k0 + self._play_min_bars() - 2 * cb)
+                win_end = seam_bar
+                if win_end < win_start:
                     continue
             for c in cands:
                 if c["id"] in busy:
@@ -157,7 +208,7 @@ class RecordPlay:
                     ga, gb = c["groove"]
                     # the first phrase boundary in the window where the record is inside that groove with eight bars to spare
                     K = None
-                    for k in range(start_min, end_max + 1):
+                    for k in range(win_start, win_end + 1):
                         if (k - k0) % cb:
                             continue
                         tk = t_now + (k - bar - 1) * bar_a
@@ -175,10 +226,10 @@ class RecordPlay:
                     if not ok:
                         continue
                     self._event_pending = {"kind": "acapella", "track_id": int(c["id"]), "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": want_t,
-                                           "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})"}
+                                           "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})"}
                 else:
                     K = None
-                    for k in range(start_min, end_max + 1):
+                    for k in range(win_start, win_end + 1):
                         if (k - k0) % cb == 0 and self._track_steady(sa.track, t_now + (k - bar - 1) * bar_a, 2 * cb, bad=("build", "breakdown")) is not False:
                             K = k
                             break
@@ -188,8 +239,10 @@ class RecordPlay:
                     if not ok:
                         continue
                     self._event_pending = {"kind": "takeover", "track_id": int(c["id"]), "bar": int(K), "bars": 0, "t": time.time(),
-                                           "why": f"the bassline of {c['title'][:24]} under these drums at its drop (fit {c['fit']})"}
+                                           "record": sa.track.id, "why": f"the bassline of {c['title'][:24]} under these drums at its drop (fit {c['fit']})"}
+                    self._seam_drop(f"the event is the exit: {c['title'][:22]} at its drop")   # (the takeover replaces the seam)
                 sa.events_done = n_done + 1
+                used.add(int(c["id"]))
                 self._move("event_plan", None, self._song_id(self.record_deck), int(c["id"]),
                            f"event in {int(K) - bar} bars: {self._event_pending['why']}")
                 return
@@ -216,6 +269,41 @@ class RecordPlay:
         s.was_bed, s.voice_since = False, None
         if self.seam is not None and self.seam["state"] != "running":
             self._seam_drop(why or "the record changed")
+
+    def _exit_event_coming(self):
+        """A BASS UNDER event (the DJ's TAKEOVER) is the record's exit: while it is pending or in flight no seam
+        is planned (the seam it replaced was planned again the next bar - the gate, 2026-09-16)."""
+        pend = self._event_pending
+        sa = self.songs.get(self.record_deck)
+        if pend is not None and pend.get("kind") == "takeover" and sa is not None and pend.get("record") == sa.track.id:
+            return True
+        m = self._moment
+        return m is not None and m.get("kind") == "takeover" and bool(m.get("auto"))
+
+    def _record_silence_tick(self):
+        """The record's OWN silence (a breakdown under -45 dBFS is the record, not a hole): noted once per stretch
+        and kept in silence_log for the gate and the campaign, which count those bars apart."""
+        s = self.songs.get(self.record_deck)
+        if s is None or not s.env or not s.entered:
+            self._silent_since = None
+            return
+        try:
+            import numpy as np
+            t = self._song_time_at(self.record_deck, self._next_bar_clock())
+            bar = self._bar_s(s.track, t)
+            i0, i1 = max(0, int(t * 2)), int((t + bar) * 2) + 1
+            lv = [float(np.mean(np.asarray(e[i0:i1], dtype=np.float32))) for e in s.env.values() if e is not None and len(e) > i1]
+        except Exception:
+            return
+        if not lv:
+            return
+        if max(lv) < 0.06:
+            self.silence_log.append({"clock_s": self._tel().get("clock_s"), "title": s.track.title, "t": round(t, 1), "bar": self.bar_n})
+            if getattr(self, "_silent_since", None) is None:
+                self._silent_since = self.bar_n
+                self._note(f"{s.track.title[:24]} is silent here ({t:.0f} s: its own breakdown)")
+        else:
+            self._silent_since = None
 
     def _seam_drop(self, why):
         sm = self.seam
@@ -250,6 +338,7 @@ class RecordPlay:
         if self.wait_why and self.wait_why.startswith("NEXT"):
             self.wait_why = None                      # (a stale "NEXT: ..." sat in the WHY panel for ten minutes, 2026-09-14)
         self._room_never_empty()
+        self._record_silence_tick()
         if sm is not None:
             sb = self.songs.get(sm["b"])
             if sm["a"] != self.record_deck or sb is None or sb.leaving or sb.evicted:
@@ -262,9 +351,16 @@ class RecordPlay:
                 if yours and not getattr(sb, "user_pick", False):
                     self._seam_drop(f"your pick {self.songs[yours[0]].track.title[:22]} comes first")
                     sm = None
+        # the events, BEFORE the seam check: a pending exit event (the takeover) has dropped its seam - stepped
+        # after it, it never armed and blocked every seam for its whole timeout (the gate, 2026-09-16)
+        try:
+            self._event_step()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"event: {type(e).__name__}: {e}"
+        sm = self.seam
         if sm is None:
             b = self._next_record_deck()
-            if b is not None:
+            if b is not None and not self._exit_event_coming():
                 self._plan_seam(self.record_deck, b)
             return
         # the record is looping its last bars (its body has ended): the seam fires NOW whatever B's place - the
@@ -273,6 +369,7 @@ class RecordPlay:
         if sa is not None and sa.loop is not None and sm["bar"] > bar + 1:
             sm["bar"], sm["drums_bar"], sm["order"], sm["len"] = bar + 1, bar + 1, "cut", 4
             sm["steps"] = self._seam_steps("cut", 4)
+            sm["moved"] += 1                          # (an emergency: its landmark lands where it can)
             self._seam_plan_mirror()
             self._move("plan", None, None, self._song_id(sm["b"]), f"the seam now, as a cut: {sa.track.title[:22]} is looping its last bars")
             sm["state"] = "running"
@@ -282,9 +379,12 @@ class RecordPlay:
         if self.plan is None or self.plan.get("what") != "seam" or self.plan.get("bar") != sm["bar"]:
             self._seam_plan_mirror()
         try:
-            self._event_step()
+            self._rehearse_step()
         except Exception as e:  # noqa: BLE001
-            self.last_error = f"event: {type(e).__name__}: {e}"
+            self.last_error = f"rehearsal: {type(e).__name__}: {e}"
+        sm = self.seam
+        if sm is None:
+            return
         if bar >= sm["bar"] - 1:
             if self.hold or self._moment is not None or self._break is not None or self._recall is not None:
                 self._seam_move(self._phrase_bar_after(bar + 1), "held" if self.hold else "a moment has the room")
@@ -294,9 +394,14 @@ class RecordPlay:
             sb = self.songs.get(sm["b"])
             if sb is not None and not sb.entered:
                 at = self._next_bar_clock()
+                cued = sm.get("cued_clock")
+                fresh = cued is not None and self._clock() < cued + self._bar_clock()
+                # a cue posted within the last bar has not executed (or locked) yet: the picture would be the
+                # old position (a re-cue a bar after NEXT's read "-27 s from its place" and cued again - the
+                # gate, 2026-09-16); the cue was computed for this very bar - it is trusted, not re-checked
                 want = sm["tb"] if sm["order"] != "vocal" else sm["tb"] - VOCAL_LEAD_BARS * self._bar_s(sb.track, sm["tb"])
                 have = self._song_time_at(sm["b"], at)
-                if abs(have - want) > 1.0 * self._bar_s(sb.track, want):
+                if not fresh and abs(have - want) > 1.0 * self._bar_s(sb.track, want):
                     if sm["moved"] < 2:
                         self._seam_move(self._phrase_bar_after(bar + 3), f"{sb.track.title[:20]} was {have - want:+.0f} s from its place: cued again")
                     else:
@@ -355,6 +460,70 @@ class RecordPlay:
                 self._cross(ln, None, at, beats=2.0, shape=False)
                 self._note(f"the {ln} of {self.songs[h].track.title[:22]} out: a seam begins and it belongs to neither record")
 
+    # -- the rehearsal: the headphone cue ---------------------------------------------------------------------------
+    def _rehearse_step(self):
+        """Two phrases before a planned seam, render it from the decks' stems and judge it (lib/dj/rehearse.py);
+        a seam that fails moves a phrase (twice at most), then changes its order, then falls back to the
+        breakdown and cut. The verdict is kept on the seam and in rehearsal_log."""
+        sm = self.seam
+        cb = self.change_bars
+        res = getattr(self, "_rehearsal_result", None)
+        if res is not None:
+            self._rehearsal_result = None
+            seq, ok, why = res
+            if sm is None or sm.get("seq") != seq or sm["state"] != "planned":
+                return
+            self.rehearsal_log.append({"seq": seq, "a": sm["a"], "b": sm["b"], "order": sm["order"], "len": sm["len"], "ok": ok, "why": why, "bar": self.bar_n})
+            if ok is None:
+                sm["rehearsed"] = f"not rehearsed: {why}"
+                return
+            if ok:
+                sm["rehearsed"] = f"clean - {why}"
+                self._note(f"rehearsed: {why}")
+                return
+            # a hole AT the swap bar is B's own quiet bar before its drop, not a place: the swap moves ON the
+            # drop (B a bar later), once - moving a phrase would find the same hole
+            last = {"cut": 4, "bass": sm["len"], "vocal": VOCAL_LEAD_BARS + sm["len"]}.get(sm["order"], sm["len"])
+            hole_bar = None
+            if "a hole at bar" in why:
+                try:
+                    hole_bar = int(why.split("a hole at bar")[1].split()[0])
+                except (ValueError, IndexError):
+                    hole_bar = None
+            sb = self.songs.get(sm["b"])
+            if hole_bar is not None and hole_bar >= last - 1 and not sm.get("swap_on_drop") and sb is not None and not sb.entered:
+                sm["tb"] += self._bar_s(sb.track, sm["tb"])
+                sm["swap_on_drop"], sm["rehearsed"] = True, None
+                self._seam_cue_b()
+                self._move("plan", None, None, self._song_id(sm["b"]), f"rehearsed {why}: the swap lands on its drop instead")
+                return
+            tries = int(sm.get("rehearsal_tries", 0)) + 1
+            sm["rehearsal_tries"] = tries
+            if tries <= 2:
+                sm["rehearsed"] = None
+                self._seam_move(self._phrase_bar_after(sm["bar"] + 1), f"rehearsed: {why}")
+            elif tries == 3 and sm["order"] in ("drums", "bass"):
+                new_order = "bass" if sm["order"] == "drums" else "drums"
+                sm["order"], sm["steps"], sm["rehearsed"] = new_order, self._seam_steps(new_order, sm["len"]), None
+                self._seam_cue_b()
+                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: as a {ORDER_WORDS[new_order]} instead")
+            else:
+                sm["order"], sm["len"], sm["steps"], sm["rehearsed"] = "cut", 4, self._seam_steps("cut", 4), f"fell back to the cut - {why}"
+                sm["drums_bar"] = sm["bar"]
+                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: the breakdown and a cut instead")
+            return
+        if sm is None or sm["state"] != "planned" or sm.get("rehearsed") is not None or getattr(self, "_rehearsing", None) == (sm.get("seq"), sm["bar"]):
+            return
+        left = sm["bar"] - self.bar_n
+        if left > 2 * cb + 1 or left < cb - 1:
+            return                                    # two phrases ahead, a phrase at least (a move re-rehearses if there is time)
+        sb = self.songs.get(sm["b"])
+        if sb is None or sb.entered or sb.staged_at is None or self._clock() < int(sb.staged_at):
+            return
+        from lib.dj.rehearse import rehearse
+        self._rehearsing = (sm.get("seq"), sm["bar"])
+        rehearse(self, sm, None)
+
     def _next_record_deck(self):
         """The next record: a song staged and waiting (your UP NEXT first), else a song you brought a part of
         in (it is heard; the seam morphs into it)."""
@@ -382,7 +551,19 @@ class RecordPlay:
         L = int(round(SEAM_BARS[kind] * self.seam_scale / 4.0)) * 4
         return max(8, L), kind
 
-    def _seam_b_start(self, sb, L, lanes=("drums",)):
+    def _seam_lm_off(self, order, L):
+        """Bars from the seam's first bar to where B's LANDMARK should fall: one bar after the step that brings
+        B's harmony, so the drop is B's own build resolving inside its harmony, not a step in the mix (the
+        drop's 9-13 dB rise on the completion bar was the lurch class every campaign kept - v6)."""
+        if order == "bass":
+            return DARKEN_BARS + 1
+        if order == "vocal":
+            return VOCAL_LEAD_BARS + L + 1
+        if order == "cut":
+            return 4
+        return L + 1
+
+    def _seam_b_start(self, sb, L, lanes=("drums",), lm_off=None):
         """B's song time at the seam's first bar: its landmark minus the seam, when the stems the seam brings
         FIRST (`lanes`: its drums for a drums-first seam, its bass for a bass swap) carry from there; else the
         LATEST place before the landmark where they do (searched from its earliest groove, a record was cued to
@@ -396,25 +577,73 @@ class RecordPlay:
         lm = self._landmark(t, sb.env)
         bar_b = self._bar_s(t, lm)
         floor_t = 2.0 * bar_b
-        t0 = lm - L * bar_b
-        if t0 >= floor_t and self._stem_carries(sb.env, t0, 0.5 * L * bar_b, lanes=lanes) is not False:
+        off = L if lm_off is None else lm_off
+        # the stems the seam brings first must carry through the bars they play under the old record - judged
+        # BAR BY BAR (every bar's mean over 0.7 of the line): a pre-drop pattern on and off every bar passed the
+        # two-second test and the campaign heard it as holes and lurches
+        lead = max(2.0 * bar_b, min(off, L) * bar_b)
+        t0 = lm - off * bar_b
+        if t0 >= floor_t and self._stem_carries(sb.env, t0, lead, lanes=lanes, bar_s=bar_b) is not False:
             return t0, lm, True, L
         step = 4 * bar_b
         tt = t0 - step
         while tt >= floor_t:
-            if self._stem_carries(sb.env, tt, L * bar_b, lanes=lanes) is not False:
+            if self._stem_carries(sb.env, tt, lead, lanes=lanes, bar_s=bar_b) is not False:
                 return tt, lm, False, L
             tt -= step
-        t_in = self._steady_from(t, sb.env, floor_t, L, strict=False, lanes=lanes)
-        if t_in is None:
-            t_in = max(floor_t, t0)
-        t_in = max(t_in, floor_t)
-        # its stems carry from later than a full seam before its landmark: a SHORTER seam that still completes
-        # on the landmark (eight bars at least), else the landmark falls inside the seam
-        room = int(math.floor((lm - t_in) / max(bar_b, 1e-6) / 4.0)) * 4
-        if room >= 8 and room < L:
-            return lm - room * bar_b, lm, True, room
-        return t_in, lm, False, L
+        if lm_off is None:
+            t_in = self._steady_from(t, sb.env, floor_t, L, strict=False, lanes=lanes)
+            if t_in is None:
+                t_in = max(floor_t, t0)
+            t_in = max(t_in, floor_t)
+            # its stems carry from later than a full seam before its landmark: a SHORTER seam that still completes
+            # on the landmark (eight bars at least), else the landmark falls inside the seam
+            room = int(math.floor((lm - t_in) / max(bar_b, 1e-6) / 4.0)) * 4
+            if room >= 8 and room < L and lm_off is None:
+                return lm - room * bar_b, lm, True, room
+            return t_in, lm, False, L
+        # nothing carries before its landmark (a build with thin drums, a short groove between breakdowns -
+        # Ruhi): a LATER landmark - the first place its leading stems carry for the whole lead AND the song is
+        # steady for two phrases after the seam completes there. (The old fallback returned the first steady
+        # place, which was the landmark itself: the drop landed on the seam's FIRST bar under the old harmony,
+        # and the record ran into its silent breakdown eight bars after the swap - the gate, 2026-09-16.)
+        # None when there is no such place: the caller falls back to the breakdown and cut.
+        end = float(t.duration_s) - MIN_RUNWAY_S - 2 * self.change_bars * bar_b
+        cands = sorted({t.nearest_downbeat(float(x["start_s"])) for x in (t.sections or [])
+                        if x.get("kind") in ("groove", "intro") and float(x["start_s"]) >= floor_t}
+                       | {t.nearest_downbeat(floor_t + 4 * k * bar_b) for k in range(0, int(max(0.0, end - floor_t) / (4 * bar_b)) + 1)})
+        for c in cands:
+            lm_c = c + off * bar_b
+            if lm_c > end:
+                break
+            if self._stem_carries(sb.env, c, lead, lanes=lanes, bar_s=bar_b) is not False \
+                    and self._steady_at(t, sb.env, lm_c, 2 * self.change_bars, False, ("drums", "bass")) is not False:
+                return c, lm_c, True, L
+        return None
+
+    def _seam_b_cut(self, sb):
+        """B's start for the breakdown and cut: it enters WHOLE on the cut bar, so nothing of it sounds before -
+        only that it carries from its landmark for two phrases matters; else the first later place it does.
+        Returns (t_start, landmark, on_landmark, 4) - the start four bars (the strip) before the landmark."""
+        t = sb.track
+        lm = self._landmark(t, sb.env)
+        bar_b = self._bar_s(t, lm)
+        floor_t = 2.0 * bar_b
+        span = 2 * self.change_bars * bar_b
+
+        def ok(x):
+            return self._stem_carries(sb.env, x, span, lanes=("drums", "bass"), bar_s=bar_b) is not False
+        if ok(lm):
+            return max(floor_t, lm - 4 * bar_b), lm, True, 4
+        end = float(t.duration_s) - MIN_RUNWAY_S - span
+        cands = sorted({t.nearest_downbeat(float(x["start_s"])) for x in (t.sections or []) if x.get("kind") == "groove" and float(x["start_s"]) > lm}
+                       | {t.nearest_downbeat(lm + 4 * k * bar_b) for k in range(1, int(max(0.0, end - lm) / (4 * bar_b)) + 1)})
+        for c in cands:
+            if c > end:
+                break
+            if ok(c):
+                return c - 4 * bar_b, c, True, 4
+        return max(floor_t, lm - 4 * bar_b), lm, False, 4
 
     def _seam_order(self, a, b, L, kind, tb):
         """drums first by default; bass first for variety (auto); vocal first when B sings from two phrases
@@ -517,23 +746,51 @@ class RecordPlay:
         sa, sb = self.songs[a], self.songs[b]
         bar = self.bar_n
         L, kind = self._seam_len()
-        tb, lm, on_lm, L2 = self._seam_b_start(sb, L)
-        order = self._seam_order(a, b, L2, kind, tb)
-        if order in ("bass", "cut"):
-            # the bass swap (and the cut) bring B's BASS first: B must be where its bass carries, not merely its drums
-            # (a bass swap from a bassless intro was a hole)
-            tb, lm, on_lm, L2 = self._seam_b_start(sb, L, lanes=("bass", "drums"))
-        L = L2
+        lm0 = self._landmark(sb.track, sb.env)
+        order = self._seam_order(a, b, L, kind, lm0 - (L + 1) * self._bar_s(sb.track, lm0))
+
+        def place(order_, L_):
+            # B's start, for the order: the stems it brings first must carry (the bass swap brings its BASS - a
+            # bass swap from a bassless intro was a hole) and its landmark lands a bar after its harmony is in;
+            # the cut brings B whole on the cut bar. None: no place for this order and length.
+            if order_ == "cut":
+                return self._seam_b_cut(sb)
+            lanes_b = ("bass", "drums") if order_ == "bass" else ("drums",)
+            r = self._seam_b_start(sb, L_, lanes=lanes_b, lm_off=self._seam_lm_off(order_, L_))
+            if r is not None and r[2]:
+                # the harmony swaps a bar before B's drop - unless B's harmony is OUT in that bar (the classic
+                # silent bar before a drop): then the swap lands ON the drop (the rehearsal heard a hole at the
+                # swap bar in half the seams of campaign v7)
+                tb_, lm_, on_, Lr = r
+                bar_b = self._bar_s(sb.track, lm_)
+                if self._stem_carries(sb.env, lm_ - bar_b, bar_b, lanes=("bass", "other"), bar_s=bar_b) is False:
+                    r = (tb_ + bar_b, lm_, on_, Lr)
+            return r
+
+        def placed(order_, L_):
+            # the order and length that CAN be placed: this one, else drums first, else eight bars, else the cut
+            r = place(order_, L_)
+            if r is None and order_ in ("vocal", "bass"):
+                order_ = "drums"
+                r = place(order_, L_)
+            if r is None and L_ > 8:
+                L_ = 8
+                r = place(order_, L_)
+            if r is None:
+                order_, L_ = "cut", 4
+                r = place(order_, L_)
+            return order_, r
+        order, (tb, lm, on_lm, L) = placed(order, L)
+        if order == "cut":
+            kind = "cut"
         K, why = self._seam_a_bar(a, L, order)
         # no clean stretch of A for this seam: a shorter, plainer one before a bad one (the acapella lead-in
         # over Mantra's breakdown came back in every campaign - dead air 0.07, a 12 dB lurch)
         if "unsteady" in why and order == "vocal":
-            order = "drums"
-            tb, lm, on_lm, L = self._seam_b_start(sb, L)
+            order, (tb, lm, on_lm, L) = placed("drums", L)
             K, why = self._seam_a_bar(a, L, order)
         if "unsteady" in why and L > 8:
-            L = 8
-            tb, lm, on_lm, L = self._seam_b_start(sb, L, lanes=(("bass", "drums") if order in ("bass", "cut") else ("drums",)))
+            order, (tb, lm, on_lm, L) = placed(order, 8)
             K, why = self._seam_a_bar(a, L, order)
         if order == "vocal":
             K_first = K - VOCAL_LEAD_BARS                    # the vocal comes VOCAL_LEAD_BARS before the drums
@@ -590,12 +847,14 @@ class RecordPlay:
         self._cue_later.pop(sm["b"], None)
         if later is not None:
             self._cue_later[sm["b"]] = later
+            sm["cued_clock"] = int(later[0])
             self.recue_log = (getattr(self, "recue_log", []) + [(self._tel().get("clock_s"), sm["b"], round(later[1], 1), K, "deferred")])[-40:]
             return
         now_t = self._song_time_at(sm["b"], at)
         if abs(now_t - cue) < 0.5 * self._bar_s(sb.track, cue):
             return
         self._post_cue(sm["b"], cue, at)
+        sm["cued_clock"] = int(at)
         self.recue_log = (getattr(self, "recue_log", []) + [(self._tel().get("clock_s"), sm["b"], round(cue, 1), K)])[-40:]
 
     def _seam_plan_mirror(self):
@@ -658,6 +917,7 @@ class RecordPlay:
                     sm["fired"].add(off)
             sm["bar"] = bar + 2 - last_off
             sm["drums_bar"] = sm["bar"]
+            sm["moved"] += 1                          # (you moved it: its landmark lands where it can)
             self._seam_plan_mirror()
             self._move("plan", None, None, self._song_id(sm["b"]), "NEXT: the seam completes on the next bar")
             return None
@@ -850,7 +1110,12 @@ class RecordPlay:
         if sb is not None:
             t_b = self._song_time_at(b, at)
             bar_b = self._bar_s(sb.track, t_b)
-            err = (t_b - sm["lm"]) / max(bar_b, 1e-6)
+            # the landmark's bar is lm_off bars from the seam's first bar (one after the harmony swap: bar 5 of a
+            # bass swap, L + 1 of a drums-first morph, 4 of a cut); this step fires done_off bars in - the error
+            # is measured where the landmark was DUE (a bass swap read +28 bars at its done bar - campaign v8)
+            done_off = max(off for off, name in sm["steps"] if name == "_st_done")
+            due_off = self._seam_lm_off(sm["order"], sm["len"]) - (1 if sm.get("swap_on_drop") else 0)
+            err = (t_b - (sm["lm"] + (done_off - due_off) * bar_b)) / max(bar_b, 1e-6)
             self.seam_log.append({"a": sa.track.title if sa else "?", "b": sb.track.title, "order": sm["order"], "len": sm["len"], "moved": sm["moved"],
                                   "b_t": round(t_b, 1), "lm": round(sm["lm"], 1), "err_bars": round(err, 2), "on_lm": sm["on_lm"], "bar": self.bar_n})
             self._note(f"seam done: {sb.track.title[:24]} is the record at {t_b:.0f} s (its landmark {sm['lm']:.0f} s, {err:+.1f} bars)")

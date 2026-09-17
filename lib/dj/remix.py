@@ -562,9 +562,12 @@ class RemixConductor(RecordPlay):
     # stems' half-second envelopes, and the check reads the same way everywhere (dense sampling): a plan that
     # failed a three-point check and passed the next moved one bar, twice.
     @staticmethod
-    def _stem_carries(env, t, span_s, lanes=("drums", "bass"), thr=CARRY_ENV):
+    def _stem_carries(env, t, span_s, lanes=("drums", "bass"), thr=CARRY_ENV, bar_s=None):
         """Do the named stems ALL sound steadily from song time `t` for `span_s` seconds (the 25th percentile
-        of each half-second envelope at least `thr` of its own loud level)? None when none is measured."""
+        of each half-second envelope at least `thr` of its own loud level, and no bar of it out)? `bar_s`:
+        judge bar by bar - EVERY bar's mean at least 0.7 of the line (a part brought in under another song:
+        a bar-on / bar-off pre-drop pattern passed the two-second test and the campaign heard the off bars
+        as holes and the on bars as lurches). None when none is measured."""
         if not env:
             return None
         seen, good = False, True
@@ -579,6 +582,13 @@ class RemixConductor(RecordPlay):
             seg = np.asarray(e[i0:i1], dtype=np.float32)
             if float(np.percentile(seg, 25)) < thr:
                 good = False
+                continue
+            if bar_s:
+                w = max(2, int(round(bar_s * 2)))
+                if len(seg) >= w:
+                    bars = np.convolve(seg, np.ones(w, dtype=np.float32) / w, mode="valid")[::w]
+                    if float(bars.min()) < 0.7 * thr:
+                        good = False
                 continue
             # ...and never OUT for a bar: the two-second mean must keep above half the line (a 25th percentile
             # let an eight-bar drum dropout through a 32-bar window; the campaign heard it as a hole)
@@ -920,6 +930,20 @@ class RemixConductor(RecordPlay):
             return f
         return k(lane) or 1.0
 
+    def _trim_whole(self, deck):
+        """The ONE factor a song gets as a record (the rehearsal renders both records with it), whatever the
+        lanes say now."""
+        s = self.songs.get(deck)
+        if s is None or not self.ref_rms or not s.stem_rms:
+            return 1.0
+        a, b = self.ref_rms.get("drums"), s.stem_rms.get("drums")
+        f = float(min(TRIM_MAX, max(TRIM_MIN, a / b))) if (a and b) else 1.0
+        tot_ref = sum(float(self.ref_rms.get(ln) or 0.0) for ln in STEMS)
+        tot_s = sum(float(s.stem_rms.get(ln) or 0.0) for ln in STEMS)
+        if tot_ref > 0.0 and tot_s > 0.0:
+            f = float(math.sqrt(f * min(TRIM_MAX, max(TRIM_MIN, tot_ref / tot_s))))
+        return f
+
     def _lane_gain(self, deck, lane, at=None):
         g = self._trim(deck, lane)
         bed = self.lanes.get("drums")
@@ -988,10 +1012,13 @@ class RemixConductor(RecordPlay):
         for lane, b in list(self.lane_boost.items()):
             mult, until = b[0], b[1]                  # (a third field marks the operator's own boosts)
             if self.bar_n >= until:
+                if self._moment is not None and self._moment.get("started"):
+                    # a moment owns the stems now (a restore re-opened a take-away's muted drums): the entry stays
+                    # and the restore comes after the moment - deleted here, the boost was never taken back and
+                    # the record played on with its drums and bass 1.25 x for a minute (the gate, 2026-09-16)
+                    continue
                 del self.lane_boost[lane]
                 d = self.lanes.get(lane)
-                if self._moment is not None and self._moment.get("started"):
-                    continue                          # a moment owns the stems now (a restore re-opened a take-away's muted drums; its payoff re-posts everything)
                 if d is not None and d in self.songs:
                     self.submix.post({"at": self._next_bar_clock(), "cmd": "stem_gains", "deck": d,
                                       "gains": {lane: self._lane_gain(d, lane)}, "ramp_s": 4 * self._beat_s()})
@@ -1322,6 +1349,13 @@ class RemixConductor(RecordPlay):
         self._keep_runway(self.bar_n)
         self._tempo_step()
         self._boost_step()
+        if self._force_move and self._moment is not None and not self._moment.get("started") and getattr(self, "policy", "record") == "record":
+            # NEXT is an order: a moment armed but not yet running gives way (the DJ's acapella, armed two
+            # phrases ahead, swallowed a NEXT for its whole countdown - the gate, 2026-09-16); a running one
+            # finishes first and NEXT fires after it
+            m = self._moment
+            self.moment_cancel()
+            self._move("plan", None, None, None, f"NEXT: the armed {m['label']} gives way")
         if self._moment_step():
             return                                    # a MOMENT is armed or running: nothing else moves
         if self._break is not None:
@@ -2905,7 +2939,11 @@ class RemixConductor(RecordPlay):
         if kind in ("slam", "break") and not any(held.get(ln) == B for ln in ("drums", "bass")):
             return False, "the bed holds neither drums nor bass"
         if kind == "acapella" and self.lanes.get("vocals") not in (None, B):
-            return False, "another song's vocal is on the lane already"
+            # a vocal YOU brought stays; a departing record's vocal carrying over the new one gives way (the event
+            # refused for the old record's vocal on the lane - the gate, 2026-09-16)
+            hb_v = self.lane_boost.get("vocals")
+            if hb_v is not None and len(hb_v) > 2 and hb_v[2] == "user":
+                return False, "the vocal you brought is on the lane"
         if kind == "break":
             stays = [ln for ln in ("other", "vocals") if ln in held]
             if not stays:
@@ -2953,6 +2991,11 @@ class RemixConductor(RecordPlay):
         elif kind == "acapella":
             ev = getattr(self, "_event", None) or {}
             L = int(ev["bar"]) if ev.get("bar") is not None and int(ev["bar"]) >= self.bar_n + 2 else self.bar_n + 1 + self._phrase_ahead(B, at, 1)
+        elif kind == "takeover" and (getattr(self, "_event", None) or {}).get("bar") is not None and int(self._event["bar"]) >= self.bar_n + 2:
+            # the DJ's BASS UNDER event: the other song was staged with its landmark ON the event's bar, at the
+            # end of the record's minimum play (landed at the next drop ahead instead, the takeover came 6 bars
+            # after arming and the records lasted a minute - campaign v7)
+            L, what = int(self._event["bar"]), "its drop"
         else:
             pay, what = self._payoff_in_bars(T, at, MOMENT_LOOK_PHRASES * self.change_bars)
             if pay is not None and pay >= lead - 0.05:
@@ -3607,6 +3650,8 @@ class RemixConductor(RecordPlay):
         """Every lane to the newest entered song on the next bar - the morph all at once, as a cut."""
         if self.master is None:
             return False
+        if getattr(self, "seam", None) is not None:
+            self._seam_drop("your DROP takes the room")   # (a running seam's next step crossed a lane away from the DROP's song a bar later - the gate, 2026-09-16)
         live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
         cands = [d for d in live if self.songs[d].entered and self.songs[d].loop is None] or [d for d in live if self.songs[d].entered]
         waiting = [d for d in live if not self.songs[d].entered]
@@ -3771,6 +3816,11 @@ class RemixConductor(RecordPlay):
         held = dict(self.lanes)
         if self._break is not None:
             held.update(self._break[1])               # a SAVE during a break remembers the combination the break interrupted
+        sm = getattr(self, "seam", None)
+        if sm is not None and sm.get("state") == "running":
+            for ln in STEMS:
+                if held.get(ln) is None:
+                    held[ln] = sm["a"]                # a SAVE inside a seam's breakdown strip remembers the record whole (the gate, 2026-09-16)
         lanes = {ln: self._song_id(d) for ln, d in held.items()}
         if not any(lanes.values()):
             return None

@@ -378,6 +378,7 @@ class Director:
         rc.set_play_min(PLAY_MIN_S[d["pace"]])
         rc.set_seam(d["mixing"], SEAM_SPEED[d["seams"]])
         rc.set_event_rate({"rare": 0, "some": 1, "lots": 2}[d["moments"]])   # the EVENTS per record, from the pairing lists (docs/DJ_PAIRINGS.md)
+        rc.set_event_pref(vocals=d["vocals"], energy=d["energy"])           # VOCALS: which kind of event; ENERGY: which song
         try:
             rc.brain.set_require_tags(self.tags)
         except Exception:

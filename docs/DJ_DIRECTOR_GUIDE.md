@@ -101,7 +101,16 @@ vocal sits over this record's instrumental groove, and the songs whose bassline 
 DJ stages the song, and the event arms: an **ACAPELLA** (another record's vocal over the groove for two to
 four phrases, then gone) or a **TAKEOVER** with that song at its drop, after which it is the record. The
 intent line says "event in 40 bars: the vocal of X over this groove (fit 0.81)"; the picture draws it in
-gold; you can cancel it like any moment. See docs/DJ_PAIRINGS.md.
+gold; you can cancel it like any moment. **VOCALS** chooses the kind (none: no vocal events; some: a vocal
+first when one fits, else the bass swap; lots: vocals only, two of them at MOMENTS lots), **ENERGY** leans
+the choice of song (cool: a calmer one, amp: a hotter one), and a PROGRAM steers the count through MOMENTS
+as before. See docs/DJ_PAIRINGS.md.
+
+**The rehearsal (layered).** Two phrases before a seam, the DJ renders it in the headphones: the seam
+from the two decks' stems, exactly as scheduled, judged for a hole (a half second under 0.15 of the
+median) and a lurch (a step over 6 dB, or over the records' own steps by 1.5 dB). A seam that fails moves a
+phrase (twice at most), then swaps its order (drums first ↔ bass swap), then falls back to the breakdown
+and cut. The log says "rehearsed: clean (…)" or "the seam moved: … - rehearsed: a 10 dB step at bar 2".
 
 **Your instructions are orders (2026-09-14).** A song you ask for is refused only when it is not on a deck.
 Right-click a part in: a staged song is cued to where that part sounds, whatever its cursor says; a key
@@ -156,9 +165,12 @@ for the song's shape and when it last played.
 
 **PARTS** (in the filter row) opens the **Song parts** window. It follows whatever you highlight in SONGS or
 UP NEXT: the song's four stems as spectrogram rows over its whole length, the sections along the top, the
-drops as dashed lines, the hook in gold, singing in green, and its live position when it is on a deck. Each
-row ends in a line of words: how much of the body that part sounds in, its longest silence, its loudest half
-minute. That is how you know a bassline is worth bringing in, and where. Right-click a row for the same
+drops as dashed lines, the hook in gold, singing in green, its instrumental grooves in blue under the MELODY
+row (twelve bars and more with no singing: where another song's vocal can sit - the pairing finder's), and
+its live position when it is on a deck. Each row ends in a line of words: how much of the body that part
+sounds in, its longest silence, its loudest half minute, and the pairings (which vocals sit over it, which
+basslines swap under it, where its own parts sit). That is how you know a bassline is worth bringing in,
+and where. Right-click a row for the same
 commands as the lists: that part in now, TAKEOVER or BRIDGE with the song, UP NEXT. A song without rendered
 stems says so.
 

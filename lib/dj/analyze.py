@@ -142,6 +142,13 @@ def build_stages(music_dir, include_stems=False, headless=False):
         # when there is nothing to do.
         {"name": "stem measurements",
          "args": [tool("dj_scan.py"), "--dir", music_dir, "--measure"]},
+        # THE PAIRINGS (docs/DJ_PAIRINGS.md): per-stem envelopes for every
+        # stem-bearing track without one, then the per-record lists (which
+        # vocals sit over it, which basslines swap under it) - rebuilt only
+        # when an envelope is newer than the lists. The conductor's events
+        # and the ★ in the SONGS list come from here.
+        {"name": "pairings",
+         "args": [tool("dj_pairings.py"), "--music", music_dir, "--all", "--workers", "2"]},
         # Rhythm AFTER stems: with drum stems on disk the signature is
         # measured from the clean rhythm section instead of the mix.
         {"name": "rhythm",

@@ -354,6 +354,17 @@ class StemViewer(QWidget):
         for tt, v in vc:
             if v is not None and float(v) >= 0.03:
                 p.drawLine(QPointF(self._x(tt, W), yv), QPointF(self._x(float(tt) + hop, W), yv))
+        # the record's instrumental grooves (the pairing finder's: 12 bars and more with no singing) in blue under
+        # the MELODY row - where another song's vocal can sit (docs/DJ_PAIRINGS.md)
+        try:
+            pr = self.tab._pairings_for(t.id)
+        except Exception:
+            pr = None
+        if pr and pr.get("grooves"):
+            p.setPen(QPen(QColor(90, 170, 240), 2))
+            yg = y0 + 2 * self.ROW_H + self.ROW_H - 5
+            for ga, gb in pr["grooves"]:
+                p.drawLine(QPointF(self._x(float(ga), W), yg), QPointF(self._x(float(gb), W), yg))
         # the live position and the hover time
         if pos is not None:
             x = self._x(pos, W)
@@ -370,7 +381,7 @@ class StemViewer(QWidget):
         p.setPen(QColor(150, 150, 165))
         p.setFont(small)
         p.drawText(QRectF(12, H - 18, W - 24, 14), Qt.AlignmentFlag.AlignVCenter,
-                   "sections along the top · dashed = a drop · gold = the hook · green = singing · right-click a row: that part in, TAKEOVER / BRIDGE with it, UP NEXT")
+                   "sections along the top · dashed = a drop · gold = the hook · green = singing · blue = an instrumental groove (a vocal can sit here) · right-click a row: that part in, TAKEOVER / BRIDGE with it, UP NEXT")
 
     def mouseMoveEvent(self, ev):
         if self.track is not None:

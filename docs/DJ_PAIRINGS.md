@@ -35,14 +35,27 @@ For every record R, two ranked lists over the whole pool:
 - **VOCAL OVER**: songs S with a sung stretch that fits one of R's instrumental grooves. Key fit ≥ 0.68
   over shifts of at most two semitones (each semitone costs a little), tempo within ±6 % (a vocal shifted
   further than that sounds wrong), the stretch at least eight bars, the hook inside it a bonus. Score =
-  key fit × tempo closeness × stretch length × hook bonus. Never a second singer: R must be instrumental
-  where S sings.
+  key fit × tempo closeness × stretch length × hook bonus × taste. Never a second singer: R must be
+  instrumental where S sings.
 - **BASS UNDER**: songs S whose bass and melody swap under R's drums and then become the record (the
   TAKEOVER shape): key fit ≥ 0.68, tempo within the wall, the bass carrying sixteen bars from S's landmark,
-  the minimum play left after it.
+  the minimum play left after it. Score = key fit × tempo closeness × taste.
+- **Taste** (2026-09-16, version 2 of the file): a song of the record's energy over one far from it
+  (`1 − 0.3 × |energy rank difference|`, the library-relative 0..1 rank) and a song of a shared genre
+  (MusicBrainz or the file tag) a little over a stranger (× 1.08). The key and the tempo still decide who
+  is IN the list; taste orders it. Each candidate carries its energy and whether it is kin, so the night
+  can lean.
+
+At play time the **VOCALS** dial chooses the kind (none: no vocal events; some: a vocal first when one
+fits, else the bass swap; lots: vocals only, two at MOMENTS lots) and the **ENERGY** dial re-ranks the
+list toward a calmer (cool) or hotter (amp) song; a song already used for an event on this record is not
+used again.
 
 The lists are cheap to compute once the per-song measures exist (a key and tempo filter over the pool,
-then arithmetic on the stretches), and are rebuilt by the planner's analysis stage when stems are added.
+then arithmetic on the stretches: 40 s for 1205 records). The planner's analysis pipeline has a
+**pairings** stage after the stem measurements (`dj_pairings.py --all`): the envelopes of every
+stem-bearing track without one, then the lists - rebuilt only when an envelope is newer than the file or
+the file's version moved.
 
 ## How the night uses them
 
@@ -51,7 +64,10 @@ then arithmetic on the stretches), and are rebuilt by the planner's analysis sta
   a VOCAL OVER becomes the new **ACAPELLA** moment - S staged, its sung stretch cued to begin on the next
   phrase over R's instrumental groove, in for the stretch (two to four phrases), out when the stretch ends
   or when R sings again; S leaves, unless it is UP NEXT, in which case its seam follows. A BASS UNDER becomes
-  the TAKEOVER moment with S, which then IS the next record (its seam replaced by the moment). The picture
+  the TAKEOVER moment with S at the end of the record's minimum play - it is the record's EXIT and the
+  seam is dropped when it is planned (no seam is planned while it is pending); a pending event is dropped
+  when the room changes under it (the record is another song, or the event's own song became the record
+  through your DROP), when its song never becomes ready, or when it came late three times. The picture
   draws the event in gold and the intent line says "event in 0:40: the vocal of X over this groove (fit
   0.81)".
 - **Your picks are orders.** SONGS shows, for the current record, "sits over it" and "swaps under it" with

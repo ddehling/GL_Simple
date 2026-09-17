@@ -1109,6 +1109,59 @@ records where each dead bar falls. Campaign v6: 36 records, 10 events planned, 8
 [26-63], still two to three times the autoDJ's, in the same two classes (the new record's drums thin or
 intermittent under the old harmony; the drop's rise on the one). That is the next lever, after the ear.
 
+**"What improvements can we make in the meantime?" - "all" (2026-09-16).** Seven, built together. (1) The
+lurch classes: B's leading stems are judged BAR BY BAR (every bar's mean over 0.7 of the line) when its
+start is chosen, and its landmark lands one bar AFTER the step that brings its harmony (`_seam_lm_off`:
+the drop is B's own build resolving inside its harmony, not a step in the mix). (2) THE REHEARSAL
+(lib/dj/rehearse.py): two phrases before a seam the conductor renders it from the two decks' loaded stems
+at bar granularity (mono, decimated, in a thread) with both records' level factors and judges it with the
+campaign's instruments - a hole (a half second under 0.15 of the median) or a lurch (a step over 6 dB or
+over the records' own steps by 1.5 dB); a failing seam moves a phrase (twice), then swaps its order, then
+falls back to the breakdown and cut; `rehearsal_log`, "rehearsed: clean (…)" in the log, the campaign
+counts them. (3) The events: a pending event now steps BEFORE the seam check (a takeover event drops its
+seam - stepped after it, it never armed and blocked every seam for its timeout); it is dropped when the
+room changes under it (the record is another song, or its own song became the record through a DROP) or
+when it came late three times; the acapella takes the vocal lane from a departing record's carrying vocal
+(only a vocal YOU brought refuses it). (4) The pairing scores carry taste: energy closeness (the library
+rank, 0.3 per unit of distance) and a shared genre (× 1.08), each candidate with its energy - version 2
+of pairings.json, same coverage (460 / 1194). (5) The dials in layered mode: VOCALS chooses the event's
+kind (none / a vocal first / vocals only, two at lots), ENERGY re-ranks the list toward a calmer or hotter
+song, PROGRAM steers the count through MOMENTS. (6) The campaign's kick-flam column is the beat lock p95
+(the flam instrument is not validated for stem seams; it stays as a note). (7) Housekeeping: the
+analysis pipeline has a `pairings` stage after the stem measurements (envelopes for new stems, the lists
+rebuilt only when stale); the Song parts window draws the record's instrumental grooves in blue; `--nightly`
+runs the eight-seed campaign into a dated folder and appends one line per run and seam to
+logs/record_campaign_nightly.log. Seven gate runs then found, one each: B's placement fallback returned
+the landmark ITSELF when nothing carried before it (Ruhi: the drop on the seam's first bar under the old
+harmony, then its silent breakdown eight bars after the swap) - now a LATER landmark where the leading
+stems carry the whole lead and the song is steady after, else the cut (`_seam_b_cut`, which asks only that
+B carry from its landmark); the pre-flight read a stale position a bar after a re-cue ("-27 s from its
+place") - it now waits a phrase for a cue to settle; a record's OWN silence (every stem out for a bar:
+Ruhi's breakdown at 252 s) is logged (`silence_log`) and the gate and campaign count those bars apart
+from holes; the SLAM's "loud" on drums and bass was never taken back when a moment was running at its end
+(the record played on at 1.25 × for a minute) - the boost entry now outlives the moment and restores
+after it. Campaign v7 (8 seeds × 12 min, play 210 s) then said two things: the pace had fallen to 2.45 min
+per record with the shortest at 50 s - the takeover events (30 planned, 27 armed) ARMED the moment their
+song was ready and landed at the next drop ahead, not at the event's bar at the end of the record's
+minimum play; and the rehearsal failed half the drums-first seams with "a hole at bar 16": the bar before
+B's drop is B's own silent bar, and the harmony swap a bar before the drop had put it in the room alone.
+Fixes: the DJ's takeover arms two phrases before its bar and lands ON it; the swap lands on the drop when
+B's harmony is out in the bar before it (at plan time from the envelopes, and as the rehearsal's first
+answer to a hole at the swap bar); the rehearsal renders the record playing on ALONE as well and judges
+the seam against that (A's own 9 dB break is A's, not the seam's). Five more gate runs, one thing each: a
+NEXT during a moment's two-phrase countdown was swallowed (a not-yet-running moment now gives way to
+NEXT); a SAVE inside a seam's breakdown strip saved two lanes (it remembers the record whole); a RECALL
+is the operator's override for the gate's harmony rule; a NEXT-forced or emergency completion counts as a
+moved seam for the landmark check; a DROP drops any seam in flight (its next step had pulled a lane away
+from the dropped-to song); a cue posted within the last bar is trusted by the pre-flight, not re-read.
+Gate ALL OK. Campaign v8: 34 records, pace 3.09 min per record (v6 3.2), 8.3 lane moves per ten minutes,
+dead bars 0, dead air 0 % [0-26] of 11 seams, LURCH 18 % [5-48] (v6 43 % [26-63], v7 54 % [29-77]; n is
+small, the intervals overlap - the ear decides), double bass 0, harmony split 0, lock p95 0.077, events 19
+planned / 16 armed, rehearsals 20: 16 clean, 4 moved (two "an 11 dB step at bar 1 against the record's
+own 9 dB", two "a 7 dB step at bar 14"). The landmark stat in v8 read +28 bars for the one bass swap: the
+measure took the done bar for the landmark's bar - fixed after the campaign (measured where the landmark
+was due), not re-run.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

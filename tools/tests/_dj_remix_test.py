@@ -150,7 +150,10 @@ def main():
                     hyg.pop(k, None)
             plan_hist.append((rc.plan.get("seq"), rc.plan["what"], rc.plan["deck"], rc.plan["bar"]) if rc.plan else None)   # seq, not id(): ids are reused
             lane_hist.append(tuple(rc.lanes[s] for s in ("drums", "bass", "other", "vocals")))
-            user_hist.append(any(len(b) > 2 and b[2] == "user" for b in rc.lane_boost.values()))   # YOUR loud on a lane (a bring): the operator's override
+            # YOUR loud on a lane (a bring) and YOUR recall of a saved combination are the operator's overrides
+            last_rc = next((m.get("clock_s") for m in reversed(rc.move_log) if m["kind"].startswith("recall") and m.get("clock_s") is not None), None)
+            user_hist.append(any(len(b) > 2 and b[2] == "user" for b in rc.lane_boost.values()) or rc._recall is not None
+                             or (last_rc is not None and (len(audio) * block / RATE) - last_rc < 8 * rc._bar_clock() / RATE))
             if len(audio) % 10 == 0:                     # a picture of the decks once a second, for the dead-bar report
                 tel_hist.append((len(audio), rc.master, {d: (round(float(t.get("gain") or 0.0), 2), {k: round(float(v), 2) for k, v in (t.get("stem_gains") or {}).items()},
                                                           bool(t.get("playing")), round(float(t.get("time_s") or 0.0), 1), (rc.songs[d].track.title[:14] if d in rc.songs else "-"),
@@ -510,9 +513,11 @@ def main():
     recued = [n for n in rc.log if "cued to" in n and "landmark lands" in n]
     print(f"  --   staged songs re-cued for their arrival bar: {len(recued)}" + (f" e.g. {recued[0][:70]}" if recued else ""))
     plan_moves = [m for m in rc.move_log if m["kind"] == "plan"]
-    unforced = [m for m in plan_moves if "NEXT" not in m["text"]]
+    rehearsed = [m for m in plan_moves if "rehearsed" in m["text"]]
+    unforced = [m for m in plan_moves if "NEXT" not in m["text"] and "rehearsed" not in m["text"]]
     check(plans >= 2 and bar_changes <= len(plan_moves) and len(unforced) <= max(2, plans // 2),
-          f"PLAN: {plans} plans decided, {bar_changes} bar changes, {len(plan_moves)} logged plan moves ({len(unforced)} not yours: every change is logged, few plans move)")
+          f"PLAN: {plans} plans decided, {bar_changes} bar changes, {len(plan_moves)} logged plan moves ({len(unforced)} not yours nor the rehearsal's, "
+          f"{len(rehearsed)} the rehearsal's: every change is logged, few plans move)")
     check(len(crosses) >= 3, f"lane moves: {len(crosses)} ({len(rc.moves)} moves in all)")
     frac_multi = float(np.mean([1.0 if n >= 2 else 0.0 for n in live_hist])) if live_hist else 0.0
     # records play whole: two songs are heard together only through the seams (16-32 bars each)
@@ -644,10 +649,15 @@ def main():
     # dead = under -45 dBFS for a whole bar (a dropout, a hole); a record's own quiet breakdown at the library's
     # level reads -40 to -45 and is the record (Chee-Caruso, trimmed to 0.5, at 158 s - the gate); those are counted
     quiet_i = [i for i, r in enumerate(rms) if -45.0 <= r < -40.0]
-    dead_i = [i for i, r in enumerate(rms) if r < -45.0]
+    dead_all = [i for i, r in enumerate(rms) if r < -45.0]
+    # ...unless the record ITSELF is silent there (its own breakdown under -45: the conductor's silence_log names
+    # the bars where every stem of the record was out - Ruhi's breakdown at 252 s; the gate 2026-09-16)
+    sil = [s["clock_s"] for s in getattr(rc, "silence_log", []) if s.get("clock_s") is not None]
+    own = [i for i in dead_all if any(abs(((opened_at * block + (i + 1) * nb) / RATE) - c) < 2.0 * bars for c in sil)]
+    dead_i = [i for i in dead_all if i not in own]
     dead = len(dead_i)
-    if quiet_i:
-        print(f"  --   quiet bars (-45..-40 dBFS, a record's own breakdown): {len(quiet_i)} of {len(rms)}")
+    if quiet_i or own:
+        print(f"  --   quiet bars (-45..-40 dBFS, a record's own breakdown): {len(quiet_i)} of {len(rms)}; the record's own silence (under -45): {len(own)}")
     where = ""
     if dead_i:
         t_dead = (opened_at * block + (dead_i[0] + 1) * nb) / RATE

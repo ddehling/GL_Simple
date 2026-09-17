@@ -323,20 +323,27 @@ def run_one(policy, seed, seconds, music, play_min, theme):
         if len(rows) >= 20:
             lock[sl] = {"med": round(float(np.median(rows)), 3), "p95": round(float(np.percentile(rows, 95)), 3), "n": len(rows)}
     dead_where = []
+    sil = [s["clock_s"] for s in getattr(rc, "silence_log", []) if s.get("clock_s") is not None]
+    own_silence = 0
     for i, r_db in enumerate(rms_b):
         if r_db < -40.0:
             t_dead = (max(0, opened_clock - c0) + (i + 1) * nb) / RATE
+            if any(abs(t_dead - c) < 2.0 * nb / RATE for c in sil):
+                own_silence += 1                      # the record's own silent breakdown (silence_log), counted apart
+                continue
             near = [m["text"][:70] for m in ml if m.get("clock_s") is not None and abs(m["clock_s"] - t_dead) < 12.0]
             dead_where.append({"t": round(t_dead), "db": round(r_db, 1), "near": near[-3:]})
     events = [m["text"][:110] for m in ml if m["kind"] in ("event_plan", "event")]
     acap = [m["text"][:110] for m in ml if m["kind"] == "moment" and m["text"].startswith("ACAPELLA")]
     out = {"policy": policy, "seed": seed, "seconds": seconds, "play_min": play_min, "theme": theme,
            "events": events, "acapella_steps": len(acap), "event_log": list(getattr(rc, "event_log", [])), "dead_where": dead_where[:8],
+           "rehearsals": [{k: v for k, v in x.items() if k in ("ok", "why", "order", "len")} for x in getattr(rc, "rehearsal_log", [])],
            "records": len(gaps) + 1, "min_per_record": round(float(np.mean(gaps)) / 60.0, 2) if gaps else round(seconds / 60.0, 2),
            "shortest_record_s": round(float(min(gaps)), 0) if gaps else None,
            "lane_moves_per_10min": round(10.0 * len(lane_moves) / max(seconds / 60.0, 1e-6), 1),
            "came_and_went": came_and_went, "longest_alone_s": round(longest * BLOCK / RATE, 0),
-           "dead_bars": int(sum(1 for r in rms_b if r < -40.0)), "quiet_bars": int(sum(1 for r in rms_b if r < -30.0)), "bars": len(rms_b),
+           "dead_bars": int(sum(1 for r in rms_b if r < -40.0)) - own_silence, "own_silence_bars": own_silence,
+           "quiet_bars": int(sum(1 for r in rms_b if r < -30.0)), "bars": len(rms_b),
            "median_bar_db": round(float(np.median(rms_b)), 1) if rms_b else None,
            "peak": round(float(np.abs(mix).max()), 3), "clipped": int((np.abs(mix) > 0.999).sum()),
            "lock": lock, "seams": seams, "seam_log": list(getattr(rc, "seam_log", [])),
@@ -378,21 +385,28 @@ def report(out_dir):
         p95s = [v["p95"] for r in rs for v in (r.get("lock") or {}).values()]
         print(f"{p:12s} {mpr:10.2f} {mv:11.1f} {cw:9d} {alone:11.0f} {dead:5d}/{bars:<4d} {quiet:5d}/{bars:<4d} {clip:5d} {max(p95s) if p95s else 0:8.3f}")
     print("\n-- per seam (defect rates with 95 % Wilson intervals; the autoDJ campaign baseline from docs/DJ_VERIFICATION.md) --")
-    print(f"{'policy':12s} {'seams':>5s} {'kick flam>45ms (of measurable)':>32s} {'dead air<0.15':>26s} {'lurch':>26s} {'double bass>3.5':>26s} {'harmony split':>14s} {'two drums':>10s} {'A build/brk':>11s}")
+    print(f"{'policy':12s} {'seams':>5s} {'beat lock p95 (beats)':>22s} {'dead air<0.15':>26s} {'lurch':>26s} {'double bass>3.5':>26s} {'harmony split':>14s} {'two drums':>10s} {'A build/brk':>11s}")
     for p in pols:
         ss = [s for r in rows if r["policy"] == p for s in r["seams"]]
         n = len(ss)
-        meas = [s for s in ss if s.get("kick")]
-        flam = sum(1 for s in meas if s["kick"]["flam_med_ms"] > 45.0)
         dead = sum(1 for s in ss if s.get("rms_min_ratio") is not None and s["rms_min_ratio"] < 0.15)
         lurch = sum(1 for s in ss if s.get("lurch_db") is not None and s["lurch_db"] > max(6.0, (s.get("lurch_solo_db") or 0.0) + 1.5))
         dbass = sum(1 for s in ss if s.get("bass_bump_db") is not None and s["bass_bump_db"] > 3.5)
         split = sum(1 for s in ss if (s.get("harmony_split_bars") or 0) > 1.0)
         twod = sum(1 for s in ss if (s.get("two_drums_s") or 0) > 1.5 * 2.0)
         abad = sum(1 for s in ss if (s.get("a_bad_frac") or 0) > 0.25)
-        print(f"{p:12s} {n:5d} {fmt_rate(flam, len(meas)):>32s} {fmt_rate(dead, n):>26s} {fmt_rate(lurch, n):>26s} {fmt_rate(dbass, n):>26s} {split:>10d}/{n:<3d} {twod:>6d}/{n:<3d} {abad:>7d}/{n:<3d}")
+        p95s = [v["p95"] for r in rows if r["policy"] == p for v in (r.get("lock") or {}).values()]
+        lock_txt = f"median {np.median(p95s):.3f} max {max(p95s):.3f}" if p95s else "-"
+        print(f"{p:12s} {n:5d} {lock_txt:>22s} {fmt_rate(dead, n):>26s} {fmt_rate(lurch, n):>26s} {fmt_rate(dbass, n):>26s} {split:>10d}/{n:<3d} {twod:>6d}/{n:<3d} {abad:>7d}/{n:<3d}")
     b = AUTODJ_BASELINE
-    print(f"{'autoDJ 08-18':12s} {4667:5d} {100 * b['flam45']:31.1f}% {100 * b['dead']:25.1f}% {100 * b['lurch']:25.1f}% {100 * b['double_bass']:25.1f}%   (one song at a time: no lanes)")
+    print(f"{'autoDJ 08-18':12s} {4667:5d} {'(kick flam 30.6 %)':>22s} {100 * b['dead']:25.1f}% {100 * b['lurch']:25.1f}% {100 * b['double_bass']:25.1f}%   (one song at a time: no lanes)")
+    # the kick-flam instrument is EAR-VALIDATED on full-mix blends (docs/DJ_VERIFICATION.md) and NOT on stem seams:
+    # after a drum swap the old deck's low band is its bassline, not a kick, and it declines on most - indicative only
+    for p in pols:
+        ss = [s for r in rows if r["policy"] == p for s in r["seams"]]
+        meas = [s for s in ss if s.get("kick")]
+        flam = sum(1 for s in meas if s["kick"]["flam_med_ms"] > 45.0)
+        print(f"{'':12s} ({p}: kick flam > 45 ms on {flam} of {len(meas)} measurable of {len(ss)} - the instrument is not validated for stem seams; the beat lock above is the sync number)")
     print("\n-- seam shape --")
     for p in pols:
         ss = [s for r in rows if r["policy"] == p for s in r["seams"]]
@@ -433,6 +447,18 @@ def report(out_dir):
               + (f"; e.g. refused: {refused[0][:80]}" if refused else ""))
         for e in [e for r in rs for e in r.get("events", []) if e.startswith("event in")][:4]:
             print(f"{'':12s}   {e[:110]}")
+    print("\n-- the rehearsals (lib/dj/rehearse.py: the seam rendered from the decks' stems two phrases ahead) --")
+    for p in pols:
+        rs = [r for r in rows if r["policy"] == p]
+        rh = [x for r in rs for x in r.get("rehearsals", [])]
+        clean = sum(1 for x in rh if x.get("ok") is True)
+        failed = [x for x in rh if x.get("ok") is False]
+        skipped = sum(1 for x in rh if x.get("ok") is None)
+        print(f"{p:12s} rehearsed {len(rh)}: clean {clean}, failed (moved / reshaped) {len(failed)}, not rendered {skipped}")
+        for x in failed[:5]:
+            print(f"{'':12s}   {x.get('order')} {x.get('len')} bars: {str(x.get('why'))[:100]}")
+        for x in [x for x in rh if x.get("ok") is None][:2]:
+            print(f"{'':12s}   not rendered: {str(x.get('why'))[:100]}")
     print("\n-- dead bars (under -40 dBFS), where --")
     for p in pols:
         for r in [r for r in rows if r["policy"] == p]:
@@ -490,6 +516,23 @@ if __name__ == "__main__":
             print(" seam", json.dumps(s, default=float)[:300])
     elif "--report" in sys.argv:
         report(out_dir)
+    elif "--nightly" in sys.argv:
+        # the same eight seeds every night into a dated folder, one summary line appended to logs/record_campaign_nightly.log:
+        # a regression shows the next morning (schedule: python tools/tests/_dj_record_campaign.py --nightly --music D:/Devel/music)
+        import contextlib
+        import io
+        day = time.strftime("%Y%m%d")
+        out_dir = os.path.join("logs", "record_campaign_nightly", day)
+        campaign(["record"], list(range(1, 9)), 720.0, arg("--parallel", 3, int), music, arg("--play-min", 210.0, float), arg("--theme", "groove"), out_dir)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            report(out_dir)
+        txt = buf.getvalue()
+        line = next((ln for ln in txt.splitlines() if ln.startswith("record ") and "%" in ln), "")
+        run = next((ln for ln in txt.splitlines() if ln.startswith("record ") and "%" not in ln), "")
+        with open(os.path.join("logs", "record_campaign_nightly.log"), "a", encoding="utf-8") as f:
+            f.write(f"{day}  RUN {run.strip()}\n{day}  SEAM {line.strip()}\n")
+        print(txt)
     else:
         pols = arg("--policies", "record,arrangement").split(",")
         sd = arg("--seeds", "1-8")
