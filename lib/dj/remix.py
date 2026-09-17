@@ -2188,24 +2188,33 @@ class RemixConductor(RecordPlay):
         bar = self._bar_s(t)
         now_t = self._song_time_at(deck, cue_at)
         target, word = None, None
+        runway_ok = lambda x: float(t.duration_s) - x >= MIN_RUNWAY_S   # noqa: E731
         if lane == "vocals" and t.hook:
             starts = [float(x) for x in (t.hook.get("starts") or [t.hook["start_s"]])]
-            later = [x for x in starts if x >= now_t - 0.5 * bar]
-            target, word = (later[0] if later else starts[0]), "its hook"
+            later = [x for x in starts if x >= now_t - 0.5 * bar and runway_ok(x)] or [x for x in starts if runway_ok(x)]
+            if later:
+                target, word = later[0], "its hook"
         if target is None and env is not None and len(env) > 4:
+            # its next sounding passage with runway after it; failing that, the first sounding passage at all
+            # (YOUR order: a hook 50 s before the end blocked the fall-through to the sung stretch and the vocal
+            # you asked for was refused "not singing there now" - 2026-09-16)
             thr = SING_ON if lane == "vocals" else 0.3
             need = int(2 * bar * 2)                   # half-second hops over two bars
             arr = np.asarray(env, dtype=np.float32)
             order = list(range(max(0, int(now_t * 2)), len(arr) - need)) + list(range(0, max(0, int(now_t * 2))))
+            first_any = None
             for i in order:
                 if float(arr[i:i + need].mean()) >= thr and float(arr[i:i + need].min()) >= 0.5 * thr:
-                    target = i / 2.0
-                    break
+                    if first_any is None:
+                        first_any = i / 2.0
+                    if runway_ok(i / 2.0):
+                        target = i / 2.0
+                        break
+            if target is None and first_any is not None:
+                target = first_any
             if target is not None:
                 word = f"{int(target) // 60}:{int(target) % 60:02d}"
         if target is None:
-            return None
-        if float(t.duration_s) - target < MIN_RUNWAY_S:
             return None
         cue = t.nearest_downbeat(max(0.0, target - bar))   # the bar BEFORE it: the stem arrives on its own downbeat
         self._cue_later.pop(deck, None)                     # yours overrides a plan's deferred cue
@@ -2799,6 +2808,11 @@ class RemixConductor(RecordPlay):
             cued = self._cue_to_sounding(deck, lane, cue_at)
             if cued is not None:
                 at = cue_at + self._bar_clock()
+                why = None
+            elif why:
+                # nowhere in the song does that stem sound by its measure: it comes in anyway, as you asked -
+                # said, not refused ("a control system needs to respond to controls", 2026-09-16)
+                note += f" - its {lane} are quiet by the measure, in anyway"
                 why = None
         if why:
             return False, why
