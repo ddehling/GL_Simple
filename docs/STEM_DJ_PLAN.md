@@ -1162,6 +1162,28 @@ own 9 dB", two "a 7 dB step at bar 14"). The landmark stat in v8 read +28 bars f
 measure took the done bar for the landmark's bar - fixed after the campaign (measured where the landmark
 was due), not re-run.
 
+**"Commands don't work" - "a control system needs to respond to controls" (2026-09-16, evening).** The
+first command of the night failed: Maaya's vocal, asked for by right-click, was staged and then refused
+"not singing there now" - the cue-to-where-it-sings code tried the hook first, the hook was 66 s before
+the end (no runway), and that branch returned instead of falling through to the sung stretch at 3:50;
+then the seam took Maaya as the next record and its DRUMS came in. Fixed (the fall-through; and with
+nowhere that sounds the stem comes in anyway, said). The user's question - what have you built, have you
+met the goals - answered honestly: no. The plan agreed ("ok, do it"): (1) no new features; (2) THE
+CONTROL CONTRACT, enforced by `tools/tests/_dj_control_gate.py` - every control acts within a bar and a
+bit or says why in the story row from a short allowed list, no third outcome, no exception swallowed;
+the gate drives the Director headless, paced at 1.5 x real time (a run at 5 x starved the decks), and
+presses random controls against random songs in whatever state the machine is in, a third of the vocal
+brings from songs with a late hook; (3) a night with the user at the controls as the acceptance test,
+every flag answered the same night and turned into a case; (4) taste only after that. Six rounds of the
+control gate (90 presses a round, three seeds) found and fixed: a TAKEOVER with the song already playing
+said "not ready on a deck"; NEXT during a running moment, or with the seam already due within the phrase,
+said nothing; a refused BREAK was logged as "BREAK"; a playing song's quiet stem was still refused; THE
+CLOCK WAS LOST - the master left while every other song was leaving too, nothing re-took it, and every
+control answered "layer first" for four minutes with the room silent (a room with a song on a deck now
+always has a clock); a song whose cue had not landed yet was looped "21 s of body left" from its old
+position. Last round: 90 presses, 0 broken, 0 dead bars. The remix gate re-run after. Next: the
+listening night.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
