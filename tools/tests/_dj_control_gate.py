@@ -35,7 +35,7 @@ ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "
            "never two singers", "is running out", "outside the tempo wall", "no free deck", "no bed", "needs songs layered",
            "not layered", "layer first", "only TAKEOVER and BRIDGE", "already", "nothing to", "no drop or hook",
            "would take nothing away", "too quiet", "the vocal you brought", "is the one playing", "nothing to take away",
-           "vocal is not on the lane", "is not singing here")
+           "vocal is not on the lane", "is not singing here", "no hook of")
 
 
 def arg(name, default, cast=str):
@@ -218,9 +218,9 @@ def run(music, seed, presses, seconds, verbose):
             def verify(_before):
                 return bool(rc.snapshots)
             return Press("SAVE", do, verify, settle_bars=0.2)
-        name, vals = rng.choice([("pace", ("short", "normal", "long")), ("seams", ("short", "normal", "long")), ("vocals", ("none", "some", "lots")),
-                                 ("moments", ("rare", "some", "lots")), ("mixing", ("auto", "blend", "cut", "morph")), ("energy", ("cool", "hold", "amp"))])
-        v = rng.choice(vals)
+        from lib.dj.director import DIALS
+        name = rng.choice(["pace", "seams", "vocals", "moments", "mixing", "energy"])
+        v = rng.choice(list(DIALS[name]))
 
         def verify(_before):
             return d.dials.get(name) == v

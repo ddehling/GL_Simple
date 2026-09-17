@@ -3015,6 +3015,9 @@ class RemixConductor(RecordPlay):
             if self.lanes.get("bass") == V:
                 return False, f"{self.songs[V].track.title[:24]}'s bassline is already the room's harmony"
             why = self.why_not("bass", V)
+            if why and not auto and ("key clash" in why or "chords clash" in why):
+                self._note(f"{label} with {self.songs[V].track.title[:24]}: {why.split(' with ')[0]}, as you asked")   # YOUR order: said, not obeyed
+                why = None
             if why:
                 return False, f"{self.songs[V].track.title[:24]}: {why}"
             if kind == "bridge":
@@ -3129,6 +3132,11 @@ class RemixConductor(RecordPlay):
         self._moment = None
         if m["started"]:
             at = self._next_bar_clock()
+            # the lanes a payoff moved to the other song go BACK to the song that had them (a TAKEOVER undone for
+            # silence left the bass and melody on the silent song for ten more seconds - the control gate)
+            for lane, d0 in (m.get("lanes_before") or {}).items():
+                if d0 is not None and d0 in self.songs and not self.songs[d0].leaving and self.lanes.get(lane) != d0:
+                    self._cross(lane, d0, at, beats=1.0, shape=False)
             ev = []
             for lane, d in self.lanes.items():
                 if d is not None and d in self.songs and not self.songs[d].leaving:
@@ -3186,6 +3194,8 @@ class RemixConductor(RecordPlay):
         """THE ONE: every held lane back at its level, bass and drums MOMENT_BOOST louder for a phrase; loops
         cleared and the bed put back where it would have been; the sweep off. `lanes_to`: {lane: deck} moves
         applied first (a two-song payoff)."""
+        if lanes_to:
+            m.setdefault("lanes_before", {lane: self.lanes.get(lane) for lane in lanes_to})   # (an undone moment puts them back)
         for lane, d in (lanes_to or {}).items():
             self.lanes[lane] = d
             s = self.songs.get(d)
@@ -3354,6 +3364,18 @@ class RemixConductor(RecordPlay):
             def bass_in(at):
                 mm = M()
                 V = mm["V"]
+                sV = self.songs.get(V)
+                if sV is not None and not sV.entered and sV.env:
+                    # its bassline must SOUND on the one: a staged song whose "drop" had a silent bass took the
+                    # bass lane into a silent room (the control gate, 2026-09-16) - cued to where it carries
+                    tv = self._song_time_at(V, at)
+                    bar_v = self._bar_s(sV.track, tv)
+                    if self._stem_carries(sV.env, tv, 2 * bar_v, lanes=("bass",), bar_s=bar_v) is False:
+                        tgt = self._steady_from(sV.track, sV.env, self._landmark(sV.track, sV.env), 2 * self.change_bars, strict=False, lanes=("bass", "drums"))
+                        if tgt is not None and abs(tgt - tv) > 0.5 * bar_v:
+                            self.submix.post({"at": at, "cmd": "cue", "deck": V, "time_s": sV.track.nearest_downbeat(tgt)})
+                            sV.cue_until = int(at) + self._bar_clock()
+                            self._note(f"{sV.track.title[:24]} cued to {tgt:.0f} s: its bassline sounds there")
                 to = {"bass": V}
                 if self._other_free_for(V):
                     to["other"] = V                   # harmony travels together: its melody with its bass

@@ -1181,8 +1181,14 @@ said nothing; a refused BREAK was logged as "BREAK"; a playing song's quiet stem
 CLOCK WAS LOST - the master left while every other song was leaving too, nothing re-took it, and every
 control answered "layer first" for four minutes with the room silent (a room with a song on a deck now
 always has a clock); a song whose cue had not landed yet was looped "21 s of body left" from its old
-position. Last round: 90 presses, 0 broken, 0 dead bars. The remix gate re-run after. Next: the
-listening night.
+position. Three more rounds over seeds 4-15 (450 presses): a TAKEOVER whose other song had left the
+decks raised a KeyError at its step (dropped and said now); a SLAM on top of your plain BREAK took the
+last drums out and the room went silent until the watchdog undid it (said: "a BREAK is running"); a
+chosen TAKEOVER / BRIDGE, and the plain button, were still refused on a chord clash (said, done); an
+undone TAKEOVER left the bass and melody on the silent song (a cancel puts moved lanes back); a staged
+song whose "drop" had a silent bassline took the bass lane into a silent room (cued to where its bass
+carries, on the one); SING with no hook in reach is an honest refusal. Last two rounds: 270 presses, 0
+broken, 0 dead bars; the remix gate green after. Next: the listening night.
 
 ## Rules carried over (they were earned)
 
