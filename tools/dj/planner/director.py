@@ -751,8 +751,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         lists = QHBoxLayout()
         self.found = QListWidget()
         self.found.setMinimumHeight(80)
-        self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))
-        self.found.itemActivated.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)))       # Enter
+        # (the item can be None: Enter on an empty list, or a row the refill replaced between the key and the signal)
+        self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
+        self.found.itemActivated.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)   # Enter
         self.found.itemPressed.connect(lambda _it: setattr(self, "_found_click_t", time.time()))          # no refill right after a click
         self.found.currentItemChanged.connect(lambda cur, _prev: self._highlighted(cur))
         self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click, Enter or ▶ UP NEXT to queue it · hover a row for the song's shape")
@@ -763,7 +764,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         un.setToolTip("your queue, in order; honoured when it can be mixed from where it is; double-click to remove")
         qcol.addWidget(un)
         self.queue = QListWidget()
-        self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)))
+        self.queue.itemDoubleClicked.connect(lambda it: self._unqueue(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
         self.queue.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.queue.customContextMenuRequested.connect(self._queue_menu)
         self.queue.currentItemChanged.connect(lambda cur, _prev: self._highlighted(cur))
