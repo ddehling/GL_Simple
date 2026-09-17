@@ -817,10 +817,12 @@ class Director:
 
     def break_(self):
         if self.rc is not None:
-            self.rc.break_()
+            r = self.rc.break_()
+            ok = bool(r[0]) if isinstance(r, tuple) else bool(r)
             self._last_moment_t = time.time()
-            self._event("BREAK")
-            return True
+            # a refused break SAYS so (the story row said "BREAK" and nothing happened - the control gate, 2026-09-16)
+            self._event("BREAK" if ok else "BREAK refused: " + ((r[1] if isinstance(r, tuple) and len(r) > 1 else "") or "nothing to take away here (one lane, or the record looping its last bars)"))
+            return ok
         return False
 
     # -- the composed moments: SLAM / BREAK / SING / TAKEOVER / BRIDGE ------------------------------------------------

@@ -921,7 +921,12 @@ class RecordPlay:
             self._seam_plan_mirror()
             self._move("plan", None, None, self._song_id(sm["b"]), "NEXT: the seam completes on the next bar")
             return None
-        self._seam_move(self._phrase_bar_after(bar + 3), "NEXT")   # (three bars: the re-cue needs two to lock)
+        K = self._phrase_bar_after(bar + 3)               # (three bars: the re-cue needs two to lock)
+        if K >= sm["bar"]:
+            # already due within the phrase: SAID, not a silent no-op (the control gate, 2026-09-16)
+            self._move("plan", None, None, self._song_id(sm["b"]), f"NEXT: the seam is already due in {sm['bar'] - bar} bars")
+            return None
+        self._seam_move(K, "NEXT")
         return None
 
     # -- the seam's steps ----------------------------------------------------------------------------------------------

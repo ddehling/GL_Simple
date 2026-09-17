@@ -1380,6 +1380,15 @@ class RemixConductor(RecordPlay):
         if policy == "record":
             # THE RECORD PLAYS (lib/dj/record.py): the record plays whole; its one seam is planned when the next
             # record is staged and fires on its bars; NEXT moves the seam to the next phrase
+            if self.master is None and self.songs:
+                # THE ROOM ALWAYS HAS A CLOCK: the master left while every other song was leaving too and the
+                # clock went to nobody; the songs staged after that never took it - every control answered
+                # "layer first" for four minutes (the control gate, 2026-09-16). The song on a deck takes it.
+                cands = [dk for dk, s in self.songs.items() if not s.leaving and s.staged_at is not None]
+                if cands:
+                    new = max(cands, key=lambda dk: (len(self.songs[dk].held(self.lanes)), bool(self.songs[dk].entered)))
+                    self._pass_clock(new, self._next_bar_clock())
+                    self._note(f"the clock was lost: {self.songs[new].track.title[:24]} takes it")
             if self._force_move:
                 self._force_move = False
                 self.phrase_bars = 0
@@ -1471,6 +1480,8 @@ class RemixConductor(RecordPlay):
                 left = (song.track.duration_s - time_s) / rate
                 if left < -5.0:
                     continue                          # a cursor past the song's end is a stale or wrong read (a deck just loaded read "-63 s of body left"), not a song running out
+                if getattr(song, "cue_until", None) is not None and self._clock() < song.cue_until:
+                    continue                          # a cue is posted and not yet landed: the position read is the old one (a bass cued to 0:08 was looped "21 s of body left" a second later - the control gate)
                 sec = song.track.section_at(time_s) or {}
                 # an "outro" label with minutes of body left is a mis-segmentation, not an ending (the gate
                 # caught a voice looping "its last 8 bars" with 217 s to go - the loop wrap threw its lock)
@@ -2218,6 +2229,7 @@ class RemixConductor(RecordPlay):
             return None
         cue = t.nearest_downbeat(max(0.0, target - bar))   # the bar BEFORE it: the stem arrives on its own downbeat
         self._cue_later.pop(deck, None)                     # yours overrides a plan's deferred cue
+        s.cue_until = int(cue_at) + self._bar_clock()       # (the runway watch waits for the cue to land)
         self.submix.post_many([{"at": cue_at, "cmd": "cue", "deck": deck, "time_s": cue},
                                {"at": cue_at + int(self._beat_s() * RATE), "cmd": "sync", "slave": deck, "master": self.master, "bias_beats": 0.0, "audio_pll": False}])
         self._note(f"{t.title[:24]} cued to {cue:.0f} s so its {lane} sounds ({word})")
@@ -2247,6 +2259,7 @@ class RemixConductor(RecordPlay):
         was still the old position; a re-cued song that arrived a phrase later was 0.4 beat off for twenty
         seconds in the gate while the loop pulled it back)."""
         t = self.songs[deck].track
+        self.songs[deck].cue_until = int(at) + self._bar_clock()   # (the runway watch waits for the cue to land)
         self.submix.post_many([{"at": at, "cmd": "cue", "deck": deck, "time_s": t.nearest_downbeat(cue)},
                                {"at": at + int(self._beat_s() * RATE), "cmd": "sync", "slave": deck, "master": self.master, "bias_beats": 0.0, "audio_pll": False}])
 
@@ -2793,9 +2806,14 @@ class RemixConductor(RecordPlay):
             left = max(0, self.change_bars - 1 - self.phrase_bars)
             at += left * self._bar_clock()
         cued, note = None, ""
+        if self.lanes.get(lane) == deck and s.entered:
+            return True, f"the {lane} of {s.track.title[:24]} is on the lane already"
         why = self.why_not(lane, deck)
         if why and ("key clash" in why or "chords clash" in why):
             note = " - " + why.split(" with ")[0] + ", as you asked"
+            why = None
+        if why and s.entered and (why.startswith("not singing") or why.startswith("silent")):
+            note = f" - its {lane} are quiet here, in anyway"      # a playing song's quiet stem: yours to ask for (the control gate, 2026-09-16)
             why = None
         needs_cue = (not s.entered) and (bool(why and (why.startswith("not singing") or why.startswith("silent")))
                                          or self._body_left_s(deck) < MIN_RUNWAY_S
@@ -2984,6 +3002,8 @@ class RemixConductor(RecordPlay):
         if kind in ("takeover", "bridge"):
             V = other if (other in self.songs and other != B and not self.songs[other].leaving and self.songs[other].staged_at is not None) else None
             if V is None and other is not None:
+                if other == B:
+                    return False, f"{self.songs[B].track.title[:24]} is the one playing"   # (it said "not ready on a deck" - the control gate)
                 return False, "that song is not ready on a deck" if other in self.songs else "that song is not on a deck"
             V = V or self._second_song(B)
             if V is None:
@@ -3648,6 +3668,11 @@ class RemixConductor(RecordPlay):
 
     def next_move(self):
         self._force_move = True
+        m = self._moment
+        if m is not None and m.get("started"):
+            # NEXT during a running moment fires on the moment's one: SAID now, not left silent for sixteen bars
+            # (the control gate, 2026-09-16)
+            self._move("plan", None, None, None, f"NEXT: after the {m['label']} - it fires on the one")
 
     def nudge_move(self):
         """A dial turned: the next bar is a phrase decision (with the arrangement's waits intact) instead of
