@@ -35,7 +35,7 @@ ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "
            "never two singers", "is running out", "outside the tempo wall", "no free deck", "no bed", "needs songs layered",
            "not layered", "layer first", "only TAKEOVER and BRIDGE", "already", "nothing to", "no drop or hook",
            "would take nothing away", "too quiet", "the vocal you brought", "is the one playing", "nothing to take away",
-           "vocal is not on the lane", "is not singing here", "no hook of")
+           "vocal is not on the lane", "is not singing here", "no hook of", "the record playing", "already leaving")
 
 
 def arg(name, default, cast=str):
@@ -149,7 +149,16 @@ def run(music, seed, presses, seconds, verbose):
 
     def make_press():
         kind = rng.choice(["stem_in", "stem_in", "stem_in", "vocal_late", "queue", "next", "next", "hold", "drop", "break", "moment", "moment", "moment_with",
-                           "stem_out", "save_recall", "dial"])
+                           "stem_out", "save_recall", "dial", "eject"])
+        if kind == "eject":
+            # take a song off the decks (the PLAYING list): a staged one, a part in play, or the record (refused with the reason)
+            cands = [s.track for d, s in rc.songs.items() if not s.leaving and s.staged_at is not None]
+            t = rng.choice(cands) if cands else any_song()
+
+            def verify(_before):
+                dk = deck_of(t.id)
+                return dk is None or rc.songs[dk].leaving
+            return Press(f"eject {t.title[:22]}", lambda: d.eject(t.id), verify, settle_bars=1.5, wait_pending_s=5.0)
         if kind in ("stem_in", "vocal_late"):
             if kind == "vocal_late" and late_hook:
                 t, lane = rng.choice(late_hook), "vocals"      # tonight's case: a vocal from a song whose hook is too near its end

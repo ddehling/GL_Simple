@@ -108,10 +108,14 @@ class RecordPlay:
             # times, or the ROOM CHANGED under it - the record is another song now, or the event's own song
             # became the record (your DROP onto it: the pending takeover then blocked every seam, and the record
             # ran out into 57 dead bars - the gate, 2026-09-16)
+            gone = d is None and pend.get("staged_once") and not any(t.id == pend["track_id"] for t in self._decoding.values()) \
+                and not any(p[0].id == pend["track_id"] for p in self._pending.values())
+            if d is not None:
+                pend["staged_once"] = True
             if time.time() - pend["t"] > 150.0 or (sm_ is not None and bar > sm_["bar"] - 3 * cb) \
-                    or pend.get("record") != sa.track.id or d == self.record_deck or pend.get("late", 0) >= 3:
+                    or pend.get("record") != sa.track.id or d == self.record_deck or pend.get("late", 0) >= 3 or gone:
                 self._event_pending = None
-                why = ("the room changed" if (pend.get("record") != sa.track.id or d == self.record_deck)
+                why = ("its song left the decks" if gone else "the room changed" if (pend.get("record") != sa.track.id or d == self.record_deck)
                        else ("it came too late three times" if pend.get("late", 0) >= 3
                              else ("its seam is too close" if (sm_ is not None and bar > sm_["bar"] - 3 * cb) else "its song never became ready in time")))
                 self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"the event is dropped: {why}")

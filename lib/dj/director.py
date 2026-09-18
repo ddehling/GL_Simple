@@ -977,6 +977,31 @@ class Director:
         self._event(("moment: " if ok else "refused: ") + msg)
         return msg
 
+    def eject(self, track_id):
+        """Take a song off the decks (the PLAYING list, user 2026-09-17): its parts go back to the record and it
+        leaves a bar later; a staged song just leaves (the seam or the event that counted on it is re-planned).
+        The record itself is not ejected - that is NEXT (the seam now) or DROP. Returns a sentence."""
+        if self.rc is None or self.rc.master is None:
+            return "not layered"
+        rc = self.rc
+        tid = int(track_id)
+        self.unqueue(tid)
+        deck = rc.deck_of(tid)
+        if deck is None:
+            if any(t.id == tid for t in rc._decoding.values()) or any(p[0].id == tid for p in rc._pending.values()):
+                rc.avoid_ids = set(rc.avoid_ids or ()) | {tid}
+                self._event(f"{self.title(tid)[:24]} is still decoding: it will be dropped when it lands")
+                self._eject_when_staged = tid
+                return "still decoding: dropped when it lands"
+            self._event(f"eject refused: {self.title(tid)[:24]} is not on a deck")
+            return "not on a deck"
+        if deck == rc.record_deck:
+            self._event(f"eject: {self.title(tid)[:24]} is the record playing - NEXT (the seam now) or DROP takes it off")
+            return "the record playing: NEXT or DROP"
+        ok = rc.eject(deck)
+        self._event((f"{self.title(tid)[:24]} off the decks" if ok else f"eject refused: {self.title(tid)[:24]} is already leaving"))
+        return "off the decks" if ok else "already leaving"
+
     def stem_out(self, lane):
         if self.rc is None or self.rc.master is None:
             return "not layered"
@@ -1217,6 +1242,14 @@ class Director:
             self._loops_layered()
             self._pending_stem_step()
             self._pending_moment_step()
+            ew = getattr(self, "_eject_when_staged", None)
+            if ew is not None:
+                dk = self.rc.deck_of(ew)
+                if dk is not None:
+                    self._eject_when_staged = None
+                    if self.rc.songs[dk].staged_at is not None:
+                        self.rc.eject(dk)
+                        self._event(f"{self.title(ew)[:24]} off the decks (you took it off while it decoded)")
         try:
             self._dropout_step()
         except Exception as e:  # noqa: BLE001

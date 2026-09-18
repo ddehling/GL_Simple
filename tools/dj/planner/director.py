@@ -778,6 +778,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.decks.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.decks.customContextMenuRequested.connect(self._decks_menu)
         self.decks.itemDoubleClicked.connect(lambda it: self._show_parts(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        QShortcut(QKeySequence(Qt.Key.Key_Delete), self.decks, activated=lambda: self._eject(self.decks.currentItem().data(Qt.ItemDataRole.UserRole)) if self.decks.currentItem() else None,
+                  context=Qt.ShortcutContext.WidgetShortcut)
         qcol.addWidget(self.decks)
         un = QLabel("UP NEXT")
         un.setProperty("dim", "true")
@@ -2038,7 +2041,24 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         it = self.decks.itemAt(pos)
         if it is None or self.director is None or it.data(Qt.ItemDataRole.UserRole) is None:
             return
-        self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=False).exec(self.decks.mapToGlobal(pos))
+        tid = it.data(Qt.ItemDataRole.UserRole)
+        m = self._song_actions(tid, from_queue=False)
+        first = m.actions()[0] if m.actions() else None
+        is_rec = it.text().startswith("▶")
+        off = m.addAction("✕ take it off the decks" + ("  (the record: NEXT or DROP instead)" if is_rec else "  (its parts back to the record; Delete)"))
+        off.setEnabled(not is_rec)
+        off.triggered.connect(lambda _c, t=tid: self._eject(t))
+        m.removeAction(off)
+        m.insertAction(first, off)
+        m.insertSeparator(first)
+        m.exec(self.decks.mapToGlobal(pos))
+
+    def _eject(self, tid):
+        if self.director is None or tid is None:
+            return
+        self.moment_lbl.setText(self.director.eject(tid))
+        self._decks_sig = None
+        self._render_queue()
 
     def _render_decks(self):
         """PLAYING: what is on the decks. Rebuilt only when it changes; when the RECORD changes, its row is
