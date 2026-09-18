@@ -26,8 +26,14 @@ Press **STOP** to end the night.
   song's bass and melody are one thing; a melody never sounds over another song's bassline. The old
   record's vocal carries over only when it fits the new harmony. Between seams nothing moves but the
   vocal lane following its own singing. (Read docs/DJ_THE_RECORD_PLAYS.md for the whole design.)
-  The **intent line** says what plays, for how long, and the seam ahead; the **WHY** lines say why; the
-  picture shows the seam as a gold bracket with its steps.
+  **THE PLAN** (under the maps) is what will happen next, in order, each row with the time from now: NOW
+  (the record, how far in, its minimum play, its next section), a MOMENT armed or running, the EVENT
+  pending and whether its song is staged, the SEAM (which record comes in, how, why there, whether its
+  drop lands on the swap, the rehearsal's verdict), the RECORD after it with its minimum play, and UP
+  NEXT. When there is nothing to show the row says why ("no next record staged yet: the DJ stages its
+  pick while this record plays toward its minimum"). A row changes only when the plan moves, and then
+  carries the reason for twenty seconds ("MOVED: rehearsed a hole at bar 16"). The picture shows the
+  same seam as a gold bracket with its steps.
 
 Switching back to **one** hands the playing song back to the autoDJ at the same position.
 
@@ -145,8 +151,9 @@ after a moment. The intent line counts the lane moves of the last ten minutes.
   case to protect when a rule changes. Review them with `python tools/dj/dj_flags.py` (`--summary`,
   `--good`, `--bad`, `--kind dead`, `--last 5`). SET on the nanoKONTROL2 raises a plain problem flag.
 
-**The plan is decided once.** Layered, the intent line reads "the record: Believe (2:10 played), next:
-Antrea in at bar 212: a 16-bar morph, drums first in 1:40 - at Believe's outro". That bar does not drift:
+**The plan is decided once.** Layered, THE PLAN reads "NOW Believe · 2:10 played · min play in 1:20 ·
+its drop in 0:40" and "1:40 SEAM Antrea comes in · a 16-bar morph, drums first · at Believe's outro · its
+drop lands on the swap · rehearsed: clean". That bar does not drift:
 it moves only when you press NEXT (the seam at the next phrase), STAY (a phrase later), when UP NEXT
 replaces the next record, or when a moment holds the room at its bar; then the story row says "the seam
 moved" and why. A BAD is about the last move only while that move is fresh (two phrases); later it means

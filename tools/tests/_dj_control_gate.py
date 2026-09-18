@@ -257,6 +257,13 @@ def run(music, seed, presses, seconds, verbose):
         if getattr(d, "_pending_stem", None) is None and getattr(d, "_pending_moment", None) is None and not p.verify(before):
             pump(int(1.5 * bar_blocks()))
         acted = p.verify(before)
+        # THE PLAN must always read: rows present, none of them an error row (it is the display the user steers by)
+        try:
+            pr = d.status().get("plan_rows") or []
+            if not pr or any(r.get("key") == "err" for r in pr):
+                errors.append((len(audio) * BLOCK / RATE, "plan", (pr[0]["text"] if pr else "no plan rows")))
+        except Exception as e:  # noqa: BLE001
+            errors.append((len(audio) * BLOCK / RATE, "plan", f"status: {type(e).__name__}: {e}"))
         said = [e[1] for e in d.events[before["events"]:]]
         refusals = [s for s in said if "refused" in s.lower() or "dropped" in s.lower() or any(a in s for a in ALLOWED)]
         new_err = errors[before["err"]:]
