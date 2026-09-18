@@ -24,6 +24,14 @@ import time
 
 from lib.dj.submix import RATE
 
+
+def _mmss(x):
+    try:
+        x = max(0, int(round(float(x))))
+    except (TypeError, ValueError):
+        return "?"
+    return f"{x // 60}:{x % 60:02d}"
+
 DIALS = {
     "mixing": ("auto", "blend", "cut", "morph"),
     "layers": ("one", "two", "three"),
@@ -2117,6 +2125,114 @@ class Director:
         t = next((x for x in self.library if x.id == tid), None)
         return t.title if t else f"#{tid}"
 
+    def _plan_rows(self):
+        """THE PLAN as an ordered list (user 2026-09-17: "the auto system just doesn't display its plan"): one row
+        per thing to come, in time order, each with the seconds from now and the bar - NOW (the record, how far
+        in, its minimum play, its next section), a MOMENT armed or running, the EVENT pending with its song's
+        state, the SEAM (the next record, how it comes in, why there, whether its drop lands, the rehearsal),
+        the RECORD after it and its minimum play, UP NEXT after that. When there is nothing, the row says why.
+        A row that just moved carries the reason for twenty seconds. Rows: {t (s from now or None), bar, kind,
+        text, sub, key}."""
+        rows = []
+        rc, sysm = self.rc, self.system
+        now_t = time.time()
+
+        def row(t, kind, text, sub="", key=None, bar=None):
+            rows.append({"t": (None if t is None else max(0.0, float(t))), "bar": bar, "kind": kind, "text": text, "sub": sub, "key": key or (kind, text[:40])})
+        if rc is not None and rc.master is not None:
+            bar_s = rc._bar_clock() / RATE
+            arr = rc._arrangement_status()
+            rec, sm = arr.get("record"), arr.get("seam")
+            rd = rc.record_deck
+            s_rec = rc.songs.get(rd)
+            if rec is not None and s_rec is not None:
+                played = (rec.get("since_bars") or 0) * bar_s
+                left = (rec.get("settle_left") or 0) * bar_s
+                bits = [f"{_mmss(played)} played", (f"min play in {_mmss(left)}" if left > 0 else "past its minimum play")]
+                try:
+                    t_now = float(rc._tel_deck(rd).get("time_s") or 0.0)
+                    secs = s_rec.track.sections or []
+                    nxt_sec = None
+                    for i, sec in enumerate(secs):
+                        if float(sec["start_s"]) > t_now + 1.0:
+                            k = sec.get("kind")
+                            if k in ("build", "breakdown", "outro") or (k == "groove" and i > 0 and secs[i - 1].get("kind") in ("build", "breakdown", "intro")):
+                                nxt_sec = ("drop" if k == "groove" else k, float(sec["start_s"]) - t_now)
+                                break
+                    if nxt_sec:
+                        bits.append(f"its {nxt_sec[0]} in {_mmss(nxt_sec[1] / max(float(s_rec.rate or 1.0), 1e-6))}")
+                    bits.append(f"ends in {_mmss((float(s_rec.track.duration_s) - t_now) / max(float(s_rec.rate or 1.0), 1e-6))}")
+                except Exception:
+                    pass
+                row(0.0, "NOW", f"{s_rec.track.title[:34]}", " · ".join(bits), key=("now", s_rec.track.id))
+            mo = rc.moment_status()
+            if mo:
+                t_m = max(0, mo["in_bars"]) * bar_s
+                row(t_m, "MOMENT", f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']})",
+                    f"the one on {mo['what']}" + (f" of {mo['other'][:22]}" if mo.get("other") else ""), key=("moment", mo["label"], rc.bar_n + int(mo["in_bars"])))
+            evp = (rec or {}).get("event")
+            if evp:
+                d_ev = rc.deck_of(evp["track_id"]) if evp.get("track_id") is not None else None
+                state = ("staged, arms two phrases before" if (d_ev is not None and rc.songs[d_ev].staged_at is not None) else "its song is decoding")
+                row(max(0, evp["in_bars"]) * bar_s, "EVENT", evp["why"][:90], state, key=("event", evp.get("track_id"), evp.get("bar")), bar=evp.get("bar"))
+            if sm:
+                sb = rc.songs.get(rc.seam["b"]) if rc.seam is not None else None
+                title_b = sb.track.title[:30] if sb else sm["b"][:30]
+                t_seam = max(0, sm["in_bars"]) * bar_s
+                where = sm["why"]
+                land = ("its drop lands on the swap" if sm.get("on_landmark") else (f"its drop {sm['drop_after_bars']} bars after the seam" if (sm.get("drop_after_bars") or 0) > 0 else "its drop falls inside the seam"))
+                reh = sm.get("rehearsed")
+                reh_w = ("rehearsed: " + str(reh)[:60]) if reh else (f"rehearsal {_mmss(max(0.0, t_seam - 2 * rc.change_bars * bar_s))} before" if t_seam > 2 * rc.change_bars * bar_s else "rehearsal pending")
+                sub = f"{where} · {land} · {reh_w}"
+                # a seam that just moved says why, for twenty seconds
+                last_pm = next((m for m in reversed(rc.move_log) if m["kind"] == "plan" and "moved" in m["text"] and now_t - m["t"] < 20.0), None)
+                if last_pm:
+                    sub = "MOVED: " + last_pm["text"].split(" - ")[-1][:70] + " · " + sub
+                text = (f"{title_b} comes in · {sm['words'].split(': ', 1)[-1]}" if sm.get("state") != "running" else f"SEAM RUNNING: {sm['words'].split(': ', 1)[-1]}")
+                row(t_seam, "SEAM", text, sub, key=("seam", sm.get("seq"), sm.get("bar")), bar=sm.get("bar"))
+                t_rec2 = t_seam + int(sm["len"]) * bar_s
+                pm = rc._play_min_bars() * bar_s
+                row(t_rec2, "RECORD", f"{title_b} plays", f"min play until {_mmss(t_rec2 + pm)} · its seam is planned when its next record is staged",
+                    key=("record2", sm["b"]))
+            elif rec is not None:
+                staged_any = [s for d, s in rc.songs.items() if d != rd and not s.leaving and s.staged_at is not None and not getattr(s, "part_only", False)]
+                if staged_any:
+                    row(None, "NEXT", f"{staged_any[0].track.title[:30]} is staged", "its seam is being placed (a bar or two)", key=("next-staged", staged_any[0].track.id))
+                else:
+                    left = (rec.get("settle_left") or 0) * bar_s
+                    row(None, "NEXT", "no next record staged yet",
+                        ("the DJ stages its pick while this record plays toward its minimum" if left > 0 else "the DJ is picking now") + " · put a song UP NEXT to decide it",
+                        key=("next-none",))
+            on_decks = {s.track.id for s in rc.songs.values()}
+            after = [self.title(t)[:24] for t in self.up_next if t not in on_decks or (rc.seam is None or rc.songs.get(rc.seam["b"]) is None or rc.songs[rc.seam["b"]].track.id != t)]
+            if after:
+                row(None, "UP NEXT", ", ".join(after[:4]) + (" …" if len(after) > 4 else ""), "your queue, in order", key=("upnext", tuple(after[:4])))
+        elif sysm is not None and sysm.current is not None:
+            st = sysm.status()
+            cur = st.get("current") or {}
+            pos, dur = float(cur.get("pos_s") or 0.0), float(cur.get("duration_s") or 0.0)
+            exit_in = None
+            try:
+                ep = getattr(sysm, "_exit_played", None)
+                if ep:
+                    exit_in = max(0.0, float(ep) - self._played_s())
+            except Exception:
+                exit_in = None
+            row(0.0, "NOW", cur.get("title", "")[:34], f"{_mmss(pos)} of {_mmss(dur)}" + (f" · its exit in {_mmss(exit_in)}" if exit_in is not None else ""), key=("now1", cur.get("title")))
+            nxt, plan = st.get("next") or {}, st.get("plan") or {}
+            if nxt:
+                eta = st.get("blend_in_s")
+                row(eta, "SEAM", f"{nxt.get('title', '')[:30]} comes in" + (f" · {plan.get('style')} {plan.get('beats', 0):.0f} beats" if plan else ""),
+                    ("begins " + (f"in {_mmss(eta)}" if eta is not None else "when the exit comes")) + (" · the seam is planned when the exit comes into range" if not plan else ""),
+                    key=("seam1", nxt.get("title")))
+            else:
+                row(None, "NEXT", "not chosen yet", "the autoDJ picks as the exit comes into range · put a song UP NEXT to decide it", key=("next1",))
+            if self.up_next:
+                row(None, "UP NEXT", ", ".join(self.title(t)[:24] for t in self.up_next[:4]), "your queue, in order", key=("upnext1", tuple(self.up_next[:4])))
+        else:
+            row(None, "PLAN", "nothing playing yet", "press START", key=("idle",))
+        return rows
+
     def status(self):
         out = {"mode": self.mode, "dials": dict(self.dials), "dials_menu": {k: list(v) for k, v in DIALS.items()},
                "theme": self.theme, "pool": self.pool_name,
@@ -2252,6 +2368,10 @@ class Director:
             out["why"], out["in_effect"] = self._explain()
         except Exception as e:  # noqa: BLE001
             out["why"], out["in_effect"] = [f"(explain: {type(e).__name__}: {e})"], []
+        try:
+            out["plan_rows"] = self._plan_rows()
+        except Exception as e:  # noqa: BLE001
+            out["plan_rows"] = [{"t": None, "kind": "PLAN", "text": f"(the plan could not be read: {type(e).__name__}: {e})", "sub": "", "key": "err"}]
         # DOUBLED: the same stem from two songs audible at once (a crossfade in flight, or the autoDJ's blend)
         doubled = []
         try:

@@ -668,8 +668,24 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.now_map = SongMap()
         self.now_map.setToolTip("the playing record's shape")
         self.next_map = SongMap()
-        for w in (self.now_lbl, self.now_sub, self.now_map, self.next_lbl, self.next_sub, self.next_map, self.intent_lbl, self.lanes_lbl, self.why_lbl):
+        # THE PLAN (user 2026-09-17: "the auto system just doesn't display its plan"): an ordered list of what
+        # comes, each row with the seconds from now - NOW, a MOMENT, the EVENT, the SEAM (how, why, the drop, the
+        # rehearsal), the RECORD after it, UP NEXT; a row that just moved says why. It replaces the intent line
+        # and the WHY panel (their words live on in tooltips and the log).
+        self.plan_h = QLabel("THE PLAN")
+        self.plan_h.setProperty("dim", "true")
+        self.plan_h.setToolTip("what will happen next, in order, with the time from now: the record and its next section, an armed moment, the event, "
+                               "the seam into the next record (how it comes in, why there, whether its drop lands, the rehearsal's verdict), "
+                               "the record after it, your queue. A row changes only when the plan moves, and then says why.")
+        self.plan_list = QListWidget()
+        self.plan_list.setMinimumHeight(120)
+        self.plan_list.setMaximumHeight(200)
+        self.plan_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.plan_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        for w in (self.now_lbl, self.now_sub, self.now_map, self.next_lbl, self.next_sub, self.next_map, self.plan_h, self.plan_list, self.intent_lbl, self.lanes_lbl, self.why_lbl):
             left.addWidget(w)
+        self.intent_lbl.setVisible(False)
+        self.why_lbl.setVisible(False)
         srow = QHBoxLayout()
         self.found_h = QLabel("SONGS")
         self.found_h.setProperty("dim", "true")
@@ -2037,6 +2053,37 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._found_sig = None
         self._fill_search()
 
+    def _render_plan(self, rows):
+        """THE PLAN list: rebuilt only when its rows change (their keys and words); the clocks tick in place."""
+        import sys
+        from PyQt6.QtGui import QFont
+
+        def clock(r):
+            return ("now" if (r.get("t") is not None and r["t"] < 1.0) else (_mmss(r["t"]) if r.get("t") is not None else "")).rjust(5)
+
+        def line(r):
+            head = f"{clock(r)}  {r['kind']:<8} {r['text']}"
+            return head + (f"\n{'':7}{r['sub']}" if r.get("sub") else "")
+        sig = tuple((str(r.get("key")), r["kind"], r["text"], r.get("sub", "")) for r in rows)
+        if sig != getattr(self, "_plan_sig", None):
+            self._plan_sig = sig
+            self.plan_list.clear()
+            mono = QFont("Consolas" if sys.platform.startswith("win") else "Menlo", 9)
+            for r in rows:
+                it = QListWidgetItem(line(r))
+                it.setFont(mono)
+                it.setToolTip(f"{r['kind']}: {r['text']}\n{r.get('sub', '')}" + (f"\nbar {r['bar']}" if r.get("bar") is not None else ""))
+                if r["kind"] in ("SEAM", "MOMENT", "EVENT") and r.get("t") is not None and r["t"] < 20.0:
+                    it.setForeground(Qt.GlobalColor.yellow)
+                self.plan_list.addItem(it)
+        else:
+            for i, r in enumerate(rows):
+                it = self.plan_list.item(i)
+                if it is not None:
+                    txt = line(r)
+                    if it.text() != txt:
+                        it.setText(txt)
+
     def _decks_menu(self, pos):
         it = self.decks.itemAt(pos)
         if it is None or self.director is None or it.data(Qt.ItemDataRole.UserRole) is None:
@@ -2264,6 +2311,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.next_lbl.setText("NEXT  not chosen yet")
             self.next_sub.setText("")
         self.intent_lbl.setText(st.get("intent") or "")
+        try:
+            self._render_plan(st.get("plan_rows") or [])
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"plan: {type(e).__name__}: {e}")
         # the song maps: the playing record (by id when the status carries one, else by title) and the next
         try:
             lib_by_title = {t.title: t for t in d.library}

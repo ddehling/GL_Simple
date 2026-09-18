@@ -1180,4 +1180,4 @@ class RecordPlay:
         return {"deck": self.record_deck, "title": s.track.title, "since_bars": since, "min_bars": self._play_min_bars(),
                 "settle_left": max(0, self._play_min_bars() - since), "kind": self._kind_at(self.record_deck, self._next_bar_clock()),
                 "events_done": int(getattr(s, "events_done", 0)), "event_rate": int(getattr(self, "event_rate", 0)),
-                "event": ({"kind": pend["kind"], "in_bars": pend["bar"] - self.bar_n, "why": pend["why"]} if pend else None)}
+                "event": ({"kind": pend["kind"], "in_bars": pend["bar"] - self.bar_n, "why": pend["why"], "track_id": pend["track_id"], "bar": pend["bar"]} if pend else None)}
