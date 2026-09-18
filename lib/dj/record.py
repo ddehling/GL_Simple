@@ -387,7 +387,17 @@ class RecordPlay:
             return
         if bar >= sm["bar"] - 1:
             if self.hold or self._moment is not None or self._break is not None or self._recall is not None:
-                self._seam_move(self._phrase_bar_after(bar + 1), "held" if self.hold else "a moment has the room")
+                # moved ONCE to after what has the room (a phrase per check under a sixteen-bar moment pushed the
+                # plan back three times in a row: "potential new songs continuously pushed back", 2026-09-17)
+                m = self._moment
+                if m is not None:
+                    end = int(m["L"]) + max((off for off, _fn in m["script"]), default=0) + 1
+                    self._seam_move(self._phrase_bar_after(max(bar + 1, end)), f"after the {m['label']}")
+                elif self._break is not None:
+                    end = bar + 1 + int(math.ceil(max(0, self._break[0] - self._next_bar_clock()) / max(self._bar_clock(), 1)))
+                    self._seam_move(self._phrase_bar_after(max(bar + 1, end)), "after the BREAK")
+                else:
+                    self._seam_move(self._phrase_bar_after(bar + 1), "held" if self.hold else "after the RECALL")
                 return
             # the pre-flight: B must be where the plan put it (within a bar); else the seam moves a phrase and B
             # is cued again, once - then the seam is dropped and planned afresh
@@ -1135,7 +1145,7 @@ class RecordPlay:
         if sm is None:
             return None
         sa, sb = self.songs.get(sm["a"]), self.songs.get(sm["b"])
-        return {"a": sa.track.title if sa else "?", "b": sb.track.title if sb else "?", "bar": sm["bar"], "in_bars": sm["bar"] - self.bar_n,
+        return {"a": sa.track.title if sa else "?", "b": sb.track.title if sb else "?", "bar": sm["bar"], "in_bars": sm["bar"] - self.bar_n, "seq": sm["seq"],
                 "len": sm["len"], "order": sm["order"], "kind": sm["kind"], "state": sm["state"], "moved": sm["moved"], "why": sm["why"],
                 "rehearsed": sm.get("rehearsed"), "on_landmark": sm["on_lm"], "drop_after_bars": self._bars_after_seam(),
                 "words": self._seam_words(),

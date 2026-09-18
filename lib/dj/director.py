@@ -1635,6 +1635,22 @@ class Director:
         t = next((x for x in self.library if x.id == tid), None)
         return 4 * t.period_s if t is not None else 2.0
 
+    def _anchor(self, key, bar_abs):
+        """A plan mark's absolute picture bar, decided ONCE per plan (a seam's seq and bar, a moment's one).
+        The Director's wall-clock bar and the conductor's bar count drift apart by a bar now and then (the
+        PLL trims the tempo, the two tick out of phase); a mark placed at b + in_bars on every tick crept
+        along with the drift - "potential new songs continuously pushed back" (user, 2026-09-17). It moves
+        only when the plan itself moves (a new key)."""
+        anchors = getattr(self, "_plan_anchors", None)
+        if anchors is None:
+            anchors = self._plan_anchors = {}
+        a = anchors.get(key)
+        if a is None:
+            if len(anchors) > 60:
+                anchors.clear()
+            anchors[key] = a = int(bar_abs)
+        return a
+
     def _record(self):
         """Write what is heard onto the Director's timeline (real clips) and the plan ahead (ghosts)."""
         b = int(self.bar())
@@ -1772,11 +1788,12 @@ class Director:
             # an armed moment: its choreography, dashed and gold, from the one backwards
             mo = rc.moment_status()
             if mo:
-                L = b + mo["in_bars"]
+                L = self._anchor(("moment", mo["label"], rc.bar_n + int(mo["in_bars"])), b + mo["in_bars"])
                 for mk in mo.get("marks") or []:
                     self.plan_marks.append({"bar": int(L + mk["off"]), "end_bar": (int(L + mk["end_off"]) if mk.get("end_off") is not None else None),
                                             "lanes": mk["lanes"], "ghost": True, "kind": "moment", "text": mk["text"]})
             plan_in = None
+            seam_S = None
             try:
                 arr = rc._arrangement_status()
                 if arr.get("landing_in_bars"):
@@ -1784,8 +1801,9 @@ class Director:
                                             "text": "the new bed lands", "kind": "bed_to"})
                 # THE SEAM (the record policy): its steps as a gold bracket from its first bar
                 sm = arr.get("seam")
+                seam_S = None
                 if sm:
-                    S = b + int(sm["in_bars"])
+                    S = seam_S = self._anchor(("seam", sm.get("seq"), int(sm["bar"])), b + int(sm["in_bars"]))
                     for mk in sm.get("marks") or []:
                         self.plan_marks.append({"bar": int(S + mk["off"]), "end_bar": (int(S + mk["end_off"]) if mk.get("end_off") is not None else None),
                                                 "lanes": mk["lanes"], "ghost": True, "kind": "seam", "text": mk["text"]})
@@ -1807,7 +1825,7 @@ class Director:
             staged = [(d, s) for d, s in rc.songs.items() if s.staged_at is not None and not s.entered and not s.leaving]
             if staged:
                 d, s = staged[0]
-                at = b + 1 + left
+                at = seam_S if seam_S is not None else b + 1 + left     # the ghost sits where the seam's bracket starts, and stays there
                 sm = (arr.get("seam") if isinstance(arr, dict) else None) or {}
                 first_lanes = {"drums": ["drums"], "bass": ["bass", "other"], "vocal": ["vocals"], "cut": ["drums", "bass", "other"]}.get(sm.get("order"), ["drums"])
                 ghost(("layered", s.track.id, at), s.track.id, first_lanes, at,
