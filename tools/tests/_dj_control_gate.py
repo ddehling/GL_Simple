@@ -302,7 +302,7 @@ def run(music, seed, presses, seconds, verbose):
             if t_dead - shown < 8.0:
                 continue
             shown = t_dead
-            near = [f"{m['clock_s']:.0f}s {m['text'][:90]}" for m in rc.move_log if m.get("clock_s") is not None and -25.0 < t_dead - m["clock_s"] < 6.0]
+            near = [f"{m['clock_s']:.0f}s {m['text'][:90]}" for m in rc.move_log if m.get("clock_s") is not None and -6.0 < t_dead - m["clock_s"] < 25.0]   # the 25 s BEFORE, 6 after
             print(f"  seed {seed} DEAD at {t_dead:5.0f}s ({rms[i]:.0f} dB)", flush=True)
             for x in near[-12:]:
                 print(f"          {x}")

@@ -949,6 +949,21 @@ class RecordPlay:
             # already due within the phrase: SAID, not a silent no-op (the control gate, 2026-09-16)
             self._move("plan", None, None, self._song_id(sm["b"]), f"NEXT: the seam is already due in {sm['bar'] - bar} bars")
             return None
+        # your NEXT is an order, but the seam it forces must still hold the room: where the record is in a
+        # build or a breakdown at that bar, a morph leaves its silent drums under the new harmony (a bass swap
+        # forced onto Eidothea's breakdown with Dissolution's intro bass: three bars at -65 dB - the control
+        # gate, seed 24) - it becomes the CUT there, the next record whole at its landmark
+        sa, sb = self.songs.get(self.record_deck), self.songs.get(sm["b"])
+        if sa is not None and sb is not None and not sb.entered and sm["order"] != "cut":
+            at = self._next_bar_clock()
+            t_k = self._song_time_at(self.record_deck, at) + (K - bar - 1) * self._bar_s(sa.track)
+            if self._track_steady(sa.track, t_k, int(sm["len"]), bad=("build", "breakdown", "outro")) is False:
+                tb, lm, on_lm, L = self._seam_b_cut(sb)
+                sm["order"], sm["len"], sm["kind"], sm["steps"] = "cut", L, "cut", self._seam_steps("cut", L)
+                sm["tb"], sm["lm"], sm["on_lm"] = float(tb), float(lm), bool(on_lm)
+                sm["drums_bar"] = sm["bar"]
+                self._seam_move(K, f"NEXT ({sa.track.title[:20]} is in its {(sa.track.section_at(t_k) or {}).get('kind', 'break')} there: the cut)")
+                return None
         self._seam_move(K, "NEXT")
         return None
 
