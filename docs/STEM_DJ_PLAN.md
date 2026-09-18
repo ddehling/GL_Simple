@@ -1190,6 +1190,34 @@ song whose "drop" had a silent bassline took the bass lane into a silent room (c
 carries, on the one); SING with no hook in reach is an honest refusal. Last two rounds: 270 presses, 0
 broken, 0 dead bars; the remix gate green after. Next: the listening night.
 
+**2026-09-17/18, the user's second evening and what it showed.** "The system still doesn't make solid
+plans, it just shows potential new songs continuously pushed back": the log said the next song changed
+six times in three minutes, all from the machine's reaction to the user's own commands - a vocal brought
+in made its song UP NEXT and the seam's next record, it left when its part ended and the plan flipped
+back, the next part's staging threw the DJ's staged next record off its deck. Fixed: A PART IS A PART
+(`stage_track(as_next=False)`, `part_only`; only UP NEXT makes a song the next record; a part's staging
+takes the event's song, a finished part or the DJ's spare pick, never the seam's next record); the
+picture's marks anchored once per plan (the wall-clock bar and the conductor's bar count drift); a seam
+blocked by a moment moves once, to after it. Then the displays the user asked for: the right-click menu
+trimmed to the pair (a fit line; the vocal only when it sings; the bassline; TAKEOVER; BRIDGE only while
+the record sings; drums and melody under "more"; ★ and bold for what fits; the tempo wall greys), MIXES
+WITH for the highlighted song (after it as the next record with how it would arrive - the pairing file,
+version 3, carries per song whether it sings, whether its bass carries, and its seam-ability - whose
+vocal sits over it, whose bassline swaps under it, where its own parts sit), the key fit and tempo step
+in the SONGS line, PLAYING (the songs on the decks; the record's row highlighted at each change so MIXES
+WITH has the playing song as context; eject by right-click or Delete), PARTS as a tab of the right column,
+and THE PLAN - "fundamentally, the auto system just doesn't display its plan. this is an ongoing problem
+you have not resolved" - an ordered list of what comes next with the time from now (NOW with the record's
+minimum play and next section, MOMENT, EVENT with its song's state, SEAM with how, why there, the drop and
+the rehearsal, the RECORD after it, UP NEXT; a row says why when there is nothing and "MOVED: …" for
+twenty seconds after a move), as the third tab (DIALS | PARTS | PLAN) so it does not squeeze the lists.
+Gates after all of it: the control gate found a looping record's strip leaving a silent vocal stem and a
+record leaving inside its own strip (the emergency cut fires now; a strip keeps the bass when nothing
+else would sound), and a NEXT forcing a bass swap onto the record's breakdown with the next record's
+intro bass (a NEXT that lands in a build or a breakdown becomes the cut). Campaign v9 = v8 (pace 3.10,
+dead bars 0, dead air 0 %, lurch 27 % [10-57] n=11, events 19/16, rehearsals 15 clean / 5 moved). Both
+gates green at the end. Step 3 of the plan, the user's hour at the controls, is still the open item.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
