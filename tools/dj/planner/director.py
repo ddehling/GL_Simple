@@ -678,11 +678,16 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                "the seam into the next record (how it comes in, why there, whether its drop lands, the rehearsal's verdict), "
                                "the record after it, your queue. A row changes only when the plan moves, and then says why.")
         self.plan_list = QListWidget()
-        self.plan_list.setMinimumHeight(120)
-        self.plan_list.setMaximumHeight(200)
         self.plan_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.plan_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        for w in (self.now_lbl, self.now_sub, self.now_map, self.next_lbl, self.next_sub, self.next_map, self.plan_h, self.plan_list, self.intent_lbl, self.lanes_lbl, self.why_lbl):
+        self.plan_list.setWordWrap(True)
+        # ...as the third tab of the right column (DIALS | PARTS | PLAN): on the left it squeezed the song lists
+        self.plan_tab = QWidget()
+        pl = QVBoxLayout(self.plan_tab)
+        pl.setContentsMargins(6, 6, 6, 6)
+        pl.addWidget(self.plan_h)
+        pl.addWidget(self.plan_list, 1)
+        for w in (self.now_lbl, self.now_sub, self.now_map, self.next_lbl, self.next_sub, self.next_map, self.intent_lbl, self.lanes_lbl, self.why_lbl):
             left.addWidget(w)
         self.intent_lbl.setVisible(False)
         self.why_lbl.setVisible(False)
@@ -1015,7 +1020,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.right_tabs = QTabWidget()
         self.right_tabs.addTab(rw, "DIALS")
         self.right_tabs.addTab(self.viewer, "PARTS")
-        self.right_tabs.setToolTip("DIALS: how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves")
+        self.right_tabs.addTab(self.plan_tab, "PLAN")
+        self.right_tabs.setToolTip("DIALS: how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves; "
+                                   "PLAN: what will happen next, in order, with the time from now")
         self.right_tabs.currentChanged.connect(self._right_tab_changed)
         self.right_tabs.setMinimumWidth(540)
         self.right_tabs.setMaximumWidth(760)
