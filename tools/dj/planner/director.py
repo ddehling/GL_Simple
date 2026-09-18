@@ -771,6 +771,22 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.queue.setToolTip("your queue, in order, with each song's state (○ ready on a deck, ▸ a part of it in play); "
                               "right-click a song for the same commands as in SONGS; double-click removes it")
         qcol.addWidget(self.queue, 1)
+        # MIXES WITH: for the highlighted song, what goes with it and how (user 2026-09-17: "present more
+        # information about what songs are good mixes together") - as the next record (key, tempo, energy and
+        # whether its stems can arrive through a seam), whose vocal sits over it, whose bassline swaps under it,
+        # and where its own parts sit; double-click a row to highlight that song in SONGS
+        self.mix_h = QLabel("MIXES WITH")
+        self.mix_h.setProperty("dim", "true")
+        self.mix_h.setToolTip("for the highlighted song: what goes after it and how it would arrive, whose vocal sits over it, whose bassline "
+                              "swaps under it, and where its own vocal and bassline sit - from the stems (docs/DJ_PAIRINGS.md)")
+        qcol.addWidget(self.mix_h)
+        self.mixes = QListWidget()
+        self.mixes.setMinimumHeight(70)
+        self.mixes.setToolTip("double-click a song here to find it in SONGS; right-click for the same commands")
+        self.mixes.itemDoubleClicked.connect(lambda it: self._find_song(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
+        self.mixes.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.mixes.customContextMenuRequested.connect(self._mixes_menu)
+        qcol.addWidget(self.mixes, 1)
         # the stem-by-stem grid (READY) is OFF the main surface (the composed moments replaced it - "a painful
         # mishmash"); a song's stem still comes in from the right-click menu on the list, loud and on the bar
         self.loud_btn = QPushButton("LOUD")
@@ -1485,35 +1501,65 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         from PyQt6.QtGui import QFont
         m = QMenu(self)
         title = self.director.title(tid)[:28]
-        # WHAT FITS NOW is lit (user 2026-09-17: "highlighting of good options would be helpful"): ★ and bold
-        # where the pairings say this song's vocal sits over the record playing or its bassline swaps under
-        # it; a song outside the tempo wall is greyed with the reason; a key clash is said (it is done anyway)
+        # THE MENU IS TRIMMED TO WHAT MAKES SENSE FOR THIS PAIR (user 2026-09-17: "too many options, most of
+        # them useless for a given match"): a line saying how the pair fits; the vocal only when the song
+        # sings; the bassline (the TAKEOVER's manual form); TAKEOVER; BRIDGE only while the record sings;
+        # drums and melody under "more" (the drum swap is off by design, a melody alone is a texture); a song
+        # outside the tempo wall gets the reason and its parts window, nothing else. What FITS is ★ and bold.
         good, why = self._fit_words(tid)
         bold = QFont(self.font())
         bold.setBold(True)
-        for lane, word in (("bass", "bassline"), ("drums", "drums"), ("other", "melody"), ("vocals", "vocals")):
-            star = good.get(lane)
-            a = m.addAction(("★ " if star else "") + f"{word} of {title} in {'at the phrase' if self.phrase_btn.isChecked() else 'now'}"
-                            + (" · loud" if self.loud_btn.isChecked() else "") + (f"   ({star})" if star else "") + (f"   ({why})" if why and not star else ""))
-            if star:
-                a.setFont(bold)
-            if why and why.startswith("outside the tempo wall"):
-                a.setEnabled(False)
-            a.triggered.connect(lambda _c, t=tid, ln=lane: self._stem(t, ln, False))
-        if self.director.mode == "layered":
-            m.addSeparator()
-            for kind, word in (("takeover", "TAKEOVER with this (its bassline on the one, its drums at the phrase)"),
-                               ("bridge", "BRIDGE with this (the bed fades under the vocal, its bass + drums slam)")):
-                star = good.get("bass") if kind == "takeover" else None
-                a = m.addAction(("★ " if star else "") + word + (f"   ({star})" if star else ""))
+        pair = self._pair_line(tid)
+        if pair:
+            h = m.addAction(pair)
+            h.setEnabled(False)
+        layered = self.director.mode == "layered"
+        walled = bool(why and why.startswith("outside the tempo wall"))
+        if layered and not walled:
+            rec = self._pairings_for(tid) or {}
+            sings = rec.get("sings")
+            if sings is None:
+                t = self.track(tid)
+                sings = bool(getattr(t, "hook", None)) or bool(rec.get("sung"))
+            when = 'at the phrase' if self.phrase_btn.isChecked() else 'now'
+            loud = " · loud" if self.loud_btn.isChecked() else ""
+            shown = []
+            if sings or good.get("vocals"):
+                shown.append(("vocals", "vocals"))
+            shown.append(("bass", "bassline"))
+            for lane, word in shown:
+                star = good.get(lane)
+                a = m.addAction(("★ " if star else "") + f"{word} of {title} in {when}{loud}" + (f"   ({star})" if star else ""))
                 if star:
                     a.setFont(bold)
-                if why and why.startswith("outside the tempo wall"):
-                    a.setEnabled(False)
-                a.triggered.connect(lambda _c, t=tid, k=kind: self.moment_lbl.setText(self.director.moment_with(t, k)))
+                a.triggered.connect(lambda _c, t=tid, ln=lane: self._stem(t, ln, False))
+            more = m.addMenu("more parts…")
+            for lane, word in (("drums", "drums"), ("other", "melody")) + (() if sings or good.get("vocals") else (("vocals", "vocals (it does not sing by its stem)"),)):
+                a = more.addAction(f"{word} of {title} in {when}{loud}")
+                a.triggered.connect(lambda _c, t=tid, ln=lane: self._stem(t, ln, False))
+            m.addSeparator()
+            star = good.get("bass")
+            a = m.addAction(("★ " if star else "") + "TAKEOVER with this (its bassline on the one, its drums at the phrase)" + (f"   ({star})" if star else ""))
+            if star:
+                a.setFont(bold)
+            a.triggered.connect(lambda _c, t=tid: self.moment_lbl.setText(self.director.moment_with(t, "takeover")))
+            rc = self.director.rc
+            try:
+                rec_sings = rc is not None and rc.lanes.get("vocals") == rc.record_deck and rc.record_deck in rc.songs \
+                    and rc._singing(rc.songs[rc.record_deck], rc._song_time_at(rc.record_deck, rc._next_bar_clock())) is True
+            except Exception:
+                rec_sings = False
+            if rec_sings:
+                a = m.addAction("BRIDGE with this (the record fades under its own vocal, this one's bass + drums slam)")
+                a.triggered.connect(lambda _c, t=tid: self.moment_lbl.setText(self.director.moment_with(t, "bridge")))
+        elif walled:
+            h = m.addAction(why)
+            h.setEnabled(False)
         m.addSeparator()
         v = m.addAction("show its parts (the Song parts window)")
         v.triggered.connect(lambda _c, t=tid: (self.viewer.set_track(self.track(t)), self.view_btn.setChecked(True), self.viewer.raise_()))
+        if walled:
+            return m
         if from_queue:
             up = m.addAction("▲ play this next (to the top)")
             up.triggered.connect(lambda _c, t=tid: self._queue_top(t))
@@ -1523,6 +1569,30 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             q = m.addAction("put it UP NEXT")
             q.triggered.connect(lambda _c, t=tid: self._queue(t))
         return m
+
+    def _pair_line(self, tid):
+        """One line on how this song and the record playing fit: keys and their fit, the tempo, the energy."""
+        try:
+            from lib.dj.brain import camelot_compat
+            rc = self.director.rc if self.director is not None else None
+            if rc is None or rc.master is None or rc.record_deck not in rc.songs:
+                return None
+            rec, t = rc.songs[rc.record_deck].track, self.track(tid)
+            if t is None or t.id == rec.id:
+                return None
+            parts = []
+            if rec.camelot and t.camelot:
+                parts.append(f"{rec.camelot} → {t.camelot} fit {camelot_compat(rec.camelot, t.camelot):.2f}")
+            if t.bpm and rc.master_bpm:
+                parts.append(f"tempo {100 * (rc.master_bpm / float(t.bpm) - 1):+.0f}%")
+            try:
+                e0, e1 = float(rec.energy_proxy()), float(t.energy_proxy())
+                parts.append("same energy" if abs(e1 - e0) < 0.12 else ("hotter" if e1 > e0 else "calmer"))
+            except Exception:
+                pass
+            return f"with {rec.title[:22]}:  " + " · ".join(parts) if parts else None
+        except Exception:
+            return None
 
     def _fit_words(self, tid):
         """({lane: why it is a good option now}, a reason it is not): the pairings of the record playing (its
@@ -1558,7 +1628,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         return good, why
 
     def _highlighted(self, item):
-        """The Song parts window follows the highlighted row of SONGS or UP NEXT."""
+        """The Song parts window and the MIXES WITH list follow the highlighted row of SONGS or UP NEXT."""
         if item is None:
             return
         tid = item.data(Qt.ItemDataRole.UserRole)
@@ -1567,6 +1637,122 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         t = self.track(tid)
         if t is not None:
             self.viewer.set_track(t)
+        try:
+            self._fill_mixes(tid)
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"mixes: {type(e).__name__}: {e}")
+
+    def _mixes_menu(self, pos):
+        it = self.mixes.itemAt(pos)
+        if it is None or self.director is None or it.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=False).exec(self.mixes.mapToGlobal(pos))
+
+    def _find_song(self, tid):
+        if tid is None:
+            return
+        for i in range(self.found.count()):
+            if self.found.item(i).data(Qt.ItemDataRole.UserRole) == tid:
+                self.found.setCurrentRow(i)
+                return
+        t = self.track(tid)
+        if t is not None:
+            self.viewer.set_track(t)
+            self._fill_mixes(tid)
+
+    def _next_partners(self, tid, n=5):
+        """Songs that follow this one well AS THE NEXT RECORD: key fit, tempo inside the wall, the energy rank
+        close, and (from the pairing file, version 3) whether their stems can arrive through a seam - the
+        drums first or the bass swap - and carry on after the landmark."""
+        from lib.dj.brain import camelot_compat
+        from lib.dj.remix import RATE_MIN, RATE_MAX
+        t = self.track(tid)
+        if t is None or not t.bpm:
+            return []
+        p = self._pairings() or {}
+        recs = p.get("records") or {}
+        try:
+            e0 = float(t.energy_proxy())
+        except Exception:
+            e0 = 0.5
+        played = set()
+        try:
+            if self.director is not None:
+                played = set(self.director._played_ids())
+        except Exception:
+            played = set()
+        out = []
+        for c in self._library():
+            if c.id == t.id or not getattr(c, "has_stems", False) or not c.bpm or c.id in played:
+                continue
+            rate = float(t.bpm) / float(c.bpm)
+            if not (RATE_MIN <= rate <= RATE_MAX):
+                continue
+            kf = camelot_compat(t.camelot, c.camelot) if (t.camelot and c.camelot) else 0.6
+            if kf < 0.55:
+                continue
+            try:
+                e1 = float(c.energy_proxy())
+            except Exception:
+                e1 = 0.5
+            rec = recs.get(str(c.id)) or {}
+            sm = rec.get("seam") or {}
+            ways = [w for w, ok in (("drums first", sm.get("drums")), ("bass swap", sm.get("bass"))) if ok]
+            arrive = 1.0 if ways else (0.85 if sm.get("after", True) else 0.6)
+            score = kf * (1.0 - abs(1.0 - rate) / 0.1 * 0.3) * (1.0 - 0.3 * abs(e1 - e0)) * arrive
+            words = [f"key {c.camelot or '?'} {kf:.2f}", f"tempo {100 * (rate - 1):+.0f}%",
+                     ("same energy" if abs(e1 - e0) < 0.12 else ("hotter" if e1 > e0 else "calmer"))]
+            words.append(("arrives " + " or ".join(ways)) if ways else ("the cut" if sm else ""))
+            out.append((score, c.id, c.title, " · ".join(w for w in words if w)))
+        out.sort(key=lambda x: -x[0])
+        return out[:n]
+
+    def _fill_mixes(self, tid):
+        """The MIXES WITH list for one song."""
+        from PyQt6.QtGui import QFont
+        t = self.track(tid)
+        self.mixes.clear()
+        if t is None:
+            self.mix_h.setText("MIXES WITH")
+            return
+        self.mix_h.setText(f"MIXES WITH  {t.title[:30]}")
+        bold = QFont(self.font())
+        bold.setBold(True)
+
+        def head(text):
+            it = QListWidgetItem(text)
+            it.setFont(bold)
+            it.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            self.mixes.addItem(it)
+
+        def row(cid, text, tip=None):
+            it = QListWidgetItem("    " + text)
+            it.setData(Qt.ItemDataRole.UserRole, cid)
+            if tip:
+                it.setToolTip(tip)
+            self.mixes.addItem(it)
+        pr = self._pairings_for(tid) or {}
+        nxt = self._next_partners(tid)
+        head("after it, as the next record" + ("" if nxt else ": nothing inside the wall"))
+        for score, cid, title, words in nxt:
+            row(cid, f"{title[:28]}   {words}", f"{title}\n{words}\nscore {score:.2f}")
+        vo = (pr.get("vocal_over") or [])[:4]
+        head("a vocal that sits over its grooves" + ("" if vo else ": none found" + ("" if pr.get("grooves") else " (no instrumental groove of 12 bars)")))
+        for x in vo:
+            row(int(x["id"]), f"{x['title'][:28]}   fit {x['fit']}" + (f", shift {x['shift']:+d}" if x.get("shift") else "") + (" · at its hook" if x.get("hook") else ""),
+                f"{x['title']}\nits sung stretch {_mmss(x['sung'][0])}-{_mmss(x['sung'][1])} over this song's groove {_mmss(x['groove'][0])}-{_mmss(x['groove'][1])}")
+        bu = (pr.get("bass_under") or [])[:4]
+        head("a bassline that swaps under its drums (then it is the record)" + ("" if bu else ": none found"))
+        for x in bu:
+            row(int(x["id"]), f"{x['title'][:28]}   fit {x['fit']}" + (f", shift {x['shift']:+d}" if x.get("shift") else "") + f" · from {_mmss(x['landmark'])}",
+                f"{x['title']}\nits bass and melody from its drop at {_mmss(x['landmark'])}, {x.get('runway_s', 0):.0f} s after")
+        inv = self._pairings_inverse(tid)
+        if inv.get("vocal") or inv.get("bass"):
+            head("its own parts sit on")
+            if inv.get("vocal"):
+                row(None, "vocal over: " + ", ".join(inv["vocal"][:4]))
+            if inv.get("bass"):
+                row(None, "bassline under: " + ", ".join(inv["bass"][:4]))
 
     def _toggle_viewer(self, on):
         self.viewer.setVisible(bool(on))
@@ -1728,6 +1914,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 # ONE line, the few facts that decide a pick (user: "flooding me with details"): tempo and
                 # key, the energy word, sings or not, two moods, the hook; everything else in the tooltip
                 short = [f"{(r['bpm'] or 0):.0f} {r['camelot'] or ''}".strip(), eword, "sings" if r.get("sings") else "inst"]
+                # HOW IT FITS, in the line (user 2026-09-17): the key fit and the tempo step from the reference
+                if r["ok"] and r.get("why"):
+                    fitw = [w for w in r["why"].split(", ") if w.startswith(("tempo ", "key "))]
+                    if fitw:
+                        short.append(" ".join(w.replace("key ", "").replace("tempo ", "") for w in fitw))
                 if r.get("tags"):
                     short.append(", ".join(r["tags"][:2]))
                 if r.get("hook_s") is not None:

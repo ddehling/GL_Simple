@@ -159,7 +159,20 @@ The **SONGS** list is the pool ranked by fit to what is playing, or, once you ha
 **last song in UP NEXT** (a chain). ✓ fits from here, ✗ would be rejected with the reason. **Double-click**
 puts a song UP NEXT. The **filter row** narrows the list: instrumental / vocal, a step calmer / same /
 hotter, slower / same / faster, songs with a hook, unheard tonight; the sort box orders it. Hover a row
-for the song's shape and when it last played.
+for the song's shape and when it last played. A fitting row carries how it fits in the line: the key fit
+and the tempo step; ★ marks a pairing with the record playing.
+
+**MIXES WITH** (under UP NEXT) follows the highlighted song and says what goes with it, from the stems:
+after it as the next record (key, tempo, energy, and how it would arrive - drums first, the bass swap, or
+the cut), whose vocal sits over its instrumental grooves, whose bassline swaps under its drums, and where
+its own vocal and bassline sit. Double-click a row to find that song in SONGS; right-click for the same
+commands.
+
+**The right-click menu is trimmed to the pair.** Its first line says how the song fits the record playing
+(keys and fit, tempo, energy). Then only what makes sense: its vocal in (when it sings), its bassline in,
+TAKEOVER with it, BRIDGE with it only while the record sings; drums and melody wait under "more parts…"
+(the drum swap is off by design, a melody alone is a texture). What fits is ★ and bold with the fit. A
+song outside the tempo wall gets the reason and its parts window, nothing else.
 
 ## Seeing a song's parts: PARTS
 

@@ -38,7 +38,48 @@ RUNWAY_S = 90.0
 TOP_N = 12
 ENERGY_WEIGHT = 0.3                     # a song at the far end of the energy ranks scores 0.7 of one at the record's
 GENRE_BONUS = 1.08                      # a shared genre (MusicBrainz / the file tag) - a tie-break, not a gate
-VERSION = 2
+SEAM_L = 16                             # the seam the "as the next record" number is judged for (a 16-bar morph)
+DARKEN_BARS = 4                         # (lib/dj/record.py: the bass swap's harmony comes at bar 4, the landmark at 5)
+VERSION = 3
+
+
+def _carries_bars(env, lane_names, t0, span_s, bar_s, thr=CARRY_ENV):
+    """The conductor's BAR-BY-BAR carry test (lib/dj/remix.py _stem_carries with bar_s): every bar's mean at
+    least 0.7 of the line - what the stems a seam brings FIRST must do under the old record."""
+    seen, good = False, True
+    w = max(2, int(round(bar_s * 2)))
+    for ln in lane_names:
+        e = env.get(ln)
+        if e is None or len(e) < 4:
+            continue
+        i0, i1 = max(0, int(t0 * 2)), min(len(e), int((t0 + span_s) * 2) + 1)
+        if i1 - i0 < 2:
+            continue
+        seen = True
+        seg = np.asarray(e[i0:i1], dtype=np.float32)
+        if float(np.percentile(seg, 25)) < thr:
+            good = False
+            continue
+        if len(seg) >= w:
+            bars = np.convolve(seg, np.ones(w, dtype=np.float32) / w, mode="valid")[::w]
+            if float(bars.min()) < 0.7 * thr:
+                good = False
+    return good if seen else None
+
+
+def _seamable(t, env, lm):
+    """How this song can ARRIVE as the next record (the seam orders of lib/dj/record.py, judged as the
+    conductor judges them): drums first (its drums carry for the seam and a bar before its landmark),
+    the bass swap (its bass and drums carry the five bars before its landmark), and whether it carries on
+    for two phrases from the landmark (any order). Booleans, or None where the stems are not measured."""
+    bar = _bar_s(t)
+    out = {}
+    t_d = lm - (SEAM_L + 1) * bar
+    out["drums"] = bool(t_d >= 2 * bar and _carries_bars(env, ("drums",), t_d, SEAM_L * bar, bar) is not False) if t_d >= 2 * bar else False
+    t_b = lm - (DARKEN_BARS + 1) * bar
+    out["bass"] = bool(t_b >= 2 * bar and _carries_bars(env, ("bass", "drums"), t_b, DARKEN_BARS * bar, bar) is not False) if t_b >= 2 * bar else False
+    out["after"] = _carries(env, ("drums", "bass"), lm, 16 * bar, strict=False) is not False
+    return out
 
 
 def arg(name, default, cast=str):
@@ -269,6 +310,7 @@ def measure_song(t, env):
         energy = 0.5
     return {"id": t.id, "title": t.title, "bpm": float(t.bpm or 0.0), "camelot": t.camelot, "duration_s": float(t.duration_s),
             "energy": energy, "genres": sorted(getattr(t, "genre_set", None) or ()),
+            "seam": _seamable(t, env, lm),
             "bar_s": bar, "landmark": lm, "body": _body_start(t, env), "bass_from_landmark": bool(bass_ok),
             "runway_after_landmark": float(t.duration_s) - lm,
             "sung": sung, "hook_starts": hook or [],
@@ -351,6 +393,10 @@ def pairs(music):
         bu.sort(key=lambda x: -x["score"])
         out["records"][str(r["id"])] = {"title": r["title"], "grooves": [[round(a, 1), round(b, 1)] for a, b in r["grooves"]],
                                         "sung": [[round(a, 1), round(b, 1)] for a, b in r["sung"]], "landmark": round(r["landmark"], 1),
+                                        # the song ITSELF, for the lists and the menus: does it sing, does its bass carry from its
+                                        # landmark, how it can arrive as the next record, its energy rank and genres
+                                        "sings": bool(r["sung"]), "bass_ok": bool(r["bass_from_landmark"]), "seam": r["seam"],
+                                        "energy": round(r["energy"], 2), "genres": r["genres"][:3], "bpm": round(r["bpm"], 1), "camelot": r["camelot"],
                                         "vocal_over": vo[:TOP_N], "bass_under": bu[:TOP_N],
                                         "n_vocal_over": len(vo), "n_bass_under": len(bu)}
     path = os.path.join(music, ".stems", "pairings.json")
