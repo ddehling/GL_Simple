@@ -485,6 +485,7 @@ class RemixConductor(RecordPlay):
         ])
         song = Song(deck, track)
         song.user_pick = track.id in self._user_picks
+        song.part_only = track.id in getattr(self, "_part_only", ())   # a part of it was asked for: not the next record
         rms = dict(rms)
         song.env = rms.pop("_env", None)
         song.vox_sections = rms.pop("_vox_sections", None)
@@ -2698,9 +2699,24 @@ class RemixConductor(RecordPlay):
         self._cands_cache = (now, query, out)
         return out[:n]
 
-    def stage_track(self, track_id):
+    def mark_next(self, track_id):
+        """A song already on a deck becomes YOUR pick for the next record (UP NEXT after a part of it was brought in)."""
+        tid = int(track_id)
+        self._user_picks.add(tid)
+        po = getattr(self, "_part_only", None)
+        if po:
+            po.discard(tid)
+        for s in self.songs.values():
+            if s.track.id == tid:
+                s.user_pick, s.part_only = True, False
+
+    def stage_track(self, track_id, as_next=True):
         """The operator picks a song from the crate: it decodes and stages on a free deck (beat-locked,
-        key-fitted, silent) and appears as a grid column. Returns (ok, message)."""
+        key-fitted, silent) and appears as a grid column. `as_next`: it is YOUR pick for the next record; False
+        = a PART of it was asked for (a vocal, a bassline) - it is not the next record and never replaces the
+        seam's (a vocal brought in made its song the next record, the next record lost its deck to the next
+        part, and the plan's next song changed five times in three minutes - user 2026-09-17: "it just
+        shows potential new songs continuously pushed back"). Returns (ok, message)."""
         t = self._track(int(track_id))
         if t is None:
             return False, "not in the stem library"
@@ -2715,19 +2731,37 @@ class RemixConductor(RecordPlay):
         free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
         if not free:
             # YOUR pick outranks the conductor's own: a staged song of its choosing that nobody hears yet gives up
-            # its deck (an UP NEXT was refused "no free deck" while the conductor's pick sat silent, 2026-09-14)
-            mine = [d for d, s in self.songs.items() if not s.entered and not s.leaving and s.staged_at is not None and not getattr(s, "user_pick", False)]
-            if mine:
-                self._cue_later.pop(mine[0], None)
-                if self.seam is not None and self.seam.get("b") == mine[0]:
+            # its deck (an UP NEXT was refused "no free deck" while the conductor's pick sat silent, 2026-09-14) -
+            # in this order: the EVENT's song (the event is dropped), a finished part of another song, the
+            # conductor's spare pick, and the seam's own next record only for an UP NEXT, never for a part
+            silent = [d for d, s in self.songs.items() if not s.entered and not s.leaving and s.staged_at is not None and not getattr(s, "user_pick", False)]
+            seam_b = self.seam.get("b") if self.seam is not None else None
+            pend = getattr(self, "_event_pending", None)
+            ev_deck = self.deck_of(pend["track_id"]) if pend else None
+            order = ([d for d in silent if d == ev_deck]
+                     + [d for d, s in self.songs.items() if getattr(s, "part_only", False) and not s.leaving and not s.held(self.lanes) and d not in silent]
+                     + [d for d in silent if d != ev_deck and d != seam_b]
+                     + ([d for d in silent if d == seam_b] if as_next else []))
+            if order:
+                victim = order[0]
+                self._cue_later.pop(victim, None)
+                if pend and victim == ev_deck:
+                    self._event_pending = None
+                    self._note("the event is dropped: its song gives up its deck to you")
+                if self.seam is not None and self.seam.get("b") == victim:
                     self._seam_drop(f"your pick {t.title[:22]} comes first")
-                self._leave_song(mine[0], self._next_bar_clock())
-                self._note(f"{self.songs[mine[0]].track.title[:24]} gives up its deck to your pick")
-                free = [mine[0]]
-                self.songs.pop(mine[0], None)         # (the leave posted its stop; the deck is free for the decode now)
+                self._leave_song(victim, self._next_bar_clock())
+                self._note(f"{self.songs[victim].track.title[:24]} gives up its deck to your pick")
+                free = [victim]
+                self.songs.pop(victim, None)          # (the leave posted its stop; the deck is free for the decode now)
             else:
-                return False, "no free deck - eject one first"
-        self._user_picks.add(t.id)                    # yours: it arrives before anything the conductor picked itself
+                who = ", ".join(self.songs[d].track.title[:18] for d in self.songs if not self.songs[d].leaving)
+                return False, f"no free deck - the decks hold {who}; UP NEXT takes one, or eject one"
+        if as_next:
+            self._user_picks.add(t.id)                # yours: it arrives before anything the conductor picked itself
+        else:
+            self._part_only = getattr(self, "_part_only", set())
+            self._part_only.add(t.id)
         self._decode(t, free[0])
         self._note(f"{t.title} staging on {free[0].upper()} (your pick)")
         return True, f"{t.title} → deck {free[0].upper()}"

@@ -1482,16 +1482,34 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         """The same commands for a song wherever it is listed (SONGS or UP NEXT): its stems in, TAKEOVER /
         BRIDGE with it, and the queue itself."""
         from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QFont
         m = QMenu(self)
         title = self.director.title(tid)[:28]
+        # WHAT FITS NOW is lit (user 2026-09-17: "highlighting of good options would be helpful"): ★ and bold
+        # where the pairings say this song's vocal sits over the record playing or its bassline swaps under
+        # it; a song outside the tempo wall is greyed with the reason; a key clash is said (it is done anyway)
+        good, why = self._fit_words(tid)
+        bold = QFont(self.font())
+        bold.setBold(True)
         for lane, word in (("bass", "bassline"), ("drums", "drums"), ("other", "melody"), ("vocals", "vocals")):
-            a = m.addAction(f"{word} of {title} in {'at the phrase' if self.phrase_btn.isChecked() else 'now'}" + (" · loud" if self.loud_btn.isChecked() else ""))
+            star = good.get(lane)
+            a = m.addAction(("★ " if star else "") + f"{word} of {title} in {'at the phrase' if self.phrase_btn.isChecked() else 'now'}"
+                            + (" · loud" if self.loud_btn.isChecked() else "") + (f"   ({star})" if star else "") + (f"   ({why})" if why and not star else ""))
+            if star:
+                a.setFont(bold)
+            if why and why.startswith("outside the tempo wall"):
+                a.setEnabled(False)
             a.triggered.connect(lambda _c, t=tid, ln=lane: self._stem(t, ln, False))
         if self.director.mode == "layered":
             m.addSeparator()
             for kind, word in (("takeover", "TAKEOVER with this (its bassline on the one, its drums at the phrase)"),
                                ("bridge", "BRIDGE with this (the bed fades under the vocal, its bass + drums slam)")):
-                a = m.addAction(word)
+                star = good.get("bass") if kind == "takeover" else None
+                a = m.addAction(("★ " if star else "") + word + (f"   ({star})" if star else ""))
+                if star:
+                    a.setFont(bold)
+                if why and why.startswith("outside the tempo wall"):
+                    a.setEnabled(False)
                 a.triggered.connect(lambda _c, t=tid, k=kind: self.moment_lbl.setText(self.director.moment_with(t, k)))
         m.addSeparator()
         v = m.addAction("show its parts (the Song parts window)")
@@ -1505,6 +1523,39 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             q = m.addAction("put it UP NEXT")
             q.triggered.connect(lambda _c, t=tid: self._queue(t))
         return m
+
+    def _fit_words(self, tid):
+        """({lane: why it is a good option now}, a reason it is not): the pairings of the record playing (its
+        vocal sits over it / its bassline swaps under it, with the fit), the tempo wall, a key clash."""
+        good, why = {}, None
+        d = self.director
+        try:
+            rc = d.rc if d is not None else None
+            if rc is None or rc.master is None:
+                return good, None
+            rec = rc.songs.get(rc.record_deck)
+            t = self.track(tid)
+            if rec is None or t is None:
+                return good, None
+            pr = self._pairings_for(rec.track.id) or {}
+            for x in pr.get("vocal_over") or []:
+                if int(x["id"]) == int(tid):
+                    good["vocals"] = f"its vocal sits over {rec.track.title[:18]}, fit {x['fit']}"
+            for x in pr.get("bass_under") or []:
+                if int(x["id"]) == int(tid):
+                    good["bass"] = f"its bassline swaps under these drums, fit {x['fit']}"
+            if t.bpm and rc.master_bpm:
+                from lib.dj.remix import RATE_MIN, RATE_MAX
+                rate = rc.master_bpm / float(t.bpm)
+                if not (RATE_MIN <= rate <= RATE_MAX):
+                    return {}, f"outside the tempo wall: {t.bpm:.0f} bpm against {rc.master_bpm:.0f}"
+            if not good and t.camelot and rec.track.camelot:
+                from lib.dj.brain import camelot_compat
+                if camelot_compat(rec.track.camelot, t.camelot) < 0.55:
+                    why = f"key {t.camelot} against {rec.track.camelot}: a clash, said and done if you ask"
+        except Exception:
+            pass
+        return good, why
 
     def _highlighted(self, item):
         """The Song parts window follows the highlighted row of SONGS or UP NEXT."""

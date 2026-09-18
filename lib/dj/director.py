@@ -749,6 +749,8 @@ class Director:
         if tid not in self.up_next:
             self.up_next.append(tid)
             self._event(f"up next: {self.title(tid)}")
+        if self.rc is not None:
+            self.rc.mark_next(tid)                    # (a song whose part is in becomes the next record only when you say so)
 
     def up_next_status(self):
         """The UP NEXT list as rows with each song's state: queued (waiting for a deck), staged (on a deck,
@@ -956,11 +958,12 @@ class Director:
         if self.rc is None or self.rc.master is None:
             return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
         rc = self.rc
-        self.queue(int(track_id))                     # a song whose stem you place is UP NEXT too (it is in play, in part)
+        # a PART of a song is a part: it does not make the song UP NEXT or the next record (it did, and the plan's
+        # next song changed five times in three minutes - user 2026-09-17); UP NEXT is a separate order
         deck = next((d for d, s in rc.songs.items() if s.track.id == int(track_id) and not s.leaving), None)
         boost = 1.3 if loud else 1.0
         if deck is None:
-            ok, msg = rc.stage_track(int(track_id))
+            ok, msg = rc.stage_track(int(track_id), as_next=False)
             if not ok:
                 self._event(f"stem in refused: {msg}")
                 return msg

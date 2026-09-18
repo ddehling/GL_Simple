@@ -538,7 +538,7 @@ class RecordPlay:
         """The next record: a song staged and waiting (your UP NEXT first), else a song you brought a part of
         in (it is heard; the seam morphs into it)."""
         cands = [(d, s) for d, s in self.songs.items() if d != self.record_deck and not s.leaving and not s.evicted
-                 and s.staged_at is not None and s.env is not None and not s.was_bed]
+                 and s.staged_at is not None and s.env is not None and not s.was_bed and not getattr(s, "part_only", False)]
         if not cands:
             return None
         cands.sort(key=lambda ds: (not getattr(ds[1], "user_pick", False), ds[1].entered, ds[1].staged_at or 0))
