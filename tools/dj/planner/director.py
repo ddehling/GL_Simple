@@ -13,7 +13,7 @@ import time
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-                             QListWidgetItem, QPushButton, QVBoxLayout, QWidget, QSizePolicy)
+                             QListWidgetItem, QPushButton, QVBoxLayout, QWidget, QSizePolicy, QTabWidget)
 
 from tools.dj.planner.perform import STYLE, SetlistBox, _mmss
 
@@ -145,12 +145,18 @@ class StemViewer(QWidget):
     SEC_H = 7
     WORDS_W = 250
 
-    def __init__(self, tab):
-        super().__init__(tab, Qt.WindowType.Tool)
+    def __init__(self, tab, embedded=False):
+        # embedded: a TAB of the Director's right column, swappable with the dials (user 2026-09-17); else the
+        # old tool window
+        if embedded:
+            super().__init__(tab)
+        else:
+            super().__init__(tab, Qt.WindowType.Tool)
+            self.setWindowTitle("Song parts")
+            self.resize(960, self.HEAD_H + self.SEC_H + 4 * self.ROW_H + 30)
         self.tab = tab
-        self.setWindowTitle("Song parts")
-        self.resize(960, self.HEAD_H + self.SEC_H + 4 * self.ROW_H + 30)
-        self.setMinimumSize(560, self.HEAD_H + self.SEC_H + 4 * self.ROW_H + 30)
+        self.embedded = embedded
+        self.setMinimumSize(520, self.HEAD_H + self.SEC_H + 4 * self.ROW_H + 30)
         self.setMouseTracking(True)
         self.setStyleSheet("background: #121216; color: #e6e6ea;")
         self.track = None
@@ -737,13 +743,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.queue_btn.clicked.connect(self._queue_selected)
         frow.addWidget(self.queue_btn)
         # SONG PARTS: the floating viewer of the highlighted song's stems
-        self.viewer = StemViewer(self)
+        self.viewer = StemViewer(self, embedded=True)
         self.view_btn = QPushButton("PARTS")
         self.view_btn.setCheckable(True)
         self.view_btn.setProperty("kind", "small")
         self.view_btn.setMinimumHeight(20)
         self.view_btn.setMaximumHeight(22)
-        self.view_btn.setToolTip("open the Song parts window: the highlighted song's four stems over time, its sections, hook and singing, "
+        self.view_btn.setToolTip("the PARTS tab (swaps with the dials): the highlighted song's four stems over time, its sections, hook and singing, "
                                  "and where each part is usable - follows whatever you highlight in SONGS or UP NEXT")
         self.view_btn.toggled.connect(self._toggle_viewer)
         frow.addWidget(self.view_btn)
@@ -771,7 +777,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.decks.currentItemChanged.connect(lambda cur, _prev: self._highlighted(cur))
         self.decks.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.decks.customContextMenuRequested.connect(self._decks_menu)
-        self.decks.itemDoubleClicked.connect(lambda it: (self.viewer.set_track(self.track(it.data(Qt.ItemDataRole.UserRole))), self.view_btn.setChecked(True), self.viewer.raise_()) if it is not None and it.data(Qt.ItemDataRole.UserRole) is not None else None)
+        self.decks.itemDoubleClicked.connect(lambda it: self._show_parts(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
         qcol.addWidget(self.decks)
         un = QLabel("UP NEXT")
         un.setProperty("dim", "true")
@@ -985,9 +991,16 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         right.addStretch(1)
         rw = QWidget()
         rw.setLayout(right)
-        rw.setMinimumWidth(540)
-        rw.setMaximumWidth(720)
-        body.addWidget(rw, 4)
+        # the right column is TWO TABS: the dials and the moments, and the Song parts (the highlighted song's
+        # four stems over time with the words) - swappable, the same width (user 2026-09-17)
+        self.right_tabs = QTabWidget()
+        self.right_tabs.addTab(rw, "DIALS")
+        self.right_tabs.addTab(self.viewer, "PARTS")
+        self.right_tabs.setToolTip("DIALS: how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves")
+        self.right_tabs.currentChanged.connect(self._right_tab_changed)
+        self.right_tabs.setMinimumWidth(540)
+        self.right_tabs.setMaximumWidth(760)
+        body.addWidget(self.right_tabs, 4)
         root.addLayout(body, 1)
         self._label_moments("one")
         self._timer = QTimer(self)
@@ -1570,8 +1583,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             h = m.addAction(why)
             h.setEnabled(False)
         m.addSeparator()
-        v = m.addAction("show its parts (the Song parts window)")
-        v.triggered.connect(lambda _c, t=tid: (self.viewer.set_track(self.track(t)), self.view_btn.setChecked(True), self.viewer.raise_()))
+        v = m.addAction("show its parts (the PARTS tab)")
+        v.triggered.connect(lambda _c, t=tid: self._show_parts(t))
         if walled:
             return m
         if from_queue:
@@ -1769,12 +1782,27 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 row(None, "bassline under: " + ", ".join(inv["bass"][:4]))
 
     def _toggle_viewer(self, on):
-        self.viewer.setVisible(bool(on))
+        """PARTS (the button) = the PARTS tab of the right column; off = back to the dials."""
+        self.right_tabs.setCurrentWidget(self.viewer if on else self.right_tabs.widget(0))
         if on:
-            cur = self.found.currentItem() or self.queue.currentItem()
+            cur = self.decks.currentItem() or self.found.currentItem() or self.queue.currentItem()
             if cur is not None:
                 self._highlighted(cur)
-            self.viewer.raise_()
+
+    def _right_tab_changed(self, idx):
+        on = self.right_tabs.widget(idx) is self.viewer
+        if self.view_btn.isChecked() != on:
+            self.view_btn.blockSignals(True)
+            self.view_btn.setChecked(on)
+            self.view_btn.blockSignals(False)
+
+    def _show_parts(self, tid):
+        """A song's parts, in the PARTS tab."""
+        t = self.track(tid) if tid is not None else None
+        if t is not None:
+            self.viewer.set_track(t)
+        self.view_btn.setChecked(True)
+        self.right_tabs.setCurrentWidget(self.viewer)
 
     def _queue_top(self, tid):
         if self.director is None:
