@@ -759,6 +759,20 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.found.setToolTip("✓ mixable from here · ✗ would be rejected · double-click, Enter or ▶ UP NEXT to queue it · hover a row for the song's shape")
         lists.addWidget(self.found, 3)
         qcol = QVBoxLayout()
+        # PLAYING: the songs on the decks right now - the record, the parts in play, the staged ones - so the
+        # MIXES WITH list and the parts window have the playing song as their context (user 2026-09-17)
+        self.decks_h = QLabel("PLAYING")
+        self.decks_h.setProperty("dim", "true")
+        self.decks_h.setToolTip("the songs on the decks now: ▶ the record, ▸ a part of it in play, ○ staged and waiting, ↘ leaving; "
+                                "highlight one and MIXES WITH and the parts window follow it; right-click for the commands")
+        qcol.addWidget(self.decks_h)
+        self.decks = QListWidget()
+        self.decks.setMaximumHeight(96)
+        self.decks.currentItemChanged.connect(lambda cur, _prev: self._highlighted(cur))
+        self.decks.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.decks.customContextMenuRequested.connect(self._decks_menu)
+        self.decks.itemDoubleClicked.connect(lambda it: (self.viewer.set_track(self.track(it.data(Qt.ItemDataRole.UserRole))), self.view_btn.setChecked(True), self.viewer.raise_()) if it is not None and it.data(Qt.ItemDataRole.UserRole) is not None else None)
+        qcol.addWidget(self.decks)
         un = QLabel("UP NEXT")
         un.setProperty("dim", "true")
         un.setToolTip("your queue, in order; honoured when it can be mixed from where it is; double-click to remove")
@@ -1992,9 +2006,81 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._found_sig = None
         self._fill_search()
 
+    def _decks_menu(self, pos):
+        it = self.decks.itemAt(pos)
+        if it is None or self.director is None or it.data(Qt.ItemDataRole.UserRole) is None:
+            return
+        self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=False).exec(self.decks.mapToGlobal(pos))
+
+    def _render_decks(self):
+        """PLAYING: what is on the decks. Rebuilt only when it changes; when the RECORD changes, its row is
+        highlighted so MIXES WITH and the parts window show the playing song's context."""
+        d = self.director
+        rows = []
+        try:
+            if d is not None and d.rc is not None and d.rc.master is not None:
+                rc = d.rc
+                words = {"bass": "bass", "drums": "drums", "other": "melody", "vocals": "vocal"}
+                sm = rc.seam
+                for deck, s in rc.songs.items():
+                    held = s.held(rc.lanes)
+                    if deck == rc.record_deck:
+                        since = (rc.bar_n - s.play_from_k) if s.play_from_k is not None else 0
+                        from lib.dj.submix import RATE
+                        bar_s = rc._bar_clock() / RATE
+                        rows.append((0, s.track.id, f"▶ {s.track.title[:34]}   the record · {_mmss(since * bar_s)} in"))
+                    elif s.leaving:
+                        rows.append((3, s.track.id, f"↘ {s.track.title[:34]}   leaving"))
+                    elif held:
+                        rows.append((1, s.track.id, f"▸ {s.track.title[:34]}   in: " + ", ".join(words[ln] for ln in held)))
+                    elif s.staged_at is not None:
+                        what = "next record" if (sm is not None and sm.get("b") == deck) else ("your pick" if getattr(s, "user_pick", False) else ("a part on its way" if getattr(s, "part_only", False) else "staged"))
+                        rows.append((2, s.track.id, f"○ {s.track.title[:34]}   {what}"))
+                    else:
+                        rows.append((2, s.track.id, f"… {s.track.title[:34]}   decoding"))
+                rows.sort(key=lambda r: r[0])
+            elif d is not None and d.system is not None and d.system.current is not None:
+                cur = d.system.current
+                rows.append((0, cur.id, f"▶ {cur.title[:34]}   playing"))
+                nxt = d.system.next_track
+                if nxt is not None:
+                    rows.append((2, nxt.id, f"○ {nxt.title[:34]}   next"))
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"decks: {type(e).__name__}: {e}")
+            return
+        sig = tuple((tid, text.split("   ")[0], text.split("·")[-1][:6] if "·" not in text else "") for _o, tid, text in rows)
+        rec_id = rows[0][1] if rows and rows[0][0] == 0 else None
+        if sig != getattr(self, "_decks_sig", None):
+            self._decks_sig = sig
+            cur = self.decks.currentItem().data(Qt.ItemDataRole.UserRole) if self.decks.currentItem() else None
+            self.decks.blockSignals(True)
+            self.decks.clear()
+            for _o, tid, text in rows:
+                it = QListWidgetItem(text)
+                it.setData(Qt.ItemDataRole.UserRole, tid)
+                it.setToolTip(self.director.title(tid) if self.director is not None else "")
+                self.decks.addItem(it)
+                if tid == cur:
+                    self.decks.setCurrentItem(it)
+            self.decks.blockSignals(False)
+        elif rows:
+            # the record's "in" time ticks: refresh the first row's text without rebuilding
+            it0 = self.decks.item(0)
+            if it0 is not None and it0.text() != rows[0][2]:
+                it0.setText(rows[0][2])
+        if rec_id is not None and rec_id != getattr(self, "_decks_rec", None):
+            self._decks_rec = rec_id
+            it0 = self.decks.item(0)
+            if it0 is not None:
+                self.decks.setCurrentItem(it0)        # (fires _highlighted: MIXES WITH and the parts window follow the new record)
+
     def _render_queue(self):
         """UP NEXT with each song's state: ○ staged and ready, ▸ in play (which parts), … decoding, nothing =
         waiting for a deck. Rebuilt only when it changes (right-click a row for the same commands as SONGS)."""
+        try:
+            self._render_decks()
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"decks: {type(e).__name__}: {e}")
         if self.director is None:
             if self.queue.count():
                 self.queue.clear()
