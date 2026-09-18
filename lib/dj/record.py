@@ -367,9 +367,18 @@ class RecordPlay:
         # cut, B whole on the one - rather than the record being evicted into silence (2026-09-14)
         sa = self.songs.get(self.record_deck)
         if sa is not None and sa.loop is not None and sm["bar"] > bar + 1:
+            # the cut NOW - no four-bar strip first: a looping record's loop expired inside its own strip and it
+            # left three seconds in, six seconds of nothing until the cut (the control gate, seed 17); the next
+            # record comes in whole on the next bar, cued to its landmark
             sm["bar"], sm["drums_bar"], sm["order"], sm["len"] = bar + 1, bar + 1, "cut", 4
-            sm["steps"] = self._seam_steps("cut", 4)
+            sm["steps"] = [(0, "_st_cut"), (1, "_st_done")]
             sm["moved"] += 1                          # (an emergency: its landmark lands where it can)
+            sb = self.songs.get(sm["b"])
+            if sb is not None and not sb.entered:
+                at = self._next_bar_clock()
+                if abs(self._song_time_at(sm["b"], at) - sm["lm"]) > self._bar_s(sb.track, sm["lm"]):
+                    self._cue_later.pop(sm["b"], None)
+                    self._post_cue(sm["b"], sm["lm"], at)
             self._seam_plan_mirror()
             self._move("plan", None, None, self._song_id(sm["b"]), f"the seam now, as a cut: {sa.track.title[:22]} is looping its last bars")
             sm["state"] = "running"
@@ -1090,10 +1099,17 @@ class RecordPlay:
                 self._cue_later.pop(b, None)
                 self._post_cue(b, want, at)
                 self.recue_log = (getattr(self, "recue_log", []) + [(self._tel().get("clock_s"), b, round(want, 1), self.bar_n + 4, "cut")])[-40:]
+        # what STAYS must be audible: the strip takes the drums and the bass only when the record's melody or
+        # vocal is on its lane and sounding through the four bars; else the bass carries the breakdown (a strip
+        # left one silent vocal stem - four bars at -79 dB - the control gate, seed 17)
+        span = 4 * self._bar_clock()
+        stays = [ln for ln in ("other", "vocals") if self.lanes.get(ln) == a and (self._stem_level_span(a, ln, at, at + span) or 0.0) >= 0.2]
         self._cross("drums", None, at, beats=1.0, shape=False)
-        self._cross("bass", None, at, beats=1.0, shape=False)
+        if stays:
+            self._cross("bass", None, at, beats=1.0, shape=False)
         self._hygiene(at + int(self._beat_s() * RATE))
-        self._move("seam", None, self._song_id(a), None, f"the breakdown: {sa.track.title}'s drums and bass out for 4 bars, its melody stays")
+        self._move("seam", None, self._song_id(a), None,
+                   f"the breakdown: {sa.track.title}'s drums{' and bass' if stays else ''} out for 4 bars, its {'melody stays' if stays else 'bass carries it'}")
 
     def _st_cut(self, at):
         a, b, sa, sb = self._ab()
