@@ -1122,13 +1122,27 @@ class RecordPlay:
         # vocal is on its lane and sounding through the four bars; else the bass carries the breakdown (a strip
         # left one silent vocal stem - four bars at -79 dB - the control gate, seed 17)
         span = 4 * self._bar_clock()
-        stays = [ln for ln in ("other", "vocals") if self.lanes.get(ln) == a and (self._stem_level_span(a, ln, at, at + span) or 0.0) >= 0.2]
+        own = {ln for ln in ("bass", "other", "vocals") if self.lanes.get(ln) == a}
+        stays = [ln for ln in ("other", "vocals") if ln in own
+                 and ((self._sings_through(a, at, 4) is True) if ln == "vocals" else ((self._stem_level_span(a, ln, at, at + span) or 0.0) >= 0.2))]
+        # the strip takes only what the RECORD holds: when another song's bassline sits under these drums (a
+        # TAKEOVER's), taking that bass takes its melody with it (harmony travels together) and the song leaves -
+        # the room was one silent vocal for four bars (the gate, seed 39, 2026-09-19); its bassline carries instead
+        bh = self.lanes.get("bass")
+        other_bass = bh is not None and bh != a and bh in self.songs and not self.songs[bh].leaving and self.songs[bh].entered
+        if not stays and not other_bass and "bass" not in own:
+            # nothing would carry a breakdown: the drums stay until the cut lands on the bar
+            self._move("seam", None, self._song_id(a), None, f"no breakdown before the cut: nothing of {sa.track.title[:24]} would carry it; its drums stay to the bar")
+            return
         self._cross("drums", None, at, beats=1.0, shape=False)
-        if stays:
+        take_bass = "bass" in own and bool(stays)
+        if take_bass:
             self._cross("bass", None, at, beats=1.0, shape=False)
         self._hygiene(at + int(self._beat_s() * RATE))
+        carried = (f"its {'melody' if 'other' in stays else 'vocal'} stays" if take_bass
+                   else (f"{self.songs[bh].track.title[:20]}'s bassline carries it" if other_bass else ("its bass carries it" if "bass" in own else "what is left carries it")))
         self._move("seam", None, self._song_id(a), None,
-                   f"the breakdown: {sa.track.title}'s drums{' and bass' if stays else ''} out for 4 bars, its {'melody stays' if stays else 'bass carries it'}")
+                   f"the breakdown: {sa.track.title}'s drums{' and bass' if take_bass else ''} out for 4 bars, {carried}")
 
     def _st_cut(self, at):
         a, b, sa, sb = self._ab()

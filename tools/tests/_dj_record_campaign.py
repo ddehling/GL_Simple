@@ -118,10 +118,14 @@ def run_one(policy, seed, seconds, music, play_min, theme):
     for nm, d in sub.decks.items():
         d.read = _wrap(d.read, nm)
 
+    bpm_hist = []                                     # (clock_s, master_bpm) once a second: the clock's travel (docs/DJ_THE_SET.md rule 3)
+
     def pump(n_blocks):
         for _ in range(n_blocks):
             audio.append(np.frombuffer(gen.send(BLOCK), dtype=np.float32).reshape(-1, 2).copy())
             rc.step()
+            if rc.master is not None and len(audio) % 10 == 0:
+                bpm_hist.append((sub.clock / RATE, float(rc.master_bpm)))
             tel = sub.telemetry or {}
             decks = tel.get("decks") or {}
             for nm, d in sub.decks.items():
@@ -335,7 +339,11 @@ def run_one(policy, seed, seconds, music, play_min, theme):
             dead_where.append({"t": round(t_dead), "db": round(r_db, 1), "near": near[-3:]})
     events = [m["text"][:110] for m in ml if m["kind"] in ("event_plan", "event")]
     acap = [m["text"][:110] for m in ml if m["kind"] == "moment" and m["text"].startswith("ACAPELLA")]
-    out = {"policy": policy, "seed": seed, "seconds": seconds, "play_min": play_min, "theme": theme,
+    travels = [m["text"][:110] for m in ml if m["kind"] == "clock" and "the clock travels" in m["text"]]
+    bpms = [b for _t, b in bpm_hist]
+    clock = {"travels": len(travels), "opener_bpm": round(bpms[0], 1) if bpms else None, "min_bpm": round(min(bpms), 1) if bpms else None,
+             "max_bpm": round(max(bpms), 1) if bpms else None, "end_bpm": round(bpms[-1], 1) if bpms else None, "words": travels[:6]}
+    out = {"policy": policy, "seed": seed, "seconds": seconds, "play_min": play_min, "theme": theme, "clock": clock,
            "events": events, "acapella_steps": len(acap), "event_log": list(getattr(rc, "event_log", [])), "dead_where": dead_where[:8],
            "rehearsals": [{k: v for k, v in x.items() if k in ("ok", "why", "order", "len")} for x in getattr(rc, "rehearsal_log", [])],
            "records": len(gaps) + 1, "min_per_record": round(float(np.mean(gaps)) / 60.0, 2) if gaps else round(seconds / 60.0, 2),
@@ -447,6 +455,14 @@ def report(out_dir):
               + (f"; e.g. refused: {refused[0][:80]}" if refused else ""))
         for e in [e for r in rs for e in r.get("events", []) if e.startswith("event in")][:4]:
             print(f"{'':12s}   {e[:110]}")
+    print("\n-- the clock (docs/DJ_THE_SET.md rule 3: it follows each record to its own tempo, half a percent a bar) --")
+    for p in pols:
+        rs = [r for r in rows if r["policy"] == p and r.get("clock")]
+        if not rs:
+            continue
+        spans = [(r["clock"]["max_bpm"] or 0) - (r["clock"]["min_bpm"] or 0) for r in rs]
+        print(f"{p:12s} travels {sum(r['clock']['travels'] for r in rs)} over {len(rs)} runs; span per run median {np.median(spans):.1f} bpm, max {max(spans):.1f}; "
+              + "; ".join(f"seed {r['seed']}: {r['clock']['opener_bpm']} → {r['clock']['end_bpm']}" for r in rs[:8]))
     print("\n-- the rehearsals (lib/dj/rehearse.py: the seam rendered from the decks' stems two phrases ahead) --")
     for p in pols:
         rs = [r for r in rows if r["policy"] == p]

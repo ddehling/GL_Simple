@@ -258,7 +258,9 @@ class RemixConductor(RecordPlay):
         self._break = None               # (restore_clock, {lane: deck}) while a BREAK runs
         self.tempo_span = 0.0            # tempo journey: 0 = fixed clock
         self.tempo_lean = 0.0            # the tempo dial: a fixed lean on the clock
-        self.base_bpm = None             # the opener's tempo, the journey's centre
+        self.base_bpm = None             # the journey's centre: the opener's tempo, then (follow_clock) each record's own
+        self.follow_clock = True         # THE CLOCK FOLLOWS THE RECORD (docs/DJ_THE_SET.md rule 3): a record that takes
+        #                                  the clock pulls it to its native tempo, half a percent a bar - the set travels
         self._tempo_k = None
         self.snapshots = []              # saved combinations
         self._recall = None              # a recall in progress
@@ -428,6 +430,20 @@ class RemixConductor(RecordPlay):
                 _shift, fit = self._key_fit(t)
                 if fit is not None and fit < ENTRY_FIT:
                     veto.add(t.id)
+            # THE SET (docs/DJ_THE_SET.md rule 2): the Director's chain decides the pick when it has one - the
+            # live pick follows the displayed plan. "wait" = the chain's head is inside the wall where the
+            # clock is heading but not yet where it is: the clock travels half a percent a bar; pick then.
+            hook = getattr(self, "pick_hook", None)
+            if hook is not None:
+                try:
+                    cand, wait = hook(veto)
+                except Exception as e:  # noqa: BLE001
+                    cand, wait = None, False
+                    self._move("plan", None, None, None, f"the set's pick failed ({type(e).__name__}: {e}); the brain picks")
+                if cand is not None and cand.id not in veto:
+                    return cand
+                if wait:
+                    return None
             self.brain.veto_ids |= veto
             cand, meta = self.brain.choose_next(ms.track, self.energy_target(), self.master_bpm)
             if cand is None or cand.id in veto:
@@ -1213,6 +1229,7 @@ class RemixConductor(RecordPlay):
                 self.master = new
                 self.master_bpm = float(self.songs[new].track.bpm) * self.songs[new].rate
                 self.bar_k = None
+                self._clock_follows(new)
                 self._move("clock", None, None, self.songs[new].track.id, f"{self.songs[new].track.title} takes the clock")
             else:
                 self.master = None
@@ -1252,7 +1269,27 @@ class RemixConductor(RecordPlay):
         self.master = new
         self.master_bpm = float(self.songs[new].track.bpm) * self.songs[new].rate
         self.bar_k = None
+        self._clock_follows(new)
         self._move("clock", None, None, self.songs[new].track.id, f"{self.songs[new].track.title} takes the clock (it carries the drums)")
+
+    def _clock_follows(self, deck):
+        """THE CLOCK FOLLOWS THE RECORD: the song that takes the clock becomes the tempo journey's centre, so
+        `_tempo_step` walks the clock to its native tempo (docs/DJ_THE_SET.md rule 3). Off: the opener's tempo
+        stays the centre all night."""
+        if not getattr(self, "follow_clock", True) or deck not in self.songs:
+            return
+        s = self.songs[deck]
+        t = s.track
+        if t.bpm and abs(float(t.bpm) - float(self.base_bpm or t.bpm)) > 0.05:
+            self._move("clock", None, None, t.id, f"the clock travels to {t.title[:24]}'s tempo: {self.master_bpm:.1f} → {float(t.bpm):.1f} bpm, half a percent a bar")
+        self.base_bpm = float(t.bpm) if t.bpm else self.base_bpm
+        # the session key follows too: the next pick is judged against the key SOUNDING now (the record's, as
+        # shifted), not the opener's - a chain that moved two keys away would otherwise be vetoed at the pick
+        if t.camelot:
+            try:
+                self.key_centre = _shift(t.camelot, int(getattr(s, "shift", 0) or 0)) or t.camelot
+            except Exception:
+                self.key_centre = t.camelot
 
     def _cross(self, lane, to_deck, at, beats=None, shape=True):
         """Lane `lane` goes to `to_deck` (None = rest) at clock `at`, crossing over `beats` (default: the
@@ -3081,6 +3118,10 @@ class RemixConductor(RecordPlay):
                 L = self.bar_n + 1 + self._phrase_ahead(T, at, lead)
                 what = "the phrase"
         at_L = at + (L - self.bar_n - 1) * bar_c
+        if kind == "bridge" and self._sings_through(B, at_L, 8) is False:
+            # the check above was at the arm bar; the bridge lands up to three phrases later and the bed fades
+            # out UNDER THE VOCAL - a vocal that stops at the landing left the room silent (the gate, 2026-09-19)
+            return False, f"{self.songs[B].track.title[:24]} is not singing here (where the bridge would land, {L - self.bar_n} bars on)"
         if kind == "break":
             # The take-away must be heard for what it is (a BREAK the DJ armed on a bed in its own build took
             # nothing away and left a melody whose loud level is a whisper: rms 0.02 for eight bars - flag
@@ -3901,9 +3942,22 @@ class RemixConductor(RecordPlay):
         """Once a bar, one small step of the clock toward the arc's tempo, every deck re-rated together so the
         PLL never has to absorb more than its trim window; no step that would push a song past the wall."""
         lean = getattr(self, "tempo_lean", 0.0)
-        if self.master is None or (self.tempo_span <= 0.0 and lean == 0.0) or self.base_bpm is None or self._tempo_k == self.bar_n:
+        if self.master is None or self.base_bpm is None or self._tempo_k == self.bar_n:
             return
+        if self.tempo_span <= 0.0 and lean == 0.0 and not getattr(self, "follow_clock", True):
+            return
+        # the clock holds still through a seam (planned within two phrases, or running) and through a moment: the
+        # seam's B was cued at its rate for its landmark to land on the swap bar, and the rehearsal judged it so
+        sm = getattr(self, "seam", None)
+        if sm is not None and (sm.get("state") == "running" or (sm.get("bar") is not None and sm["bar"] - self.bar_n <= 2 * self.change_bars)):
+            return
+        try:
+            if self.moment_status() is not None:
+                return
+        except Exception:
+            pass
         self._tempo_k = self.bar_n
+        # the centre: the opener's tempo, or (follow_clock) the tempo of the record that holds the clock
         target = self.base_bpm * (1.0 + self.tempo_span * (2.0 * self.energy_target() - 1.0) + lean)
         ratio = target / max(self.master_bpm, 1e-6)
         if abs(ratio - 1.0) < 0.0015:

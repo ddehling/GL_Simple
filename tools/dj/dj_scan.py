@@ -292,7 +292,10 @@ def main():
                          "(the chords in each part) and the HOOK (the loudest, most repeated sung "
                          "passage); resumable, no GPU, no re-analysis")
     ap.add_argument("--force-measure", action="store_true", help="with --measure: redo measured tracks too")
+    ap.add_argument("--add", default="", help="analyze ONE file now and add it to the library (the floor's drop box); prints 'ADDED <id>'")
     args = ap.parse_args()
+    if args.add:
+        return cmd_add(args)
     if args.track:
         return cmd_track(args)
     if args.list:
@@ -304,6 +307,20 @@ def main():
     if args.measure:
         return cmd_measure(args)
     return cmd_scan(args)
+
+
+def cmd_add(args):
+    from lib.dj.scan import add_file
+    root = resolve_music_dir(args.dir)
+    tid, err = add_file(root, args.add)
+    if tid is None:
+        print(f"not added: {err}")
+        return 1
+    if err:
+        print(f"ADDED {tid} with an error: {err}")
+        return 1
+    print(f"ADDED {tid}", flush=True)
+    return 0
 
 
 def cmd_measure(args):

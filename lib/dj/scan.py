@@ -97,6 +97,24 @@ def write_progress(payload):
         pass
 
 
+def add_file(music_root, abs_path):
+    """ONE file, now (THE FLOOR, docs/DJ_THE_SET.md rule 5): analyzed in this process and written to the
+    library; no vocal pass, no phase or grid report (the nightly scan does those). Returns (track_id, error)."""
+    db = LibraryDB(music_root)
+    abs_path = os.path.abspath(abs_path)
+    if os.path.splitext(abs_path)[1].lower() not in AUDIO_EXTS or not os.path.isfile(abs_path):
+        return None, "not an audio file under the music folder"
+    dur = probe_duration_s(abs_path)
+    if dur is not None and dur > MAX_SCAN_MIN * 60.0:
+        return None, f"{dur / 60.0:.0f} min exceeds DJ_MAX_SCAN_MIN={MAX_SCAN_MIN:.0f}"
+    _, result, chash = _analyze_worker(abs_path)
+    result.pop("trace", None)
+    db.upsert_track(abs_path, result, content_hash=chash)
+    row = db.get_track(rel_path=db.rel(abs_path))
+    tid = row["id"] if row else None
+    return tid, (result.get("error") if result.get("error") else None)
+
+
 def scan_library(music_root, workers=None, force=False, progress_cb=None,
                  vocals_pass=True, refine_grids=False):
     """Run one incremental scan. Returns a summary dict.

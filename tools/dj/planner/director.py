@@ -681,6 +681,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.plan_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.plan_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.plan_list.setWordWrap(True)
+        # THE SET's rows (THEN, a ready REQUEST) take commands: put it UP NEXT, not tonight, show its parts
+        self.plan_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.plan_list.customContextMenuRequested.connect(self._plan_menu)
         # ...as the third tab of the right column (DIALS | PARTS | PLAN): on the left it squeezed the song lists
         self.plan_tab = QWidget()
         pl = QVBoxLayout(self.plan_tab)
@@ -1399,6 +1402,252 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._fill_search()
         self._midi_open()
         self._timer.start()
+        self._dropbox_start()
+
+    # -- THE FLOOR: a request becomes playable during the night (docs/DJ_THE_SET.md rule 5) --------------------------
+    # Two ways in: "make it playable" on a library song without stems, and a file dropped into the music folder
+    # while the night runs. Both go analysis (a new file only) → stems (the planner's one-slot GPU queue, the
+    # fast model) → pairings (one CPU pass, one at a time) → the Director adopts the fresh library entry. Each
+    # step is a REQUEST row in THE PLAN.
+    def _make_playable(self, tid):
+        t = self.track(tid)
+        d = self.director
+        if t is None or d is None:
+            return
+        if getattr(t, "has_stems", False):
+            self.moment_lbl.setText(f"{t.title[:30]} already has its stems")
+            return
+        key = f"stems:{t.id}"
+        d.note_request(key, t.title, "waiting for the stem renderer", track_id=t.id)
+        ok = self.planner.render_stems(t, model="htdemucs",
+                                       on_status=lambda s, k=key, tt=t: self._floor_status(k, tt.title, s),
+                                       on_done=lambda tid2, ok2, k=key, tt=t: self._floor_stems_done(k, tt.title, tid2, ok2))
+        if not ok:
+            d.note_request(key, t.title, "stems", error="the stem renderer is busy with it already, or unavailable (torch + demucs)")
+        else:
+            self.moment_lbl.setText(f"{t.title[:30]}: making it playable (stems, then pairings)")
+
+    def _floor_status(self, key, title, words):
+        d = self.director
+        if d is None:
+            return
+        w = str(words or "")
+        stage = "separating" if "separating" in w or "loading" in w else ("queued for stems" if "queued" in w else w[:40])
+        pct = None
+        try:
+            import re
+            m = re.search(r"(\d{1,3})\s*%", w)
+            if m:
+                pct = float(m.group(1))
+        except Exception:
+            pct = None
+        d.note_request(key, title, stage, pct=pct)
+
+    def _floor_stems_done(self, key, title, tid, ok):
+        d = self.director
+        if d is None:
+            return
+        if not ok:
+            d.note_request(key, title, "stems", error="the stems did not render (see the console)")
+            return
+        d.note_request(key, title, "pairings (its envelope and lists)", track_id=tid)
+        if not hasattr(self, "_floor_jobs"):
+            self._floor_jobs, self._floor_ready = [], []
+        self._floor_jobs.append(("pairings", key, title, tid))
+        self._floor_next()
+
+    def _floor_next(self):
+        """One CPU job at a time: a new file's analysis, or the pairings pass after stems."""
+        if getattr(self, "_floor_proc", None) is not None or not self._floor_jobs:
+            return
+        from PyQt6.QtCore import QProcess
+        import sys as _sys
+        job = self._floor_jobs.pop(0)
+        kind, key, title = job[0], job[1], job[2]
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        proc = QProcess(self)
+        proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self._floor_out = []
+        proc.readyReadStandardOutput.connect(lambda p=proc: self._floor_out.extend(bytes(p.readAllStandardOutput()).decode("utf-8", "replace").splitlines()))
+        if kind == "pairings":
+            args = [os.path.join(repo, "tools", "dj", "dj_pairings.py"), "--music", self.planner.music_dir, "--all", "--workers", "1"]
+        else:   # ("add", key, title, path)
+            args = [os.path.join(repo, "tools", "dj", "dj_scan.py"), "--dir", self.planner.music_dir, "--add", job[3]]
+        proc.finished.connect(lambda code, _st, j=job: self._floor_proc_done(j, code))
+        self._floor_proc = proc
+        proc.start(_sys.executable, args)
+        if self.director is not None:
+            self.director.note_request(key, title, "pairings running" if kind == "pairings" else "analyzing the file", track_id=(job[3] if kind == "pairings" else None))
+
+    def _floor_proc_done(self, job, code):
+        self._floor_proc = None
+        d = self.director
+        kind, key, title = job[0], job[1], job[2]
+        out = list(getattr(self, "_floor_out", []) or [])
+        if kind == "add":
+            tid = None
+            for ln in out:
+                if ln.startswith("ADDED "):
+                    try:
+                        tid = int(ln.split()[1])
+                    except Exception:
+                        tid = None
+            if code != 0 or tid is None:
+                if d is not None:
+                    d.note_request(key, title, "analysis", error=(next((ln for ln in reversed(out) if ln.strip()), f"exit {code}"))[:90])
+            else:
+                if d is not None:
+                    d.note_request(key, title, "waiting for the stem renderer", track_id=tid)
+                from types import SimpleNamespace
+                stub = SimpleNamespace(id=tid, title=title)
+                ok = self.planner.render_stems(stub, model="htdemucs",
+                                               on_status=lambda s, k=key, tt=title: self._floor_status(k, tt, s),
+                                               on_done=lambda tid2, ok2, k=key, tt=title: self._floor_stems_done(k, tt, tid2, ok2))
+                if not ok and d is not None:
+                    d.note_request(key, title, "stems", error="the stem renderer is busy or unavailable")
+        else:
+            tid = job[3]
+            if code != 0 and d is not None:
+                d.note_request(key, title, "pairings", error=f"the pairings pass failed (exit {code}); the song plays without its lists")
+            self._floor_ready.append((key, title, tid))
+            self._floor_reload()
+        self._floor_next()
+
+    def _floor_reload(self):
+        """A fresh hydration of the library on a worker (its own DB handle), adopted by the Director on this
+        thread: the new song joins SONGS, the stems it gained make it layerable."""
+        if getattr(self, "_floor_reloading", False):
+            return
+        self._floor_reloading = True
+        import threading
+        music = self.planner.music_dir
+        box = {}
+
+        def work():
+            try:
+                from lib.dj.db import LibraryDB
+                from lib.dj import brain as B
+                box["lib"] = B.load_library(LibraryDB(music))
+            except Exception as e:  # noqa: BLE001
+                box["err"] = f"{type(e).__name__}: {e}"
+
+        def poll():
+            if "lib" not in box and "err" not in box:
+                QTimer.singleShot(250, poll)
+                return
+            self._floor_reloading = False
+            d = self.director
+            ready, self._floor_ready = list(self._floor_ready), []
+            if d is None:
+                return
+            if "err" in box:
+                for key, title, _tid in ready:
+                    d.note_request(key, title, "library", error=box["err"][:90])
+                return
+            try:
+                d.adopt_library(box["lib"])
+            except Exception as e:  # noqa: BLE001
+                self.err_lbl.setText(f"adopt: {type(e).__name__}: {e}")
+            for key, title, tid in ready:
+                d.note_request(key, title, "ready", ready=True, track_id=tid)
+            self._lib = None
+            self._found_sig = None
+            self._fill_search()
+        threading.Thread(target=work, daemon=True, name="director-floor-reload").start()
+        QTimer.singleShot(250, poll)
+
+    def _dropbox_start(self):
+        """Files that appear under the music folder while the night runs are found within twenty seconds."""
+        self._floor_jobs = getattr(self, "_floor_jobs", [])
+        self._floor_ready = getattr(self, "_floor_ready", [])
+        self._known_paths = None
+        if getattr(self, "_drop_timer", None) is None:
+            self._drop_timer = QTimer(self)
+            self._drop_timer.setInterval(20000)
+            self._drop_timer.timeout.connect(self._dropbox_poll)
+        self._drop_timer.start()
+
+    def _dropbox_stop(self):
+        t = getattr(self, "_drop_timer", None)
+        if t is not None:
+            t.stop()
+
+    def _dropbox_poll(self):
+        if self.director is None or getattr(self, "_drop_busy", False):
+            return
+        import threading
+        music = self.planner.music_dir
+        box = {}
+        self._drop_busy = True
+
+        def work():
+            try:
+                from lib.dj.scan import list_audio_files
+                box["files"] = [os.path.normcase(os.path.abspath(p)) for p in list_audio_files(music)]
+            except Exception as e:  # noqa: BLE001
+                box["err"] = str(e)
+
+        def poll():
+            if "files" not in box and "err" not in box:
+                QTimer.singleShot(200, poll)
+                return
+            self._drop_busy = False
+            files = box.get("files")
+            if files is None:
+                return
+            if self._known_paths is None:
+                # the first sweep after START only learns what is there
+                self._known_paths = set(files)
+                return
+            new = [p for p in files if p not in self._known_paths]
+            self._known_paths.update(files)
+            for p in new[:6]:
+                title = os.path.splitext(os.path.basename(p))[0]
+                key = f"file:{p}"
+                if self.director is not None:
+                    self.director.note_request(key, title, "new file: waiting for analysis")
+                self._floor_jobs.append(("add", key, title, p))
+            if new:
+                self._floor_next()
+        threading.Thread(target=work, daemon=True, name="director-dropbox").start()
+        QTimer.singleShot(200, poll)
+
+    def _skip_in_set(self, tid):
+        d = self.director
+        if d is None:
+            return
+        d.skip_in_set(tid)
+        self.moment_lbl.setText(f"not tonight: {d.title(int(tid))[:30]}")
+        self._found_sig = None
+        self._fill_search()
+
+    def _plan_menu(self, pos):
+        """THE PLAN's own commands: a THEN row (the chain) - put it UP NEXT, not tonight, its parts; a ready
+        REQUEST - put it UP NEXT."""
+        it = self.plan_list.itemAt(pos)
+        d = self.director
+        if it is None or d is None:
+            return
+        data = it.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(data, tuple) or data[1] is None:
+            return
+        kind, tid = data
+        from PyQt6.QtWidgets import QMenu
+        m = QMenu(self)
+        title = d.title(int(tid))[:30]
+        if kind == "THEN":
+            a = m.addAction(f"put {title} UP NEXT")
+            a.triggered.connect(lambda _c, t=tid: self._queue(t))
+            a = m.addAction(f"not tonight: {title} leaves the set")
+            a.triggered.connect(lambda _c, t=tid: self._skip_in_set(t))
+        elif kind == "REQUEST":
+            a = m.addAction(f"put {title} UP NEXT")
+            a.triggered.connect(lambda _c, t=tid: self._queue(t))
+        else:
+            return
+        v = m.addAction("show its parts (the PARTS tab)")
+        v.triggered.connect(lambda _c, t=tid: self._show_parts(t))
+        m.exec(self.plan_list.mapToGlobal(pos))
 
     # -- nanoKONTROL2: the dials and moments under your hands -------------------------------------------------
     # faders 1-8: ENERGY, TEMPO, PACE, SEAMS, VOCALS, VARIETY, BASS, LEVEL (each fader's travel is cut into the
@@ -1482,6 +1731,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
 
     def close(self):
         self._timer.stop()
+        self._dropbox_stop()
         try:
             self.viewer.hide()
         except Exception:
@@ -1608,10 +1858,32 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         elif walled:
             h = m.addAction(why)
             h.setEnabled(False)
+        elif layered and not getattr(self.track(tid), "has_stems", False):
+            # THE FLOOR (docs/DJ_THE_SET.md rule 5): a song without stems can be made playable tonight
+            h = m.addAction("no stems yet: it cannot be layered")
+            h.setEnabled(False)
+            a = m.addAction("▤ make it playable (its stems, about a minute on the GPU; then its pairings)")
+            a.triggered.connect(lambda _c, t=tid: self._make_playable(t))
         m.addSeparator()
         v = m.addAction("show its parts (the PARTS tab)")
         v.triggered.connect(lambda _c, t=tid: self._show_parts(t))
         if walled:
+            # THE SET rule 4: a far song is a route, not a refusal - when a chain of records reaches it
+            hops = None
+            try:
+                hops = self.director.route_to(tid)
+            except Exception as e:  # noqa: BLE001
+                self.err_lbl.setText(f"route: {type(e).__name__}: {e}")
+            if hops:
+                a = m.addAction(f"put it UP NEXT via {len(hops)} record{'s' if len(hops) > 1 else ''}: " + ", ".join(f"{h['title'][:18]} ({h['bpm']:.0f})" for h in hops))
+                a.setFont(bold)
+                a.triggered.connect(lambda _c, t=tid: self._queue(t))
+            elif hops == []:
+                a = m.addAction("put it UP NEXT (it follows the last queued record)")
+                a.triggered.connect(lambda _c, t=tid: self._queue(t))
+            else:
+                h = m.addAction("no chain of records reaches it tonight")
+                h.setEnabled(False)
             return m
         if from_queue:
             up = m.addAction("▲ play this next (to the top)")
@@ -1996,6 +2268,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                     reason = r["why"].split(", ")[0] if r["why"].startswith(("played", "already", "no stems")) else next(
                         (w for w in r["why"].split(", ") if "out of reach" in w or "clash" in w or "loose" in w or "outside" in w), r["why"][:40])
                     line += f"   —  {reason}"
+                elif r["ok"] and "(via " in (r.get("why") or ""):
+                    line += "   —  " + r["why"][r["why"].index("(via ") + 1:].split(")")[0]     # THE SET rule 4: reachable through other records
                 it = QListWidgetItem(line)
                 full = [f"{(r['bpm'] or 0):.0f} bpm {r['camelot'] or ''}".strip(), f"energy {e:.2f} ({eword})", "sings" if r.get("sings") else "instrumental"]
                 if r.get("valence"):
@@ -2045,8 +2319,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if tid is None:
             return
         if self.director is not None:
-            self.director.queue(tid)
-            self.moment_lbl.setText(f"UP NEXT: {self.director.title(int(tid))[:40]}" + (f"  (after {len(self.director.up_next) - 1} more)" if len(self.director.up_next) > 1 else ""))
+            ok, msg = self.director.queue(tid)
+            if ok:
+                via = [t for t in self.director.up_next if t in self.director.via_ids]
+                self.moment_lbl.setText(f"UP NEXT: {self.director.title(int(tid))[:40]}" + (f"  (after {len(self.director.up_next) - 1} more)" if len(self.director.up_next) > 1 else "")
+                                        + (f"  ·  via {', '.join(self.director.title(t)[:16] for t in via)}" if via else ""))
+            else:
+                self.moment_lbl.setText(msg)
         else:
             self.err_lbl.setText("press START first")
         self._render_queue()
@@ -2079,9 +2358,16 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             for r in rows:
                 it = QListWidgetItem(line(r))
                 it.setFont(mono)
-                it.setToolTip(f"{r['kind']}: {r['text']}\n{r.get('sub', '')}" + (f"\nbar {r['bar']}" if r.get("bar") is not None else ""))
+                it.setToolTip(f"{r['kind']}: {r['text']}\n{r.get('sub', '')}" + (f"\nbar {r['bar']}" if r.get("bar") is not None else "")
+                              + ("\nright-click: put it UP NEXT · not tonight · show its parts" if r["kind"] == "THEN" else "")
+                              + ("\nright-click: put it UP NEXT" if r["kind"] == "REQUEST" and r.get("id") is not None else ""))
+                it.setData(Qt.ItemDataRole.UserRole, (r["kind"], r.get("id")))
                 if r["kind"] in ("SEAM", "MOMENT", "EVENT") and r.get("t") is not None and r["t"] < 20.0:
                     it.setForeground(Qt.GlobalColor.yellow)
+                elif r["kind"] in ("THEN", "CLOCK"):
+                    it.setForeground(Qt.GlobalColor.gray)
+                elif r["kind"] == "REQUEST":
+                    it.setForeground(Qt.GlobalColor.cyan)
                 self.plan_list.addItem(it)
         else:
             for i, r in enumerate(rows):

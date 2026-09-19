@@ -35,7 +35,8 @@ ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "
            "never two singers", "is running out", "outside the tempo wall", "no free deck", "no bed", "needs songs layered",
            "not layered", "layer first", "only TAKEOVER and BRIDGE", "already", "nothing to", "no drop or hook",
            "would take nothing away", "too quiet", "the vocal you brought", "is the one playing", "nothing to take away",
-           "vocal is not on the lane", "is not singing here", "no hook of", "the record playing", "already leaving")
+           "vocal is not on the lane", "is not singing here", "no hook of", "the record playing", "already leaving",
+           "no chain of records reaches it")
 
 
 def arg(name, default, cast=str):
@@ -149,7 +150,27 @@ def run(music, seed, presses, seconds, verbose):
 
     def make_press():
         kind = rng.choice(["stem_in", "stem_in", "stem_in", "vocal_late", "queue", "next", "next", "hold", "drop", "break", "moment", "moment", "moment_with",
-                           "stem_out", "save_recall", "dial", "eject"])
+                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip"])
+        if kind == "queue_far":
+            # THE SET rule 4: a song outside the tempo wall is a route (queued behind the records that reach it) or an
+            # honest refusal naming the distance - never silently dropped a tick later
+            clock = d._chain_clock() or rc.master_bpm
+            far = [t for t in stems if t.bpm and not (0.90 <= clock / float(t.bpm) <= 1.10) and 0.78 <= clock / float(t.bpm) <= 1.28]
+            t = rng.choice(far) if far else any_song()
+
+            def verify(_before):
+                return int(t.id) in d.up_next
+            return Press(f"UP NEXT far {t.title[:18]} ({t.bpm:.0f})", lambda: d.queue(t.id), verify, settle_bars=0.5)
+        if kind == "set_skip":
+            # a THEN row's "not tonight": the hop leaves the chain and does not come back
+            hz = list(d.horizon)
+            if not hz:
+                return Press("not tonight (no chain yet)", lambda: "no chain yet", lambda _b: True, settle_bars=0.2)
+            h = rng.choice(hz[:3])
+
+            def verify(_before):
+                return h["id"] in d.set_skips and all(x["id"] != h["id"] for x in d.horizon)
+            return Press(f"not tonight {h['title'][:20]}", lambda: d.skip_in_set(h["id"]), verify, settle_bars=0.5)
         if kind == "eject":
             # take a song off the decks (the PLAYING list): a staged one, a part in play, or the record (refused with the reason)
             cands = [s.track for d, s in rc.songs.items() if not s.leaving and s.staged_at is not None]
@@ -157,7 +178,8 @@ def run(music, seed, presses, seconds, verbose):
 
             def verify(_before):
                 dk = deck_of(t.id)
-                return dk is None or rc.songs[dk].leaving
+                # gone, leaving, or evicted (its lanes cross away one bar apart; it leaves when they are gone)
+                return dk is None or rc.songs[dk].leaving or getattr(rc.songs[dk], "evicted", False)
             return Press(f"eject {t.title[:22]}", lambda: d.eject(t.id), verify, settle_bars=1.5, wait_pending_s=5.0)
         if kind in ("stem_in", "vocal_late"):
             if kind == "vocal_late" and late_hook:
@@ -238,6 +260,28 @@ def run(music, seed, presses, seconds, verbose):
     rows = []
     t_end = opened_at + int(seconds * RATE / BLOCK)
     n = 0
+    # THE SET (docs/DJ_THE_SET.md): the chain's head may change only on a trigger - the record, what is on the
+    # decks or pinned after it, a skip, the dials that steer picks; a change without one is churn (rule 2)
+    set_watch = {"sig": None, "head": None}
+
+    def set_sig():
+        dl = d.dials
+        on_way = frozenset([t.id for t in rc._decoding.values()] + [p[0].id for p in rc._pending.values()])
+        return (rc.songs[rc.record_deck].track.id if rc.record_deck in rc.songs else None, tuple(d._chain_pinned()),
+                frozenset(s.track.id for s in rc.songs.values()) | on_way, dl["arc"], dl["energy"], dl["tempo"], dl["pace"], len(d.set_skips), tuple(d.up_next))
+
+    def set_check(t_now):
+        sig = set_sig()
+        head = d.horizon[0]["id"] if d.horizon else None
+        if set_watch["sig"] == sig and set_watch["head"] is not None and head != set_watch["head"]:
+            errors.append((t_now, "set", f"the chain's head changed without a trigger: {d.title(set_watch['head'])[:20]} → {d.title(head)[:20] if head else 'nothing'} ({d._hz_why})"))
+        set_watch["sig"], set_watch["head"] = sig, head
+        rec = rc.songs.get(rc.record_deck)
+        if rec is not None and rec.entered_k is not None and rc.bar_n - rec.entered_k > 24 and not d.horizon and not getattr(d, "_hz_busy", False):
+            # an empty chain is honest after a far song (nothing inside the wall after 147 bpm) - but THE PLAN must say so
+            pr = d.status().get("plan_rows") or []
+            if not any(r.get("kind") == "THEN" and "nothing fits" in r.get("text", "") for r in pr):
+                errors.append((t_now, "set", f"no THEN rows: the chain is empty with a record three phrases in (note '{getattr(d, '_hz_note', '')[:40]}')"))
     gap_blocks = max(bar_blocks(), int(seconds * RATE / BLOCK / max(presses, 1)) - 2 * bar_blocks())   # spread over the run: seams and events happen between presses
     while n < presses and len(audio) < t_end:
         pump(rng.randint(max(1, gap_blocks // 2), gap_blocks + bar_blocks()))
@@ -264,6 +308,10 @@ def run(music, seed, presses, seconds, verbose):
                 errors.append((len(audio) * BLOCK / RATE, "plan", (pr[0]["text"] if pr else "no plan rows")))
         except Exception as e:  # noqa: BLE001
             errors.append((len(audio) * BLOCK / RATE, "plan", f"status: {type(e).__name__}: {e}"))
+        try:
+            set_check(len(audio) * BLOCK / RATE)
+        except Exception as e:  # noqa: BLE001
+            errors.append((len(audio) * BLOCK / RATE, "set", f"check: {type(e).__name__}: {e}"))
         said = [e[1] for e in d.events[before["events"]:]]
         refusals = [s for s in said if "refused" in s.lower() or "dropped" in s.lower() or any(a in s for a in ALLOWED)]
         new_err = errors[before["err"]:]

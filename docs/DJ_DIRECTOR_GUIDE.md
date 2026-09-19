@@ -34,6 +34,15 @@ Press **STOP** to end the night.
   pick while this record plays toward its minimum"). A row changes only when the plan moves, and then
   carries the reason for twenty seconds ("MOVED: rehearsed a hole at bar 16"). The picture shows the
   same seam as a gold bracket with its steps.
+  **THE SET** continues the plan past your queue (docs/DJ_THE_SET.md): up to five `THEN` rows, the records
+  the DJ means to play after UP NEXT, each with its projected time, tempo step, key fit, energy word and how
+  it would arrive ("Antrea · 124 (+2 %) · 7B 1.00 · same energy · drums first"). The DJ's own next pick IS
+  the first of them. A row changes only when it must (the song was played, its predecessor changed, the
+  wall, you said "not tonight") and the story row says why; a dial turn keeps the hops that still fit.
+  Right-click a THEN row: put it UP NEXT, not tonight, show its parts. A `CLOCK` row says where the tempo
+  goes ("122 now → 126 by 12:40 → 128 by 25:00"): the clock follows each record to its own tempo, half a
+  percent a bar, so the set can travel; the TEMPO dial leans each step (faster = about +4 % a record).
+  `REQUEST` rows at the top are songs being made playable tonight (see "The floor" below).
 
 Switching back to **one** hands the playing song back to the autoDJ at the same position.
 
@@ -179,7 +188,21 @@ commands.
 (keys and fit, tempo, energy). Then only what makes sense: its vocal in (when it sings), its bassline in,
 TAKEOVER with it, BRIDGE with it only while the record sings; drums and melody wait under "more parts…"
 (the drum swap is off by design, a melody alone is a texture). What fits is ★ and bold with the fit. A
-song outside the tempo wall gets the reason and its parts window, nothing else.
+song outside the tempo wall gets the reason, its parts window, and - when a chain of records reaches it -
+"put it UP NEXT via 2 records: A (125), B (131)": the intermediates go into UP NEXT ahead of it, marked
+"(via)", and the clock travels there record by record. In SONGS such a song reads "via 2 records" instead
+of grey. When nothing reaches it the menu says so.
+
+## The floor: a request during the night
+
+A song in the library **without stems** cannot be layered, and its menu offers **"make it playable"**: its
+stems render on the GPU (the fast model, about a minute), its pairing lists are built, and the Director
+learns the song without a restart. A file **dropped into the music folder** while the night runs is found
+within twenty seconds and goes the same way (analysis first). Each request is a `REQUEST` row at the top
+of THE PLAN with its stage ("separating (40 %)", "pairings running"); when it is done the row says
+"is ready · put it UP NEXT?" for a minute (right-click it), and the song is in SONGS as a ✓. One job at a
+time: the GPU is shared with the player. A request is not a promise of a fit: it still has to pass the
+wall and the key like any other song.
 
 ## Seeing a song's parts: PARTS
 

@@ -233,6 +233,16 @@ class Director:
         self.arc_custom = None           # your bent curve [(progress, energy)] when the arc dial says "yours"
         self._arc_jump = None
         self._sent = {}                  # per engine: the steering values it already has (see _send)
+        # THE SET (docs/DJ_THE_SET.md): the chain of records after the queue, the songs you said "not tonight"
+        # to, the intermediates of a route ("via"), and the floor's requests (a song being made playable)
+        self.horizon = []                # hops from lib/dj/setplan.chain, in order
+        self.set_skips = set()           # track ids: not tonight
+        self.via_ids = set()             # UP NEXT entries that are a route's intermediates
+        self._hz_sig = None              # the triggers' signature at the last plan
+        self._hz_t = 0.0                 # when the chain was last checked
+        self._hz_why = ""                # why it was last (re)planned
+        self._hz_note = ""               # why it is empty, when it is
+        self.requests = {}               # key -> {title, stage, pct, t, ready, id, error}
         self._dial_seam_t = 0.0          # when a dial turn last brought a seam forward
         self.program = None              # {"key", "n", "i", "baseline", "started"} while a program runs over the next songs
         self._song_seq = 0               # song changes seen (one song: a new record; layered: a new bed)
@@ -383,6 +393,8 @@ class Director:
             self._seed_brain(rc.brain)
             rc._seeded = True
         rc.policy = "record"                          # THE RECORD PLAYS: one song whole, one seam per record (docs/DJ_THE_RECORD_PLAYS.md)
+        rc.follow_clock = True                        # THE SET: the clock travels to each record's own tempo (docs/DJ_THE_SET.md rule 3)
+        rc.pick_hook = self._horizon_pick             # the DJ's spare pick is the chain's head
         rc.set_play_min(PLAY_MIN_S[d["pace"]])
         rc.set_seam(d["mixing"], SEAM_SPEED[d["seams"]])
         rc.set_event_rate({"rare": 0, "some": 1, "lots": 2}[d["moments"]])   # the EVENTS per record, from the pairing lists (docs/DJ_PAIRINGS.md)
@@ -753,12 +765,36 @@ class Director:
         self._event(f"songs: {name or 'whole library'}")
 
     def queue(self, track_id):
+        """UP NEXT. A song outside the tempo wall is a ROUTE, not a refusal (docs/DJ_THE_SET.md rule 4): the
+        records that reach it go into the queue ahead of it, marked "via"; when nothing reaches it, said.
+        Returns (ok, words)."""
         tid = int(track_id)
-        if tid not in self.up_next:
-            self.up_next.append(tid)
-            self._event(f"up next: {self.title(tid)}")
-        if self.rc is not None:
-            self.rc.mark_next(tid)                    # (a song whose part is in becomes the next record only when you say so)
+        if tid in self.up_next:
+            if self.rc is not None:
+                self.rc.mark_next(tid)
+            return True, "already queued"
+        rc = self.rc
+        t = self.track(tid)
+        if rc is not None and rc.master is not None and t is not None and t.bpm:
+            clock = self._chain_clock()
+            rate = float(clock) / float(t.bpm)
+            if not (0.90 <= rate <= 1.10):
+                hops = self.route_to(tid)
+                pct = 100.0 * (float(t.bpm) / float(clock) - 1.0)
+                if hops is None:
+                    msg = f"{t.title[:28]}: {float(t.bpm):.0f} bpm is {pct:+.0f} % off the clock and no chain of records reaches it tonight"
+                    self._event(msg)
+                    return False, msg
+                for h in hops:
+                    if h["id"] not in self.up_next:
+                        self.up_next.append(h["id"])
+                        self.via_ids.add(h["id"])
+                self._event(f"to reach {t.title[:24]} ({float(t.bpm):.0f} bpm, {pct:+.0f} %): via " + ", ".join(f"{h['title'][:20]} ({h['bpm']:.0f})" for h in hops))
+        self.up_next.append(tid)
+        self._event(f"up next: {self.title(tid)}")
+        if rc is not None:
+            rc.mark_next(tid)                         # (a song whose part is in becomes the next record only when you say so)
+        return True, "up next"
 
     def up_next_status(self):
         """The UP NEXT list as rows with each song's state: queued (waiting for a deck), staged (on a deck,
@@ -781,6 +817,271 @@ class Director:
 
     def unqueue(self, track_id):
         self.up_next = [t for t in self.up_next if t != int(track_id)]
+        self.via_ids.discard(int(track_id))
+
+    def track(self, tid):
+        return next((x for x in self.library if x.id == int(tid)), None)
+
+    # -- THE SET: the chain of records ahead (docs/DJ_THE_SET.md) ----------------------------------------------
+    def _arc_at(self, t_s):
+        """The arc's energy target `t_s` seconds from now (the lean included)."""
+        rc = self.rc
+        if rc is None:
+            return 0.6
+        try:
+            length = float(getattr(rc, "arc_len_s", 0) or 0) or 4 * 3600.0
+            p = min(1.0, rc.arc_progress() + max(0.0, float(t_s)) / length)
+            return max(0.05, min(0.95, rc._arc_base(p) + rc.energy_lean))
+        except Exception:
+            return 0.6
+
+    def _chain_pinned(self):
+        """The records already decided after the current one, in order: the seam's next record (or the staged
+        next record), then UP NEXT."""
+        rc = self.rc
+        seq = []
+        if rc is not None:
+            if rc.seam is not None and rc.songs.get(rc.seam["b"]) is not None:
+                seq.append(rc.songs[rc.seam["b"]].track.id)
+            else:
+                for d, s in rc.songs.items():
+                    if d != rc.record_deck and not s.leaving and s.staged_at is not None and not getattr(s, "part_only", False) and not s.entered:
+                        seq.append(s.track.id)
+                        break
+                else:
+                    # the conductor's pick on its way (decoding, or decoded and waiting for its deck): the next
+                    # record already decided, though not on a deck yet
+                    for t in list(rc._decoding.values()) + [p[0] for p in rc._pending.values()]:
+                        if t is not None and t.id not in self.up_next and (rc.record_deck not in rc.songs or t.id != rc.songs[rc.record_deck].track.id):
+                            seq.append(t.id)
+                            break
+        for tid in self.up_next:
+            if tid not in seq:
+                seq.append(tid)
+        return seq
+
+    def _chain_clock(self):
+        """The clock the next queued song would face: with the clock following the record, the native tempo of
+        the last record decided (the seam's B, the last of UP NEXT), else the clock itself."""
+        rc = self.rc
+        if rc is None or rc.master is None:
+            return 0.0
+        if not getattr(rc, "follow_clock", True):
+            return float(rc.master_bpm)
+        pinned = self._chain_pinned()
+        last = self.track(pinned[-1]) if pinned else (rc.songs[rc.record_deck].track if rc.record_deck in rc.songs else None)
+        return float(last.bpm) if (last is not None and last.bpm) else float(rc.master_bpm)
+
+    def _horizon_step(self):
+        """Keep the chain: every two seconds, drop the hops that became impossible (played, the wall from a new
+        predecessor, a key clash, not tonight) and extend to five again; a change of the triggers (the record,
+        the queue, a skip, the dials that steer picks) does the same at once. Hops that still fit stay - the
+        chain does not churn (rule 2)."""
+        rc = self.rc
+        if rc is None or rc.master is None or rc.record_deck not in rc.songs:
+            if self.horizon:
+                self.horizon, self._hz_sig = [], None
+            return
+        now = time.time()
+        d = self.dials
+        on_decks = frozenset([s.track.id for s in rc.songs.values()] + [t.id for t in rc._decoding.values()] + [p[0].id for p in rc._pending.values()])
+        sig = (rc.songs[rc.record_deck].track.id, tuple(self._chain_pinned()), on_decks, d["arc"], d["energy"], d["tempo"], d["pace"],
+               len(self.set_skips), self.pool_name, tuple(self.tags))
+        if sig == self._hz_sig and now - self._hz_t < 2.0 and getattr(self, "_hz_result", None) is None:
+            return                                    # (a worker's finished result is applied at once, not throttled)
+        why = "the triggers changed" if sig != self._hz_sig else ""
+        self._hz_sig, self._hz_t = sig, now
+        from lib.dj import setplan
+        cur = rc.songs[rc.record_deck].track
+        pinned = [p for p in self._chain_pinned() if self.track(p) is not None]
+        follow = bool(getattr(rc, "follow_clock", True))
+        played = self._played_ids() | {cur.id}
+        busy = {s.track.id for s in rc.songs.values()} | {t.id for t in rc._decoding.values()} | {p[0].id for p in rc._pending.values()}
+        busy -= set(pinned)
+        prev = self.track(pinned[-1]) if pinned else cur
+        clock = (float(prev.bpm) if (follow and prev.bpm) else float(rc.master_bpm))
+        # prune: the first hop that no longer follows its predecessor ends what is kept
+        kept = []
+        for h in self.horizon:
+            t = self.track(h["id"])
+            reason = setplan.hop_ok(prev, t, clock, played=played | set(pinned), avoid=self.set_skips | busy, play_min_s=float(rc.play_min_s))
+            if reason is not None:
+                if reason == "not tonight" and t is not None and t.id in busy and t.id not in self.set_skips:
+                    reason = "on the decks now"
+                why = why or f"{h['title'][:20]}: {reason}"
+                break
+            kept.append(h)
+            prev, clock = t, (float(t.bpm) if follow else clock)
+        try:
+            arr = rc._arrangement_status()
+            bar_s = rc._bar_clock() / RATE
+            sm = arr.get("seam") or {}
+            rec = arr.get("record") or {}
+            t0 = max(float(sm.get("in_bars") or 0), float(rec.get("settle_left") or 0)) * bar_s
+        except Exception:
+            t0 = float(rc.play_min_s)
+        # the projected times of the kept hops move with the room; the hops themselves do not
+        step_s = float(rc.play_min_s) + setplan.SEAM_S
+        for i, h in enumerate(kept):
+            h["t"] = t0 + (len(pinned) + i + 1) * step_s
+        if len(kept) < len(self.horizon):
+            self.horizon = list(kept)
+            self._hz_why = why
+        if len(kept) >= 5:
+            return
+        kept_ids = [h["id"] for h in kept]
+        # the search runs OFF this thread (a plan is 150-350 ms over a thousand songs; this thread steps the
+        # conductor): a worker computes the extension, the next step applies it if the room is still the same
+        res = getattr(self, "_hz_result", None)
+        if res is not None:
+            self._hz_result = None
+            r_sig, r_kept, more = res
+            if r_sig == sig and r_kept == kept_ids:
+                # a song that reached the decks or was played while the search ran is not a hop
+                more = [h for h in more if h["id"] not in busy and h["id"] not in played and h["id"] not in self.set_skips]
+                new = kept + more
+                if not new:
+                    last = self.track(pinned[-1]) if pinned else cur
+                    self._hz_note = (f"nothing fits after {last.title[:22]} ({float(last.bpm):.0f} bpm, {last.camelot or '?'}) tonight: the wall, the key, "
+                                     f"and what has played" if last is not None else "nothing fits tonight")
+                else:
+                    self._hz_note = ""
+                if [h["id"] for h in new] != [h["id"] for h in self.horizon]:
+                    self._hz_why = why or self._hz_why or "extended"
+                    self.horizon = new
+                    if self.horizon and self.mode == "layered":
+                        self._event("the set: " + " → ".join(h["title"][:16] for h in self.horizon[:5]) + (f"  ({self._hz_why[:40]})" if self._hz_why else ""))
+                return
+        if getattr(self, "_hz_busy", False):
+            return
+        lib = [t for t in self.library if getattr(t, "has_stems", False)]
+        if rc.brain is not None and getattr(rc.brain, "pool_ids", None):
+            lib = [t for t in lib if t.id in rc.brain.pool_ids]
+        try:
+            recs = (rc._load_pairings() or {}).get("records") or {}
+        except Exception:
+            recs = {}
+        lean = {"slower": -1.0, "hold": 0.0, "faster": 1.0}.get(d["tempo"], 0.0)
+        args = dict(clock_bpm=(float(cur.bpm) if follow else float(rc.master_bpm)), arc_fn=self._arc_at, played=set(played), avoid=set(self.set_skips),
+                    busy=set(busy), play_min_s=float(rc.play_min_s), n=5 - len(kept), follow=follow, t0=t0,
+                    seed=(int(self._hz_t) // 86400) + 1, pinned=list(pinned) + kept_ids, lean=lean)
+        self._hz_busy = True
+
+        def work():
+            try:
+                more = setplan.chain(cur, lib, recs, **args)
+                self._hz_result = (sig, kept_ids, more)
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"set: {type(e).__name__}: {e}"
+            finally:
+                self._hz_busy = False
+        threading.Thread(target=work, daemon=True, name="director-set").start()
+
+    def _horizon_pick(self, veto):
+        """The conductor's pick hook (RemixConductor._pick_next): the chain's head, or "wait" when it is inside
+        the wall where the clock is heading but not yet where the clock is. (track or None, wait)."""
+        rc = self.rc
+        if rc is None or not self.horizon:
+            return None, False
+        for h in self.horizon[:2]:
+            t = self.track(h["id"])
+            if t is None or t.id in self.set_skips:
+                continue
+            if t.id not in veto:
+                return t, False
+            # vetoed: by the wall against today's clock while the clock travels toward a place it fits?
+            base = float(getattr(rc, "base_bpm", 0) or 0)
+            if base and getattr(rc, "follow_clock", True) and t.bpm and 0.90 <= base / float(t.bpm) <= 1.10 \
+                    and abs(float(rc.master_bpm) / base - 1.0) > 0.005:
+                return None, True
+            return None, False
+        return None, False
+
+    def route_to(self, track_id):
+        """The records that reach `track_id` from the end of the queue (docs/DJ_THE_SET.md rule 4): [] when it
+        follows directly, hops when a route exists, None when none does."""
+        rc = self.rc
+        t = self.track(track_id)
+        if rc is None or rc.master is None or t is None or rc.record_deck not in rc.songs:
+            return None
+        from lib.dj import setplan
+        pinned = [p for p in self._chain_pinned() if self.track(p) is not None]
+        cur = self.track(pinned[-1]) if pinned else rc.songs[rc.record_deck].track
+        follow = bool(getattr(rc, "follow_clock", True))
+        clock = float(cur.bpm) if (follow and cur.bpm) else float(rc.master_bpm)
+        lib = [x for x in self.library if getattr(x, "has_stems", False)]
+        try:
+            recs = (rc._load_pairings() or {}).get("records") or {}
+        except Exception:
+            recs = {}
+        busy = {s.track.id for s in rc.songs.values()} | set(pinned)
+        return setplan.route(cur, t, lib, recs, clock, played=self._played_ids() | {cur.id}, avoid=self.set_skips, busy=busy,
+                             play_min_s=float(rc.play_min_s), follow=follow)
+
+    def via_by_tempo(self):
+        """{bpm: hops} by tempo alone from the end of the queue (the SONGS list's 'via N' word)."""
+        rc = self.rc
+        if rc is None or rc.master is None or not getattr(rc, "follow_clock", True):
+            return {}
+        from lib.dj import setplan
+        return setplan.hops_by_tempo(self._chain_clock(), [t.bpm for t in self.library if getattr(t, "has_stems", False)])
+
+    def skip_in_set(self, track_id):
+        """"Not tonight": the song leaves the chain and does not come back to it (a right-click on a THEN row)."""
+        tid = int(track_id)
+        self.set_skips.add(tid)
+        self.horizon = [h for h in self.horizon if h["id"] != tid]
+        self._hz_sig = None
+        self._event(f"not tonight: {self.title(tid)[:30]}")
+        return True
+
+    # -- THE FLOOR: requests (docs/DJ_THE_SET.md rule 5) -----------------------------------------------------------
+    def note_request(self, key, title, stage, pct=None, ready=False, track_id=None, error=None):
+        """A request's state for THE PLAN: 'separating', 'pairings', 'analyzing'; ready → 'is ready' for a
+        minute; an error stays a minute too."""
+        r = self.requests.get(key) or {"title": title, "t0": time.time()}
+        r.update({"title": title or r.get("title"), "stage": stage, "pct": pct, "t": time.time(), "ready": bool(ready),
+                  "id": (int(track_id) if track_id is not None else r.get("id")), "error": error})
+        self.requests[key] = r
+        if ready:
+            self._event(f"{(title or key)[:30]} is ready to play")
+        elif error:
+            self._event(f"{(title or key)[:30]}: {error[:60]}")
+
+    def adopt_library(self, tracks):
+        """A fresh hydration of the library (from a worker's own DB handle): new songs join, songs that gained
+        stems become layerable - without a restart. Returns (new, gained)."""
+        known = {t.id: t for t in self.library}
+        new, gained = [], []
+        for t in tracks:
+            old = known.get(t.id)
+            if old is None:
+                if getattr(t, "excluded", False):
+                    continue
+                self.library.append(t)
+                new.append(t)
+                if getattr(t, "has_stems", False):
+                    gained.append(t)
+            elif getattr(t, "has_stems", False) and not getattr(old, "has_stems", False):
+                old.has_stems = True
+                gained.append(old)
+        rc = self.rc
+        if rc is not None:
+            ids = {t.id for t in rc.library}
+            for t in gained:
+                if t.id not in ids:
+                    rc.library.append(t)
+                    if rc.brain is not None:
+                        rc.brain.library.append(t)
+                        try:
+                            rc.brain._lib_bpms.append(t.bpm)
+                        except Exception:
+                            pass
+            if gained:
+                self._hz_sig = None                   # (the pairing file is re-read by its mtime when it changes)
+        if new or gained:
+            self._event(f"library: {len(new)} new, {len(gained)} now with stems")
+        return new, gained
 
     def clear_queue(self):
         self.up_next = []
@@ -1273,6 +1574,10 @@ class Director:
             if self.rc is not None:
                 self._apply_to_conductor(self.rc)
         self._feed_up_next()
+        try:
+            self._horizon_step()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"set: {type(e).__name__}: {e}"
         self._handover()
         self._warm_step()
         try:
@@ -1322,10 +1627,23 @@ class Director:
                 ok, msg = self.rc.stage_track(head)
                 if ok:
                     self._event(f"up next {self.title(head)[:30]}: {msg}")
+                    self._fed_wait = None
                 elif msg not in ("no free deck - eject one first", "already on a deck"):
-                    self._event(f"up next {self.title(head)}: {msg}")
-                    self.up_next.pop(0)
-                    self.rc.reserve_pick = False
+                    rc, t = self.rc, self.track(head)
+                    base = float(getattr(rc, "base_bpm", 0) or 0)
+                    # THE CLOCK FOLLOWS THE RECORD: a song outside the wall against today's clock but inside it
+                    # where the clock is heading (a route's next record) WAITS; the clock travels half a percent a bar
+                    travelling = ("outside the tempo wall" in msg and getattr(rc, "follow_clock", True) and base and t is not None and t.bpm
+                                  and 0.90 <= base / float(t.bpm) <= 1.10 and abs(float(rc.master_bpm) / base - 1.0) > 0.005)
+                    if travelling:
+                        if getattr(self, "_fed_wait", None) != head:
+                            self._fed_wait = head
+                            self._event(f"up next {self.title(head)[:24]} waits for the clock ({float(rc.master_bpm):.0f} → {base:.0f} bpm)")
+                    else:
+                        self._event(f"up next {self.title(head)}: {msg}")
+                        self.up_next.pop(0)
+                        self.via_ids.discard(head)
+                        self.rc.reserve_pick = False
             else:
                 self.rc.reserve_pick = False
 
@@ -1972,6 +2290,10 @@ class Director:
                 pool_ids = None
         cur, bpm, cam, arc = None, None, None, 0.6
         layered = self.rc is not None
+        try:
+            via_map = self.via_by_tempo() if layered else {}
+        except Exception:
+            via_map = {}
         if self.system is not None and self.system.current is not None:
             cur = self.system.current
             bpm, cam = float(cur.bpm or 0), cur.camelot
@@ -2053,9 +2375,16 @@ class Director:
                     reach = smin <= r <= smax
                 pct = 100.0 * (r - 1.0)
                 why.append(f"tempo {pct:+.1f}%")
+                reach_via = 0
                 if not reach:
-                    ok = False
-                    why[-1] += " (out of reach: would fade)" if not layered else " (outside the wall)"
+                    # THE SET rule 4: a song the clock can reach through other records is "via N", not grey
+                    k = via_map.get(float(t.bpm)) if (layered and t.bpm) else None
+                    if k and k > 1:
+                        reach_via = k - 1
+                        why[-1] += f" (via {reach_via} record{'s' if reach_via > 1 else ''})"
+                    else:
+                        ok = False
+                        why[-1] += " (out of reach: would fade)" if not layered else " (outside the wall)"
                 kc = camelot_compat(cam, t.camelot) if (cam and t.camelot) else None
                 if kc is not None:
                     why.append(f"key {t.camelot} fit {kc:.2f}" + (" (clash)" if kc < 0.55 else ""))
@@ -2063,7 +2392,7 @@ class Director:
                         why[-1] += " - a fade or a key shift"
                 why.append(f"energy {e:.2f} vs {arc:.2f}")
                 fit = (0.45 * (kc if kc is not None else 0.6) + 0.35 * max(0.0, 1.0 - abs(math.log(max(r, 1e-6))) / 0.1)
-                       + 0.2 * max(0.0, 1.0 - abs(e - arc) / 0.5)) if reach else 0.0
+                       + 0.2 * max(0.0, 1.0 - abs(e - arc) / 0.5)) if reach else (0.2 / reach_via if reach_via else 0.0)
                 if (t.bpm_conf or 0) < 0.5:
                     why.append("loose grid (beat-matching unreliable)")
                     fit *= 0.6
@@ -2137,8 +2466,21 @@ class Director:
         rc, sysm = self.rc, self.system
         now_t = time.time()
 
-        def row(t, kind, text, sub="", key=None, bar=None):
-            rows.append({"t": (None if t is None else max(0.0, float(t))), "bar": bar, "kind": kind, "text": text, "sub": sub, "key": key or (kind, text[:40])})
+        def row(t, kind, text, sub="", key=None, bar=None, tid=None):
+            rows.append({"t": (None if t is None else max(0.0, float(t))), "bar": bar, "kind": kind, "text": text, "sub": sub, "key": key or (kind, text[:40]), "id": tid})
+        # THE FLOOR's requests first: a song being made playable, with its stage; ready for a minute after
+        for k in list(self.requests.keys()):
+            r = self.requests[k]
+            if (r.get("ready") or r.get("error")) and now_t - float(r.get("t") or 0) > 90.0:
+                del self.requests[k]
+                continue
+            if r.get("error"):
+                row(None, "REQUEST", f"{r['title'][:30]}: failed", str(r["error"])[:80], key=("req", k, "err"))
+            elif r.get("ready"):
+                row(None, "REQUEST", f"{r['title'][:30]} is ready · put it UP NEXT?", "right-click", key=("req", k, "ready"), tid=r.get("id"))
+            else:
+                row(None, "REQUEST", f"{r['title'][:30]}: {r.get('stage', '')}" + (f" ({float(r['pct']):.0f} %)" if r.get("pct") is not None else ""),
+                    "one job at a time: analysis, stems, pairings", key=("req", k, r.get("stage")), tid=r.get("id"))
         if rc is not None and rc.master is not None:
             bar_s = rc._bar_clock() / RATE
             arr = rc._arrangement_status()
@@ -2204,9 +2546,42 @@ class Director:
                         ("the DJ stages its pick while this record plays toward its minimum" if left > 0 else "the DJ is picking now") + " · put a song UP NEXT to decide it",
                         key=("next-none",))
             on_decks = {s.track.id for s in rc.songs.values()}
-            after = [self.title(t)[:24] for t in self.up_next if t not in on_decks or (rc.seam is None or rc.songs.get(rc.seam["b"]) is None or rc.songs[rc.seam["b"]].track.id != t)]
+            after = [self.title(t)[:24] + (" (via)" if t in self.via_ids else "") for t in self.up_next
+                     if t not in on_decks or (rc.seam is None or rc.songs.get(rc.seam["b"]) is None or rc.songs[rc.seam["b"]].track.id != t)]
             if after:
-                row(None, "UP NEXT", ", ".join(after[:4]) + (" …" if len(after) > 4 else ""), "your queue, in order", key=("upnext", tuple(after[:4])))
+                row(None, "UP NEXT", ", ".join(after[:4]) + (" …" if len(after) > 4 else ""),
+                    "your queue, in order" + (" · (via) = a record on the route to the one after it" if any(t in self.via_ids for t in self.up_next) else ""),
+                    key=("upnext", tuple(after[:4])))
+            # THE SET (docs/DJ_THE_SET.md): the chain after the queue, then where the clock goes
+            for h in self.horizon[:5]:
+                row(h.get("t"), "THEN", h["title"][:30], " · ".join(h.get("why") or []), key=("then", h["id"]), tid=h["id"])
+            if not self.horizon:
+                note = getattr(self, "_hz_note", "") or ""
+                rec_bars = (rec or {}).get("since_bars") or 0
+                if note:
+                    row(None, "THEN", note[:80], "put a song UP NEXT to go somewhere else", key=("then-none", note[:30]))
+                elif rec_bars > 4:
+                    row(None, "THEN", "the set is being planned", "a few seconds", key=("then-planning",))
+            if getattr(rc, "follow_clock", True) and (self.horizon or self._chain_pinned()):
+                try:
+                    step_s = rc.play_min_s + 30.0
+                    t0 = next((r["t"] for r in rows if r["kind"] == "SEAM" and r.get("t") is not None), rc.play_min_s)
+                    seq, clk = [], float(rc.master_bpm)
+                    for i, pid in enumerate(self._chain_pinned()):
+                        t = self.track(pid)
+                        if t is not None and t.bpm:
+                            seq.append((t0 + i * step_s, float(t.bpm)))
+                    for h in self.horizon[:5]:
+                        seq.append((h.get("t"), float(h["bpm"])))
+                    words, last = [f"{clk:.0f} now"], clk
+                    for t_at, b in seq:
+                        if abs(b / last - 1.0) >= 0.01:
+                            words.append(f"{b:.0f}" + (f" by {_mmss(t_at)}" if t_at is not None else ""))
+                            last = b
+                    if len(words) > 1:
+                        row(None, "CLOCK", " → ".join(words), "the clock travels to each record's own tempo, half a percent a bar", key=("clock", tuple(words)))
+                except Exception:
+                    pass
         elif sysm is not None and sysm.current is not None:
             st = sysm.status()
             cur = st.get("current") or {}
@@ -2372,6 +2747,9 @@ class Director:
             out["plan_rows"] = self._plan_rows()
         except Exception as e:  # noqa: BLE001
             out["plan_rows"] = [{"t": None, "kind": "PLAN", "text": f"(the plan could not be read: {type(e).__name__}: {e})", "sub": "", "key": "err"}]
+        out["horizon"] = [{"id": h["id"], "title": h["title"], "bpm": h["bpm"], "t": h.get("t"), "why": list(h.get("why") or [])} for h in self.horizon]
+        out["set_why"] = self._hz_why
+        out["requests"] = {k: dict(v) for k, v in self.requests.items()}
         # DOUBLED: the same stem from two songs audible at once (a crossfade in flight, or the autoDJ's blend)
         doubled = []
         try:

@@ -1218,6 +1218,46 @@ intro bass (a NEXT that lands in a build or a breakdown becomes the cut). Campai
 dead bars 0, dead air 0 %, lurch 27 % [10-57] n=11, events 19/16, rehearsals 15 clean / 5 moved). Both
 gates green at the end. Step 3 of the plan, the user's hour at the controls, is still the open item.
 
+**2026-09-19, "what features is this system currently lacking?" → "do the planning horizon and floor
+work".** The gap list given (and two of its items withdrawn on reading the code: the deck already transposes
+independently of tempo, and the Director already has its nanoKONTROL2 mapping - a gap list is checked
+against the code before it is presented). The user's order lifted the feature freeze before the listening
+night; noted, built. docs/DJ_THE_SET.md is the page. What was true: the layered engine planned one seam
+ahead and nothing after; `base_bpm` was the opener's tempo all night (the clock could not leave it by more
+than 6 %, so a set that opened at 118 never reached 128); a queued song outside the wall was popped from
+UP NEXT a tick later with a line in the log; a song without stems had no path to the decks during a night.
+Built: (1) THE CLOCK FOLLOWS THE RECORD (`remix.py`: `follow_clock`, `_clock_follows` at both clock
+handovers - `base_bpm` and the session key become the new record's; `_tempo_step` walks the clock there at
+half a percent a bar, every deck re-rated, never past the wall for any deck). (2) `lib/dj/setplan.py`: the
+pair score (key over the deck's shifts at the pick's own 0.68, tempo closeness to the step the TEMPO dial
+asks for, the arc's energy at the projected time, the pairing file's arrival word, kin), `chain` (a seeded
+beam of width four, five deep, after the pinned queue), `route` (a chain of at most three records to a far
+song, each hop making headway in tempo), `hops_by_tempo` (the cheap "via N" for SONGS). (3) The Director:
+`horizon`, pruned every two seconds and on a trigger, extended on a worker thread (a plan is 150-350 ms;
+the Director's thread steps the conductor), the head is the conductor's pick (`pick_hook`, with "wait"
+while the clock travels toward where the head fits); `queue` returns a route or an honest refusal and
+`_feed_up_next` lets a route's next record wait for the clock instead of popping it; `skip_in_set`;
+`adopt_library`; THEN, CLOCK and REQUEST rows in the plan; "via N records" in `rank`. (4) The tab: a menu on
+THE PLAN's rows, the walled menu's route, "make it playable" (the planner's one-slot GPU queue with the
+fast model → a pairings pass → the library re-read on a worker and adopted), the drop box (the music
+folder swept every twenty seconds; `dj_scan.py --add` analyzes one file). First smoke over the library:
+a chain in ~200 ms; before the TEMPO lean every hop was the same key at +1 % (the score had no reason to
+move) - the lean gives each step a target; the route search needed a headway rule (each hop must close a
+fifth of the wall toward the destination) to find two-hop routes at all; half-time records (65 against 124)
+stay unreachable, honestly. Five rounds of the control gate (seeds 31-44, 415 presses; the new presses
+`UP NEXT far` and `not tonight` among them) found, in order: the churn check's false alarm (a head the
+conductor had picked and was decoding was on neither the decks nor the queue - a pick on its way is pinned);
+a hop that reached the decks while the search ran (the result is filtered against the room before it is
+applied); a chain honestly empty after a 147 bpm queue with no row saying so (a THEN row now says "nothing
+fits after X tonight"); a finished result waiting behind the two-second throttle (applied at once); and two
+things of the machine's own the gate had not hit before: a BRIDGE checked the vocal at the arm bar, not at
+its landing twelve bars on (the room went silent under a vocal that had stopped - now checked where it
+lands), and the breakdown strip took a TAKEOVER song's bassline as if it were the record's (harmony travels
+together: its melody went too, the song left, one silent vocal for four bars - the strip takes only what the
+record holds; another song's bassline carries the breakdown; nothing to carry it = no strip, the cut on the
+bar). Last two rounds: 180 presses, 0 broken, 0 dead bars; the remix gate green three times; campaign v10
+below.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
