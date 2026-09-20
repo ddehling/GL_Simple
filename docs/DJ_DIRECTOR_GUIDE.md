@@ -207,9 +207,11 @@ The best pairs across the whole library, from the pairing file, ranked: "the voc
 bass lane's. **fits the clock** keeps the pairs whose record is inside the tempo wall of the clock playing;
 **with the highlighted song** keeps the pairs that involve the song highlighted in SONGS or UP NEXT.
 **Double-click = HEAR**: eight bars rendered offline from both records' stems, the vocal or bassline
-stretched to the record's tempo and shifted by the pair's semitones, played on the CUE OUTPUT - a second
-audio device named by `dj.cue_device` in config.yaml (a fragment of its name, e.g. `Headphones`). Without
-one the tab says so; a preview never plays on the floor while the Director runs. **Right-click → DROP IT**:
+stretched to the record's tempo and shifted by the pair's semitones, played on the CUE OUTPUT. **OUTPUTS**
+(the button in the top row) chooses both devices: the MAIN output, where the floor plays (system default
+unless you pick one; it takes effect at the next START), and the CUE output for the preview (at once). Kept
+per machine in logs/dj_outputs.json; `dj.cue_device` in config.yaml still works as a fallback. Without a cue
+output the tab says so; a preview never plays on the floor while the Director runs. **Right-click → DROP IT**:
 the pair's record goes UP NEXT (unless it is the record now) and the pair is planted as an IDEA already
 taken - it fires when that record plays, and THE PLAN shows it as an EVENT. A song played tonight shows grey.
 

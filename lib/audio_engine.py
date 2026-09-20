@@ -358,6 +358,9 @@ class AudioEngine:
         self._ring_capacity = self.sample_rate * RING_CAPACITY_MS // 1000
         self._cmds: queue.SimpleQueue = queue.SimpleQueue()
         self._device = None
+        # The playback device by a fragment of its name ("" = the system default). The DJ planner's OUTPUTS
+        # button sets it (lib/dj/cue.py keeps the choice per machine); read when the device opens in start().
+        self.device_name = ""
         self.master_volume = 1.0    # scales all audio output
         self.narrative_volume = 1.0  # scales non-ambient (oneshot) tracks in real time
         # Scales is_ambient tracks at mix time. Stories_OGL pushes the
@@ -581,11 +584,25 @@ class AudioEngine:
             print(f"[AudioEngine] ring prefill took {prefill:.2f}s "
                   f"(expected ~{RING_TARGET_MS / 1000:.1f}s)")
 
+        dev_id = None
+        frag = (getattr(self, "device_name", "") or "").strip().lower()
+        if frag:
+            try:
+                for d in miniaudio.Devices().get_playbacks():
+                    if frag in str(d.get("name", "")).lower():
+                        dev_id = d["id"]
+                        print(f"[AudioEngine] output device: {d['name']}")
+                        break
+                else:
+                    print(f"[AudioEngine] no playback device matches '{self.device_name}': the system default plays")
+            except Exception as e:
+                print(f"[AudioEngine] device list failed ({e}); the system default plays")
         self._device = miniaudio.PlaybackDevice(
             output_format=FORMAT,
             nchannels=CHANNELS,
             sample_rate=self.sample_rate,
             buffersize_msec=200,
+            device_id=dev_id,
         )
         gen = self._device_feed()
         next(gen)   # advance to first yield so miniaudio can send(framecount)

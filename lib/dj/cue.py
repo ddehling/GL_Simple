@@ -10,14 +10,45 @@ import threading
 import numpy as np
 
 
+def _root():
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def outputs_path():
+    """The OUTPUTS the planner chose (logs/dj_outputs.json - per machine, never in git): {"main": name, "cue": name},
+    each a fragment of a playback device's name, "" = the system default / none."""
+    return os.path.join(_root(), "logs", "dj_outputs.json")
+
+
+def load_outputs():
+    try:
+        import json
+        with open(outputs_path(), encoding="utf-8") as f:
+            d = json.load(f) or {}
+        return {"main": str(d.get("main") or ""), "cue": str(d.get("cue") or "")}
+    except Exception:
+        return {"main": "", "cue": ""}
+
+
+def save_outputs(main, cue):
+    import json
+    os.makedirs(os.path.dirname(outputs_path()), exist_ok=True)
+    with open(outputs_path(), "w", encoding="utf-8") as f:
+        json.dump({"main": main or "", "cue": cue or ""}, f, indent=2)
+
+
+def main_device_name():
+    """The main (floor) output: the planner's choice, else the system default ("")."""
+    return os.environ.get("DJ_MAIN_DEVICE", "") or load_outputs().get("main", "")
+
+
 def cue_device_name():
-    name = os.environ.get("DJ_CUE_DEVICE", "")
+    name = os.environ.get("DJ_CUE_DEVICE", "") or load_outputs().get("cue", "")
     if name:
         return name
     try:
         import yaml
-        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        with open(os.path.join(root, "config.yaml"), encoding="utf-8") as f:
+        with open(os.path.join(_root(), "config.yaml"), encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
         return str(((cfg.get("dj") or {}).get("cue_device")) or "")
     except Exception:

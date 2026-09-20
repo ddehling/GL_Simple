@@ -592,6 +592,12 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.theme_box.setToolTip("theme: what kind of songs, and the shape of the night")
         self.theme_box.currentTextChanged.connect(lambda n: self.director and self.director.set_theme(n))
         top.addWidget(self.theme_box)
+        # OUTPUTS (user 2026-09-20): where the floor plays and where the cue (the PAIRS preview) plays - two devices
+        self.outputs_btn = QPushButton("OUTPUTS")
+        self.outputs_btn.setToolTip("choose the MAIN output (the floor) and the CUE output (the headphone preview of PAIRS); "
+                                    "kept per machine in logs/dj_outputs.json; the main output takes effect at the next START")
+        self.outputs_btn.clicked.connect(self._outputs_dialog)
+        top.addWidget(self.outputs_btn)
         self.songs_box = SetlistBox(self)
         self.songs_box.setMinimumWidth(220)
         self.songs_box.setToolTip("a playlist (the Set tab's saved lists) as the pool of songs; whole library lifts it")
@@ -1440,6 +1446,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         # and an engine already running underran on that ("the render thread cannot keep up", user's log
         # 2026-09-12); nothing is heard before the first engine is ready anyway
         self.engine = AudioEngine()
+        try:
+            from lib.dj.cue import main_device_name
+            self.engine.device_name = main_device_name()  # the MAIN output chosen under OUTPUTS ("" = the system default)
+        except Exception:
+            pass
         self.director = Director(self.planner.music_dir, engine=self.engine, theme=self.theme_box.currentText())
         for name, group in self.dial_groups.items():
             for b in group.buttons():
@@ -1673,6 +1684,62 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 self._floor_next()
         threading.Thread(target=work, daemon=True, name="director-dropbox").start()
         QTimer.singleShot(200, poll)
+
+    def _outputs_dialog(self):
+        """Two combo boxes over the machine's playback devices: MAIN (the floor) and CUE (the preview). Saved to
+        logs/dj_outputs.json; the cue player is rebuilt at once, the main output is used at the next START."""
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLabel as _QL
+        from lib.dj.cue import playback_devices, load_outputs, save_outputs
+        devs = [n for n, _i in playback_devices()]
+        cur = load_outputs()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("OUTPUTS")
+        form = QFormLayout(dlg)
+        main_box, cue_box = QComboBox(), QComboBox()
+        main_box.addItem("system default", "")
+        cue_box.addItem("none (no headphone preview)", "")
+        for n in devs:
+            main_box.addItem(n, n)
+            cue_box.addItem(n, n)
+
+        def select(box, name):
+            if not name:
+                box.setCurrentIndex(0)
+                return
+            for i in range(box.count()):
+                if name.lower() in str(box.itemData(i) or "").lower():
+                    box.setCurrentIndex(i)
+                    return
+            box.addItem(f"{name} (not found now)", name)
+            box.setCurrentIndex(box.count() - 1)
+        select(main_box, cur.get("main", ""))
+        select(cue_box, cur.get("cue", ""))
+        form.addRow("MAIN output (the floor)", main_box)
+        form.addRow("CUE output (headphones: the PAIRS preview)", cue_box)
+        note = _QL("the main output takes effect at the next START; the cue output at once.\n"
+                   "Pick two different devices, or the preview would play on the floor.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        bb.accepted.connect(dlg.accept)
+        bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        main, cue = str(main_box.currentData() or ""), str(cue_box.currentData() or "")
+        if main and cue and main == cue:
+            self.err_lbl.setText("OUTPUTS: the cue output is the main output - the preview would play on the floor; cue set to none")
+            cue = ""
+        save_outputs(main, cue)
+        self._cue = None                              # rebuilt with the new device on the next HEAR
+        words = f"OUTPUTS: main = {main or 'system default'} · cue = {cue or 'none'}"
+        if self.director is not None and self.engine is not None and (getattr(self.engine, "device_name", "") or "") != main:
+            words += "  (the main output changes at the next START)"
+        self.moment_lbl.setText(words)
+        try:
+            self._fill_pairs(force=True)
+        except Exception:
+            pass
 
     # -- THE PAIRS: the mashup finder and the headphone preview (docs/DJ_MORE_THAN_A_MIXER.md 1) ---------------------
     def _fill_pairs(self, force=False):
