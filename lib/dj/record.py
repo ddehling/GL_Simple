@@ -1484,4 +1484,4 @@ class RecordPlay:
                 "settle_left": max(0, self._play_min_bars() - since), "kind": self._kind_at(self.record_deck, self._next_bar_clock()),
                 "events_done": int(getattr(s, "events_done", 0)), "event_rate": int(getattr(self, "event_rate", 0)),
                 "event": ({"kind": pend["kind"], "in_bars": pend["bar"] - self.bar_n, "why": pend["why"], "track_id": pend["track_id"], "bar": pend["bar"],
-                           "accepted": bool(pend.get("accepted"))} if pend else None)}
+                           "accepted": bool(pend.get("accepted")), "bars": int(pend.get("bars") or 0), "want_t": pend.get("want_t")} if pend else None)}

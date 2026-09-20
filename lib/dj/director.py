@@ -2181,27 +2181,36 @@ class Director:
         b = int(self.bar())
         LANES = ("drums", "bass", "other", "vocals")
 
-        def ghost(key, track_id, lanes, at, start_s):
-            """The plan ahead as a dashed clip - kept where it is while the plan is the same song within a
-            bar of where it was (re-adding it every tick made it hop; user: 'the timeline keeps morphing')."""
-            old = getattr(self, "_ghost_key", None)
-            if old is not None and old[0] == key[0] and old[1] == key[1] and abs(old[2] - key[2]) <= 1 \
-                    and all(any(x.id == cid for x in self.tl.clips) for cid in self._ghosts):
-                return
-            for cid in self._ghosts:
-                c = next((x for x in self.tl.clips if x.id == cid), None)
-                if c is not None:
-                    self.tl.clips.remove(c)
-            self._ghosts = [c.id for c in self.tl.add(track_id, lanes, at, start_s, ghost=True)]
-            self._ghost_key = key
+        slots = getattr(self, "_ghost_slots", None)
+        if slots is None:
+            slots = self._ghost_slots = {}
 
-        def no_ghost():
-            for cid in self._ghosts:
+        def ghost(key, track_id, lanes, at, start_s, end_bar=None, slot="next"):
+            """The plan ahead as a dashed clip - kept where it is while the plan is the same song within a
+            bar of where it was (re-adding it every tick made it hop; user: 'the timeline keeps morphing').
+            `slot`: "next" = the next record's arrival; "voice" = a vocal event over the record."""
+            old_key, old_ids = slots.get(slot, (None, []))
+            if old_key is not None and old_key[0] == key[0] and old_key[1] == key[1] and abs(old_key[2] - key[2]) <= 1 \
+                    and all(any(x.id == cid for x in self.tl.clips) for cid in old_ids):
+                return
+            for cid in old_ids:
                 c = next((x for x in self.tl.clips if x.id == cid), None)
                 if c is not None:
                     self.tl.clips.remove(c)
-            self._ghosts = []
-            self._ghost_key = None
+            ids = [c.id for c in self.tl.add(track_id, lanes, at, start_s, end_bar=end_bar, ghost=True)]
+            slots[slot] = (key, ids)
+            if slot == "next":
+                self._ghosts, self._ghost_key = ids, key
+
+        def no_ghost(slot="next"):
+            _k, old_ids = slots.get(slot, (None, []))
+            for cid in old_ids:
+                c = next((x for x in self.tl.clips if x.id == cid), None)
+                if c is not None:
+                    self.tl.clips.remove(c)
+            slots[slot] = (None, [])
+            if slot == "next":
+                self._ghosts, self._ghost_key = [], None
 
         def mark(text, kind, lanes=None, bar=None, end_bar=None):
             self.marks.append({"bar": int(bar if bar is not None else b), "end_bar": (int(end_bar) if end_bar is not None else None),
@@ -2360,7 +2369,27 @@ class Director:
                 left = max(1, plan_in)
             staged = [(d, s) for d, s in rc.songs.items() if s.staged_at is not None and not s.entered and not s.leaving]
             evp = ((arr.get("record") or {}).get("event") if isinstance(arr, dict) else None) or None
-            d_e = rc.deck_of(evp["track_id"]) if (evp and evp.get("kind") == "takeover" and evp.get("track_id") is not None) else None
+            # A VOCAL EVENT (the DJ's idea, or a pair you chose) on the vocals lane, at its bar for its bars: a mark while it
+            # is an idea, a dashed clip once taken - THE PLAN's EVENT row and the picture say the same thing
+            ev_v = evp if (evp and evp.get("kind") == "acapella" and evp.get("track_id") is not None) else None
+            if ev_v is not None:
+                Ev = self._anchor(("event", int(ev_v["track_id"]), int(ev_v["bar"])), b + int(ev_v["in_bars"]))
+                n_v = int(ev_v.get("bars") or 2 * rc.change_bars)
+                self.plan_marks.append({"bar": Ev, "end_bar": Ev + n_v, "lanes": ["vocals"], "ghost": True, "kind": "event",
+                                        "text": ("IDEA: " if not ev_v.get("accepted") else "EVENT: ") + str(ev_v.get("why", ""))[:44]})
+                d_v = rc.deck_of(ev_v["track_id"])
+                if ev_v.get("accepted") and d_v is not None and d_v in rc.songs:
+                    ghost(("acap", int(ev_v["track_id"]), Ev), int(ev_v["track_id"]), ["vocals"], Ev,
+                          float(ev_v.get("want_t") or rc._song_time_at(d_v, rc._next_bar_clock())), end_bar=Ev + n_v, slot="voice")
+                else:
+                    no_ghost("voice")
+            else:
+                no_ghost("voice")
+            if evp and evp.get("kind") == "takeover" and not evp.get("accepted") and evp.get("bar") is not None:
+                Et = self._anchor(("event", int(evp["track_id"]), int(evp["bar"])), b + int(evp["in_bars"]))
+                self.plan_marks.append({"bar": Et, "end_bar": None, "lanes": ["bass", "other"], "ghost": True, "kind": "event",
+                                        "text": "IDEA: " + str(evp.get("why", ""))[:44]})
+            d_e = rc.deck_of(evp["track_id"]) if (evp and evp.get("kind") == "takeover" and evp.get("accepted") and evp.get("track_id") is not None) else None
             if d_e is not None and d_e in rc.songs and not rc.songs[d_e].entered:
                 # THE EVENT IS THE EXIT: the takeover's song is the next record, and the seam into the staged one
                 # was dropped when the event was planned. Its ghost sits at the event's bar, anchored - the staged
