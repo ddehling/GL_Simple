@@ -290,7 +290,20 @@ class RecordPlay:
                            f"event in {int(K) - bar} bars: {self._event_pending['why']}")
                 return
         if planted is not None:
-            # your pair could not be placed this bar: said; it is tried again next bar while its window is open
+            # your pair could not be placed this bar: said; it is tried again next bar while its window is open - and
+            # dropped, said, once the record is past the pair's groove
+            gb = None
+            try:
+                for c in rec.get("vocal_over" if planted.get("kind") == "acapella" else "bass_under") or []:
+                    if int(c["id"]) == int(planted["track_id"]) and c.get("groove"):
+                        gb = float(c["groove"][1])
+            except Exception:
+                gb = None
+            if gb is not None and t_now > gb - 8 * bar_a:
+                self._planted.pop(sa.track.id, None)
+                self._move("event_none", None, self._song_id(self.record_deck), None,
+                           f"your pair missed its groove: {sa.track.title[:22]} is past {int(gb) // 60}:{int(gb) % 60:02d} ({last_why[:50]})")
+                return
             if not getattr(self, "_planted_said", False):
                 self._planted_said = True
                 self._move("event_none", None, self._song_id(self.record_deck), None, f"your pair waits: {last_why[:70]}")
@@ -301,14 +314,29 @@ class RecordPlay:
         self._move("event_none", None, self._song_id(self.record_deck), None,
                    f"no event for {sa.track.title[:24]}: {last_why[:70]}")
 
-    def plant_idea(self, record_tid, kind, other_tid):
-        """A PAIR YOU CHOSE (DROP IT): when `record_tid` is the record, `other_tid` comes as `kind` ("acapella" - its
-        vocal over the groove; "takeover" - its bassline under the drums, then it is the record), already taken."""
+    def plant_idea(self, record_tid, kind, other_tid, want_t=None):
+        """A PAIR YOU CHOSE (PLAY THIS PAIR): when `record_tid` is the record, `other_tid` comes as `kind` ("acapella" -
+        its vocal over the groove; "takeover" - its bassline under the drums, then it is the record), already taken.
+        `want_t`: where the pair's groove begins in the record - the record is then cued to START five phrases
+        before it (three pairs were taken and none fired: the record began at its first drop and the pair's groove
+        at 5:12 was never inside its play - 2026-09-20)."""
         if not hasattr(self, "_planted") or self._planted is None:
             self._planted = {}
-        self._planted[int(record_tid)] = {"kind": kind, "track_id": int(other_tid), "t": time.time()}
+        self._planted[int(record_tid)] = {"kind": kind, "track_id": int(other_tid), "t": time.time(), "want_t": (float(want_t) if want_t is not None else None)}
         self._planted_said = False
         return True
+
+    def _planted_start(self, track):
+        """Where a record with a planted pair should start: five phrases before the pair's groove, on a downbeat, not
+        before its first non-intro section; None when no pair is planted for it or the pair has no groove time."""
+        pl = (getattr(self, "_planted", None) or {}).get(track.id)
+        if not pl or pl.get("want_t") is None:
+            return None
+        bar = self._bar_s(track, float(pl["want_t"]))
+        secs = track.sections or []
+        first = next((float(s["start_s"]) for s in secs if s.get("kind") != "intro"), 0.0)
+        t0 = max(first, float(pl["want_t"]) - 5 * self.change_bars * bar)
+        return track.nearest_downbeat(t0)
 
     def set_play_min(self, seconds):
         self.play_min_s = float(max(30.0, seconds))
@@ -727,6 +755,9 @@ class RecordPlay:
         (the first groove's bass dipped in one bar and the body moved a section later): 1:40 as the record, then
         Fiji the same - three records in two and a half minutes (flags 'clash', 'seam' 2026-09-20)."""
         t = track
+        want = self._planted_start(t)
+        if want is not None:
+            return want                               # a pair you chose decides where its record starts
         need = float(self.play_min_s) + MIN_RUNWAY_S + 40.0
         secs = t.sections or []
         first = next((float(s["start_s"]) for s in secs if s.get("kind") != "intro"), 0.0)

@@ -1440,7 +1440,23 @@ peak 0.9) and plays them on the CUE OUTPUT (`lib/dj/cue.py`: a second playback d
 floor); DROP IT queues the record and plants the pair as an idea already taken (`plant_idea`, placed by the
 event planner whatever MOMENTS and MIXING say). Gates: control (IDEA do it / skip, BUILD, AGAIN, half-time
 parts pressed), remix, the preview smoke (`_dj_preview_smoke.py`, a WAV, no device) - pending while the
-planner is up. Not changed: a part-song made UP NEXT becomes the record
+planner is up. Gates after: preview smoke 16.85 s at peak 0.900 (rendered in 13 s), control gate 60 presses
+ALL OK with IDEA do it / skip and AGAIN pressed (BUILD not drawn by the dice), remix gate green. Then OUTPUTS
+(a button: the MAIN output and the CUE output from the machine's playback devices, per machine in
+logs/dj_outputs.json), and DROP IT renamed PLAY THIS PAIR with the action spelled out ("very ambiguous
+phrasing").
+
+**"it isn't clear the pairs system is working" (14:24, session fe5985).** Three pairs taken, none fired: each
+record went UP NEXT and became the record, then "your pair waits: no phrase of the record inside one of its
+grooves in the window" for the rest of its play. The pair names a groove ("the vocal of X over Y from
+5:12") but the record was cued to its first drop near 1:30 and its seam came four minutes later - the
+groove was never inside the play (the 0:29 pair's groove was before the record's start). Fixed: a pair you
+chose decides where its record starts - five phrases before the pair's groove, on a downbeat
+(`_planted_start`, ahead of the landmark rule); the PAIRS row says so ("the record would start at 3:54"); a
+pair whose record is past its groove is dropped and said ("your pair missed its groove") instead of waiting
+forever; and each row says how the pair's record follows the record playing now ("into it after Beam Me
+Up: key 0.55 (a clash)") - the 14:14 'seam' + 'clash' flags were a pair's record queued into a clash the
+list never mentioned. Code and compile only - the planner was up. Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)

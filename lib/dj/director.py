@@ -1114,6 +1114,7 @@ class Director:
         clock = float(rc.master_bpm) if (rc is not None and rc.master is not None) else None
         played = self._played_ids()
         by_id = {t.id: t for t in self.library}
+        rec_now = rc.songs[rc.record_deck].track if (rc is not None and rc.record_deck in rc.songs) else None
         out = []
         for rid, r in recs.items():
             R = by_id.get(int(rid))
@@ -1121,6 +1122,16 @@ class Director:
                 continue
             if fit_clock and clock and not (0.90 <= clock / float(R.bpm) <= 1.10):
                 continue
+            # how the pair's RECORD would follow the record playing now: its key against it (a pair's record went UP
+            # NEXT into a clash the list never mentioned - flags 'seam', 'clash' 2026-09-20)
+            into = ""
+            if rec_now is not None and rec_now.id != R.id:
+                try:
+                    from lib.dj.setplan import key_fit
+                    kf, _sh = key_fit(rec_now.camelot, R.camelot)
+                    into = f" · into it after {rec_now.title[:16]}: key {kf:.2f}" + (" (a clash)" if kf < 0.68 else "")
+                except Exception:
+                    into = ""
             g0 = float((r.get("grooves") or [[max(30.0, float(r.get("landmark") or 30.0))]])[0][0])
             for kind, key in (("vocal", "vocal_over"), ("bass", "bass_under")):
                 for x in r.get(key) or []:
@@ -1133,12 +1144,15 @@ class Director:
                         continue
                     if kind == "vocal":
                         r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
-                        words = f"the vocal of {S.title[:24]} over {R.title[:24]} from {_mmss(r_start)}"
+                        bar_r = 4.0 * 60.0 / float(R.bpm)
+                        from_t = max(0.0, r_start - 5 * 8 * bar_r)
+                        words = f"the vocal of {S.title[:24]} over {R.title[:24]} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
                     else:
                         r_start, s_start = g0, float(x.get("landmark") or 0.0)
                         words = f"{S.title[:24]}'s bassline under {R.title[:24]}'s drums, at its drop {_mmss(s_start)}"
                     out.append({"kind": kind, "r": R, "s": S, "score": float(x.get("score") or 0.0), "fit": x.get("fit"), "shift": int(x.get("shift") or 0),
-                                "r_start": r_start, "s_start": s_start, "words": words + f"  (fit {x.get('fit')})" + (f", shift {int(x.get('shift') or 0):+d}" if x.get("shift") else ""),
+                                "r_start": r_start, "s_start": s_start,
+                                "words": words + f"  (fit {x.get('fit')})" + (f", shift {int(x.get('shift') or 0):+d}" if x.get("shift") else "") + into,
                                 "played": (R.id in played or S.id in played)})
         out.sort(key=lambda z: (-z["score"], z["r"].title))
         return out[:n]
@@ -1158,7 +1172,7 @@ class Director:
             if not ok:
                 return f"the pair's record could not be queued: {msg}"
             words = f"{R.title[:24]} is UP NEXT; "
-        rc.plant_idea(R.id, kind, S.id)
+        rc.plant_idea(R.id, kind, S.id, want_t=(pair.get("r_start") if kind == "acapella" else None))
         self._event(f"PAIR to play: {pair['words'][:80]}")
         return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'}")
 
