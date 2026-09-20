@@ -2163,6 +2163,16 @@ class Director:
                         self.tl.clips.append(Clip(prev.track_id if prev else 0, ln, b, 0.0, end_bar=None, rest=True))
                     else:
                         pos = float(rc._tel_deck(d).get("time_s") or 0.0) if d else 0.0
+                        # ONE ANCHOR PER SONG: a lane heard on a song later takes its (bar, song time) line from the
+                        # song's first clip, not from a fresh telemetry read at this tick - four lanes stamped at
+                        # four ticks drew the same song's parts up to a bar apart (user 2026-09-19: "why do
+                        # different stems of the same song not line up?"). Telemetry wins only when the song has
+                        # moved (a cue, a jump, a loop): the derived place is then more than two bars off it.
+                        ref = next((c for c in reversed(self.tl.clips) if c.track_id == tid and not c.ghost and not c.rest and b - c.bar < 400), None)
+                        if ref is not None:
+                            derived = ref.start_s + (b - ref.bar) * self._bar_len(tid)
+                            if abs(derived - pos) <= 2.0 * self._bar_len(tid):
+                                pos = derived
                         self.tl.add(tid, [ln], b, pos)
             # what happened: the conductor's moves become marks (bands for a bed change with a breakdown)
             titles = {}
