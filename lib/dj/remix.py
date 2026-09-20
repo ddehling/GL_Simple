@@ -1556,8 +1556,9 @@ class RemixConductor(RecordPlay):
                 if getattr(song, "user_k", None) is not None and k - song.user_k < 4 * self.change_bars:
                     continue                          # a song YOU brought in stays on its deck four phrases even while its lane rests (one left 2 s after its vocal paused)
                 if getattr(self, "_vocal_hold", None) == deck:
-                    # YOUR vocal holds the lane: its song stays while it will sing again within its body
-                    if self._sings_again_bars(deck, self._next_bar_clock()) is not None:
+                    # YOUR vocal holds the lane: its song stays while it will sing again within its body - not while it
+                    # loops its last bars (that is its end, and a loop "sings again" every pass)
+                    if song.loop is None and self._sings_again_bars(deck, self._next_bar_clock()) is not None:
                         continue
                     self._vocal_hold = None
                     self._move("rest", "vocals", song.track.id, None, f"{song.track.title[:30]} has sung its last: the record's vocal returns")
@@ -1603,6 +1604,8 @@ class RemixConductor(RecordPlay):
         change in flight completes here: the lanes it still owes go to the song that owes them. The melody
         goes with the bass (harmony travels together), else it rests."""
         song = self.songs[deck]
+        if getattr(self, "_vocal_hold", None) == deck:
+            self._vocal_hold = None                       # an evicted song's vocal does not come back on the lane
         others = [d for d, s in self.songs.items() if d != deck and not s.leaving and s.staged_at is not None and s.entered]
         if not others and getattr(self, "policy", "record") == "record":
             # nobody entered to take its lanes: a staged song enters WHOLE rather than every lane resting (the
@@ -2610,7 +2613,7 @@ class RemixConductor(RecordPlay):
                 self._vocal_last = vd                 # a resting VOICE comes back first when it sings again
                 held = getattr(self, "_vocal_hold", None) == vd
                 if held:
-                    again = self._sings_again_bars(vd, at)
+                    again = None if self.songs[vd].loop is not None else self._sings_again_bars(vd, at)   # (a looping song has sung its last)
                     if again is None:
                         # your vocal has sung its last: the hold ends and the record's vocal may return
                         self._vocal_hold = None
@@ -2627,7 +2630,14 @@ class RemixConductor(RecordPlay):
             return
         hold = getattr(self, "_vocal_hold", None)
         if hold is not None:
-            if hold in self.songs and not self.songs[hold].leaving:
+            if hold in self.songs and not self.songs[hold].leaving and self.songs[hold].loop is not None:
+                # its body is over (it loops its last bars): the hold ends here - inside the loop it "sings again" every
+                # pass, and the lane paused and returned every eight bars for six minutes ("vocals keep coming in and
+                # out", "volume keeps fluctuating" - 2026-09-20)
+                self._vocal_hold = None
+                self._move("rest", "vocals", self._song_id(hold), None, f"{self.songs[hold].track.title[:30]} has run out: its vocal rests (the record's vocal returns)")
+                hold = None
+            if hold is not None and hold in self.songs and not self.songs[hold].leaving:
                 # the lane is YOURS: only your song's vocal comes back on it
                 if self._singing(self.songs[hold], self._song_time_at(hold, at)) is True and self._sings_through(hold, at, 2) is not False:
                     self._cross("vocals", hold, at, beats=1.0, shape=False)

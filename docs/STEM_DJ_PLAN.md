@@ -1412,7 +1412,17 @@ runway and a seam (`_record_landmark`: grooves after a build / breakdown / intro
 section on), else its body when that does, else the old landmark; and at a bed change the old record's vocal
 always goes with its harmony (twice in one evening a same-key vocal over the new harmony was flagged; a
 vocal the user holds stays). Code and compile only - the planner was up; the gates and a campaign are
-pending (the landmark change moves every seam's placement: the campaign's pace and lurch must be re-read). Not changed: a part-song made UP NEXT becomes the record
+pending (the landmark change moves every seam's placement: the campaign's pace and lurch must be re-read).
+
+**13:45-13:48, 'volume keeps fluctuating', 'vocals keep coming in and out', 'vocals wrong', 'still bouncing in
+and out from starlit'.** One cause, mine: Starlit (the user's vocal, brought in at 13:38) ran out of body at
+13:40 and went into its last-eight-bars loop; the vocal hold keeps a song on its deck "while it will sing
+again", and inside a loop it sings again every pass - the lane paused and returned every eight bars from
+13:42 to 13:48, the melody re-ducked each time (the level "fluctuating"). Fixed: a looping song has sung its
+last - the hold ends ("X has run out: its vocal rests, the record's vocal returns"), the lane does not come
+back to it, its deck is not kept, and an evicted song's hold is cleared. The 13:32 'dead' (Mahoya alone at
+1:56 with every stem at 0.74) is not explained by the log: no slip, no move; the record's own level is the
+likely class. Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)
