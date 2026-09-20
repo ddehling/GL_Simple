@@ -36,7 +36,7 @@ def main():
         for kind, key in (("vocal", "vocal_over"), ("bass", "bass_under")):
             for x in r.get(key) or []:
                 S = lib.get(int(x["id"]))
-                if S is None:
+                if S is None or S.id == R.id or S.title == R.title:
                     continue
                 sc = float(x.get("score") or 0.0)
                 if best is None or sc > best[0]:

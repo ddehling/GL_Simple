@@ -1125,8 +1125,8 @@ class Director:
             for kind, key in (("vocal", "vocal_over"), ("bass", "bass_under")):
                 for x in r.get(key) or []:
                     S = by_id.get(int(x["id"]))
-                    if S is None or not getattr(S, "has_stems", False) or not S.bpm:
-                        continue
+                    if S is None or not getattr(S, "has_stems", False) or not S.bpm or S.id == R.id or S.title == R.title:
+                        continue                      # (a song over itself - or its twin in the library - is not a pair)
                     if with_tid is not None and int(with_tid) not in (R.id, S.id):
                         continue
                     if R.id in played and S.id in played:
