@@ -1146,7 +1146,7 @@ class Director:
                     if kind == "vocal":
                         r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
                         bar_r = 4.0 * 60.0 / float(R.bpm)
-                        from_t = max(0.0, r_start - 5 * 8 * bar_r)
+                        from_t = max(0.0, r_start - 7 * 8 * bar_r)
                         words = f"the vocal of {S.title} over {R.title} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
                     else:
                         r_start, s_start, from_t = g0, float(x.get("landmark") or 0.0), None

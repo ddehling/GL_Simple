@@ -335,7 +335,8 @@ class RecordPlay:
         bar = self._bar_s(track, float(pl["want_t"]))
         secs = track.sections or []
         first = next((float(s["start_s"]) for s in secs if s.get("kind") != "intro"), 0.0)
-        t0 = max(first, float(pl["want_t"]) - 5 * self.change_bars * bar)
+        # seven phrases: the swap comes a seam after the start, the event window opens four phrases after the swap
+        t0 = max(first, float(pl["want_t"]) - 7 * self.change_bars * bar)
         return track.nearest_downbeat(t0)
 
     def set_play_min(self, seconds):
@@ -792,6 +793,17 @@ class RecordPlay:
         bar_b = self._bar_s(t, lm)
         floor_t = 2.0 * bar_b
         off = L if lm_off is None else lm_off
+        ps = self._planted_start(t)
+        if ps is not None:
+            # A PAIR'S RECORD starts where the pair needs it: the leading stems must carry from there - searched
+            # FORWARD (a phrase at most), never back (the search below walked 1992 back 77 bars from the wanted
+            # start and the pair's groove never came inside the play - 2026-09-20). B enters at the start; the swap
+            # (its "landmark") comes `off` bars later.
+            st = self._steady_from(t, sb.env, ps, max(2, min(off, L)), strict=False, lanes=lanes)
+            if st is None or st < ps or st - ps > 2 * self.change_bars * bar_b:
+                st = ps
+            st = max(st, floor_t)
+            return st, st + off * bar_b, True, L
         # the stems the seam brings first must carry through the bars they play under the old record - judged
         # BAR BY BAR (every bar's mean over 0.7 of the line): a pre-drop pattern on and off every bar passed the
         # two-second test and the campaign heard it as holes and lurches
