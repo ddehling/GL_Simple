@@ -1400,7 +1400,19 @@ old one kept the bass: 12.8 bars of split harmony. A forced completion now fires
 a lane, a bar apart in order (harmony first, drums the bar after); the darkening and the strip are skipped.
 The gate's EVENTS check accepts a night where every record without an event said why (`event_none`: singing
 records have no vocal candidates, and under auto there are no takeover exits any more). Remix gate green
-after (harmony split 0.0 bars). Not changed: a part-song made UP NEXT becomes the record
+after (harmony split 0.0 bars).
+
+**2026-09-20 13:31, 'clash' + 'seam' (session 86ac2f).** Three records in two and a half minutes: God Sigma
+became the record at its THIRD drop (3:14 of 7:35 - its first groove's bass dipped in one bar, the body moved
+a section later, and the landmark is "the drop after the body"), had 1:40 of play left before the rule's
+minimum-play-plus-runway, so Fiji's seam came early; Fiji landed deep the same way; Mahoya followed 26 s
+after. God Sigma's own vocal (7B) carried over Fiji's harmony (7B) for 17 s because the Camelot fit said it
+could: 'clash'. Fixed: the next record's landmark is its EARLIEST drop that leaves the minimum play, a
+runway and a seam (`_record_landmark`: grooves after a build / breakdown / intro from the first non-intro
+section on), else its body when that does, else the old landmark; and at a bed change the old record's vocal
+always goes with its harmony (twice in one evening a same-key vocal over the new harmony was flagged; a
+vocal the user holds stays). Code and compile only - the planner was up; the gates and a campaign are
+pending (the landmark change moves every seam's placement: the campaign's pace and lurch must be re-read). Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)

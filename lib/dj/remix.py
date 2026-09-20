@@ -1811,12 +1811,17 @@ class RemixConductor(RecordPlay):
         return not fits or min(fits) >= CLASH_BELOW + 0.1      # (+0.1: a vocal carried at the clash line flapped held-down / back-up four times in fifteen seconds)
 
     def _vocal_goes_with(self, d, old, at):
-        """At a bed change: the old song's vocal goes out with its harmony when it does not fit the new one.
+        """At a bed change: the old song's vocal goes out WITH its harmony. (It used to carry over when the keys
+        fitted; twice in one evening a same-key vocal over the new harmony was flagged 'clash' - the ear hears
+        two songs fighting where the Camelot wheel hears none. Bring it back yourself if you want it: yours holds.)
         Returns a phrase for the move text, or ''."""
-        if old is None or old == d or self.lanes.get("vocals") != old or self._vocal_fits(d, old, at):
+        if old is None or old == d or self.lanes.get("vocals") != old:
             return ""
+        s_old = self.songs.get(old)
+        if s_old is not None and getattr(s_old, "user_k", None) is not None and getattr(self, "_vocal_hold", None) == old:
+            return "; your vocal of it stays"
         self._cross("vocals", None, at, beats=2.0, shape=False)
-        return "; its vocal goes with the old harmony (it does not fit the new)"
+        return "; its vocal goes with its harmony"
 
     def _other_free_for(self, d, frm=None):
         """May the melody lane go to `d` with its bass? From the bed, from the song giving up the bass (`frm`,

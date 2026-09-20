@@ -638,6 +638,32 @@ class RecordPlay:
             return 4
         return L + 1
 
+    def _record_landmark(self, track, env=None):
+        """Where the NEXT RECORD is heard first: its earliest drop (a groove after a build, a breakdown or the intro,
+        from its first non-intro section on) that leaves it the minimum play, a runway and a seam; else its body
+        when that does; else the conductor's landmark. God Sigma's landmark was its third drop at 3:14 of 7:35
+        (the first groove's bass dipped in one bar and the body moved a section later): 1:40 as the record, then
+        Fiji the same - three records in two and a half minutes (flags 'clash', 'seam' 2026-09-20)."""
+        t = track
+        need = float(self.play_min_s) + MIN_RUNWAY_S + 40.0
+        secs = t.sections or []
+        first = next((float(s["start_s"]) for s in secs if s.get("kind") != "intro"), 0.0)
+        drops = []
+        for i in range(1, len(secs)):
+            if secs[i].get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown", "intro") and float(secs[i]["start_s"]) >= first - 1.0:
+                drops.append(t.nearest_downbeat(float(secs[i]["start_s"])))
+        for d in sorted(drops):
+            if float(t.duration_s) - d >= need:
+                st = self._steady_from(t, env, d, 16, strict=True)
+                if st is not None and st - d < 8.0 * self._bar_s(t, d):
+                    return st
+                if st is None:
+                    return d
+        body = self._body_start(t, env)
+        if float(t.duration_s) - body >= need:
+            return body
+        return self._landmark(t, env)
+
     def _seam_b_start(self, sb, L, lanes=("drums",), lm_off=None):
         """B's song time at the seam's first bar: its landmark minus the seam, when the stems the seam brings
         FIRST (`lanes`: its drums for a drums-first seam, its bass for a bass swap) carry from there; else the
@@ -649,7 +675,7 @@ class RecordPlay:
         0.0 s a record arrived late at every attempt until the room fell silent (2026-09-14).
         Returns (t_start, landmark, lands_on_landmark, seam length)."""
         t = sb.track
-        lm = self._landmark(t, sb.env)
+        lm = self._record_landmark(t, sb.env)
         bar_b = self._bar_s(t, lm)
         floor_t = 2.0 * bar_b
         off = L if lm_off is None else lm_off
@@ -701,7 +727,7 @@ class RecordPlay:
         only that it carries from its landmark for two phrases matters; else the first later place it does.
         Returns (t_start, landmark, on_landmark, 4) - the start four bars (the strip) before the landmark."""
         t = sb.track
-        lm = self._landmark(t, sb.env)
+        lm = self._record_landmark(t, sb.env)
         bar_b = self._bar_s(t, lm)
         floor_t = 2.0 * bar_b
         span = 2 * self.change_bars * bar_b
@@ -821,7 +847,7 @@ class RecordPlay:
         sa, sb = self.songs[a], self.songs[b]
         bar = self.bar_n
         L, kind = self._seam_len()
-        lm0 = self._landmark(sb.track, sb.env)
+        lm0 = self._record_landmark(sb.track, sb.env)
         order = self._seam_order(a, b, L, kind, lm0 - (L + 1) * self._bar_s(sb.track, lm0))
 
         def place(order_, L_):
