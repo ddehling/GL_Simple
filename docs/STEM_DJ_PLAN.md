@@ -1393,7 +1393,14 @@ MIXING was auto, which the afternoon's rule still allowed takeover exits under. 
 under MIXING cut - under auto, blend or morph the records change through seams and the plan shown is the plan
 played; a seam dropped for an event is said in the story row and logged (`plan / exit`); the event's words
 say what it is ("TAKEOVER at its drop: X's bassline and melody under these drums, its drums a phrase later -
-it becomes the record"). Code and compile only - the planner was up; the gates are pending. Not changed: a part-song made UP NEXT becomes the record
+it becomes the record"). Gates when the planner came down: control gate 60 presses ALL OK, 0 dead bars; the
+remix gate then found, with takeover exits gone from its auto night, a NEXT-forced completion of a bass swap
+that fired only the drums - the harmony step had not come yet, so the new record took the drums while the
+old one kept the bass: 12.8 bars of split harmony. A forced completion now fires every step that still moves
+a lane, a bar apart in order (harmony first, drums the bar after); the darkening and the strip are skipped.
+The gate's EVENTS check accepts a night where every record without an event said why (`event_none`: singing
+records have no vocal candidates, and under auto there are no takeover exits any more). Remix gate green
+after (harmony split 0.0 bars). Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)

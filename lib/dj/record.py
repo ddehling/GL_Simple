@@ -279,7 +279,7 @@ class RecordPlay:
         sa.events_done = rate                         # nothing usable for this record
         # said, not silent: a record with 349 vocal candidates got no event and the user flagged "nothing happening
         # for too long" (2026-09-19) - the last reason names it (often: no free deck)
-        self._move("event_plan", None, self._song_id(self.record_deck), None,
+        self._move("event_none", None, self._song_id(self.record_deck), None,
                    f"no event for {sa.track.title[:24]}: {last_why[:70]}")
 
     def set_play_min(self, seconds):
@@ -1011,17 +1011,23 @@ class RecordPlay:
             self._move("plan", None, None, None, "NEXT: the seam comes as soon as the next record is ready")
             return None
         if sm["state"] == "running":
-            # complete it now: the last step before done fires on the next bar, the steps between are skipped
-            done_off = max(off for off, name in sm["steps"] if name == "_st_done")
-            last_off = max(off for off, name in sm["steps"] if name != "_st_done")
-            for off, name in sm["steps"]:
-                if off < last_off:
-                    sm["fired"].add(off)
-            sm["bar"] = bar + 2 - last_off
-            sm["drums_bar"] = sm["bar"]
+            # complete it now: every step that still MOVES A LANE fires from the next bar, a bar apart, in order (a
+            # bass swap forced before its harmony step used to fire only the drums - the new record took the
+            # drums while the old one kept the bass: 12.8 bars of split harmony, the remix gate 2026-09-19); the
+            # darkening and the strip are skipped
+            unfired = [(off, name) for off, name in sm["steps"] if off not in sm["fired"] and name != "_st_done"]
+            movers = [name for _o, name in unfired if name in ("_st_vocal_in", "_st_harmony", "_st_drums_in", "_st_cut")]
+            if not movers and unfired:
+                movers = [unfired[-1][1]]
+            steps = [(i, name) for i, name in enumerate(movers)] + [(len(movers), "_st_done")]
+            sm["steps"], sm["fired"] = steps, set()
+            sm["bar"] = bar + 2
+            d_i = next((i for i, name in steps if name in ("_st_drums_in", "_st_cut")), 0)
+            sm["drums_bar"] = sm["bar"] + d_i
             sm["moved"] += 1                          # (you moved it: its landmark lands where it can)
             self._seam_plan_mirror()
-            self._move("plan", None, None, self._song_id(sm["b"]), "NEXT: the seam completes on the next bar")
+            self._move("plan", None, None, self._song_id(sm["b"]),
+                       "NEXT: the seam completes on the next bar" + (" (its harmony first, its drums the bar after)" if len(movers) > 1 else ""))
             return None
         K = self._phrase_bar_after(bar + 3)               # (three bars: the re-cue needs two to lock)
         if K >= sm["bar"]:

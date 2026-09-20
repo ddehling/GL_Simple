@@ -556,9 +556,13 @@ def main():
         print("  --   EVENTS: no pairings file on disk (python tools/dj/dj_pairings.py --all) - not judged")
     else:
         refused = [m["text"][:70] for m in ev_arms if "refused" in m["text"]]
-        check(len(ev_plans) >= 1 and (len(acap) >= 1 or any("TAKEOVER" in m["text"] for m in rc.move_log if m["kind"] == "moment")) ,
-              f"EVENTS: {len(ev_plans)} planned, {len(ev_arms)} armed ({len(refused)} refused), {len(acap)} acapella steps" + (f"; e.g. {refused[0]}" if refused else "")
-              + (f"; e.g. {ev_plans[0]['text'][:70]}" if ev_plans else ""))
+        # an event ran (a vocal came in, or a takeover under MIXING cut), or every record without one SAID why
+        # (takeover exits are off under auto since 2026-09-19; a singing record has no vocal candidates)
+        none = [m["text"][:80] for m in rc.move_log if m["kind"] == "event_none"]
+        ran = len(acap) >= 1 or any("TAKEOVER" in m["text"] for m in rc.move_log if m["kind"] == "moment")
+        check(ran or (none and not ev_plans) or (ev_plans and len(ev_arms) >= 1),
+              f"EVENTS: {len(ev_plans)} planned, {len(ev_arms)} armed ({len(refused)} refused), {len(acap)} acapella steps, {len(none)} records said why they had none"
+              + (f"; e.g. {refused[0]}" if refused else (f"; e.g. {none[0]}" if none else "")))
     arr = st.get("arrangement") or {}
     check("bed" in arr and "voices" in arr and not arr.get("error"), f"arrangement status: bed {((arr.get('bed') or {}).get('title') or '-')[:24]}, {len(arr.get('voices') or [])} voices, wait: {arr.get('wait_why')}")
     check(guard_viol == 0, f"harmonic guard violated in {guard_viol} blocks")
