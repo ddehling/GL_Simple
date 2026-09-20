@@ -844,6 +844,21 @@ class RecordPlay:
         if "unsteady" in why and L > 8:
             order, (tb, lm, on_lm, L) = placed(order, 8)
             K, why = self._seam_a_bar(a, L, order)
+        if why.startswith("before ") and order != "cut":
+            # "before A runs out": the seam must FIT in what is left of A - a 32-bar morph placed before Carte
+            # Blanche ran out had it looping its last eight bars for most of the morph (flag 'clash' 2026-09-19)
+            try:
+                from lib.dj.remix import RUNWAY_S
+                t_now = self._song_time_at(a, self._next_bar_clock())
+                bar_a = self._bar_s(sa.track, t_now)
+                fit = int((float(sa.track.duration_s) - RUNWAY_S - 2.0 * bar_a - t_now) / max(bar_a, 1e-6)) - max(0, K - bar) - 1
+            except Exception:
+                fit = L
+            if fit < L:
+                order, (tb, lm, on_lm, L) = placed(order, 8) if fit >= 8 else ("cut", self._seam_b_cut(sb))
+                if order == "cut":
+                    kind = "cut"
+                K, why = self._seam_a_bar(a, L, order)
         if order == "vocal":
             K_first = K - VOCAL_LEAD_BARS                    # the vocal comes VOCAL_LEAD_BARS before the drums
         else:

@@ -1313,6 +1313,28 @@ take the vocal off, DROP, eject, or bring another; its song stays on its deck wh
 within its body; a seam's vocal step waits behind it. Code and compile only - the planner was up; the gate
 is pending.
 
+**The seven flags of 18:11-18:14 (session 32105f, three layers) and what the log said underneath them.**
+The conductor's bars took 2.4-3.0 s against a real 1.97 for the whole session (25 logged bars in 70 s at one
+point); every earlier night ran at 2.00 (measured per minute from the remix_move rows: 09-16, 09-17, 09-18
+all 1.95-2.05 except the decoding minute at a start). The decks' own time advanced at 65-85 % of the wall
+clock: THE ENGINE WAS BEHIND REAL TIME, and nothing said so - it read as 'dead air', 'nothing happening for
+too long', 'seam', 'clash'. Suspects: the chain's worker (a burst of pure Python next to the audio producer,
+re-run on every staging because the decks were in its trigger), a fourth deck of RubberBand, and today's
+extra per-tick work. Done: the worker yields the GIL every 64 candidates, skips songs outside the wall
+before any arithmetic, and no longer seeds a Random per candidate (a third of a plan's time); the decks'
+comings and goings are no longer a trigger (the result is checked against the room when applied); and a
+REAL-TIME SLIP MONITOR in the Director (`_slip_step`: the clock song's time against the wall, its rate
+allowed for, ten-second windows) says "⚠ the engine is behind real time: the music ran at 78 %" in the story
+row once a minute and logs a `slip` row - the next such night is named at once, not inferred from bar
+counts. Not proven: which of the suspects it was; the measure is in place for the next session, and the
+first test is the same set at LAYERS two. Also from the log: the seam "before Carte Blanche runs out" was
+placed as a 32-bar morph with 48 s of body left, so the record looped its last eight bars through most of
+it ('clash' at 18:14) - a seam placed before A runs out now shrinks to what fits (eight bars, else the
+cut); the user's TAKEOVER with Carte Blanche read 'clash' and 'seam' at once - Kigelia's vocal (7A) over
+Carte Blanche's harmony (7A, whole-trim 1.6 against Kigelia's 0.86): a level step by design ("loud"), not
+a key clash, left as it is; 'the low end wrong' at 1.6 on Carte Blanche's bass is the same whole-trim, one
+flag, no change yet.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

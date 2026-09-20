@@ -7,7 +7,7 @@ A hop from record A to candidate C is judged against the clock A leaves behind. 
 record (RemixConductor.follow_clock) that clock is A's native tempo; with a fixed clock it is the clock itself.
 """
 import math
-import random
+import time
 
 from lib.dj.brain import camelot_compat, _shift_camelot
 
@@ -108,9 +108,10 @@ def pair_score(prev, cand, clock_bpm, arc_e, recs, seed=0, lean=0.0):
         if gp and gc and (gp & gc):
             kin = GENRE_BONUS
     score = kf * tempo * en * arrive * kin
-    # a small seeded jitter per pair: the same night gives the same chain, another night another one
+    # a small seeded jitter per pair: the same night gives the same chain, another night another one (a cheap
+    # hash, not a Random() per candidate: six thousand of those per plan were a third of its time)
     if seed:
-        score *= 1.0 + 0.02 * (random.Random(hash((seed, cand.id)) & 0xFFFFFFFF).random() - 0.5)
+        score *= 1.0 + 0.02 * (((hash((seed, cand.id)) & 0xFFFF) / 65535.0) - 0.5)
     e0 = _energy(prev) if prev is not None else float(arc_e)
     words = [f"{float(cand.bpm):.0f} ({100 * (1.0 / rate - 1.0):+.0f} %)" if abs(rate - 1.0) >= 0.005 else f"{float(cand.bpm):.0f} (same tempo)",
              f"{getattr(cand, 'camelot', None) or '?'} {kf:.2f}" + (f" shift {shift:+d}" if shift else ""),
@@ -148,8 +149,12 @@ def chain(cur, library, recs, clock_bpm, arc_fn, played=(), avoid=(), busy=(), p
             taken = used | {h["id"] for h in hops}
             arc_e = float(arc_fn(tt + step_s)) if arc_fn else 0.6
             cands = []
-            for c in library:
-                if c.id in taken or hop_ok(pv, c, ck, play_min_s=play_min_s) is not None:
+            lo, hi = ck / WALL[1], ck / WALL[0]
+            for i, c in enumerate(library):
+                if i % 64 == 63:
+                    time.sleep(0.001)                 # this runs on a worker thread next to the audio producer: yield the GIL often
+                b = getattr(c, "bpm", None)
+                if not b or b < lo or b > hi or c.id in taken or hop_ok(pv, c, ck, play_min_s=play_min_s) is not None:
                     continue
                 sc, words, shift = pair_score(pv, c, ck, arc_e, recs, seed=seed, lean=lean)
                 cands.append((sc, c, words, shift))
@@ -187,8 +192,10 @@ def route(cur, dest, library, recs, clock_bpm, played=(), avoid=(), busy=(), pla
             taken = used | {h["id"] for h in hops}
             here = abs(math.log(float(ck)) - goal)
             cands = []
-            for c in library:
-                if c.id in taken or hop_ok(pv, c, ck, play_min_s=play_min_s) is not None:
+            lo, hi = ck / WALL[1], ck / WALL[0]
+            for c in library:                         # (no GIL yields here: a route is asked for on a click, and answered at once)
+                b = getattr(c, "bpm", None)
+                if not b or b < lo or b > hi or c.id in taken or hop_ok(pv, c, ck, play_min_s=play_min_s) is not None:
                     continue
                 # every hop must make headway toward the destination's tempo (a fifth of the wall at least)
                 left = abs(math.log(float(c.bpm)) - goal)

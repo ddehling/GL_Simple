@@ -888,8 +888,9 @@ class Director:
             return
         now = time.time()
         d = self.dials
-        on_decks = frozenset([s.track.id for s in rc.songs.values()] + [t.id for t in rc._decoding.values()] + [p[0].id for p in rc._pending.values()])
-        sig = (rc.songs[rc.record_deck].track.id, tuple(self._chain_pinned()), on_decks, d["arc"], d["energy"], d["tempo"], d["pace"],
+        # (the decks' comings and goings are NOT a trigger: a plan is a burst of Python next to the audio producer, and
+        # re-planning on every staging starved it - the result is checked against the room when it is applied instead)
+        sig = (rc.songs[rc.record_deck].track.id, tuple(self._chain_pinned()), d["arc"], d["energy"], d["tempo"], d["pace"],
                len(self.set_skips), self.pool_name, tuple(self.tags))
         if sig == self._hz_sig and now - self._hz_t < 2.0 and getattr(self, "_hz_result", None) is None:
             return                                    # (a worker's finished result is applied at once, not throttled)
@@ -980,6 +981,46 @@ class Director:
             finally:
                 self._hz_busy = False
         threading.Thread(target=work, daemon=True, name="director-set").start()
+
+    def _slip_step(self):
+        """REAL TIME: the clock song's own time against the wall clock (its rate allowed for). A session on
+        2026-09-19 ran at 65-85 % of real time for eight minutes (2.4-3.0 s per bar against 1.97) and nothing said
+        so - the flags read 'dead air', 'nothing happening', 'seam'. Measured over ten-second windows; when two in
+        a row fall under 0.92 the story row says it, once a minute, and the log gets a row."""
+        rc = self.rc
+        now = time.time()
+        st = getattr(self, "_slip", None)
+        if rc is None or rc.master is None or rc.master not in rc.songs:
+            self._slip = None
+            return
+        try:
+            tel = rc._tel_deck(rc.master) or {}
+            if not tel.get("playing"):
+                return
+            t_s = float(tel.get("time_s") or 0.0)
+        except Exception:
+            return
+        s = rc.songs[rc.master]
+        if st is None or st["deck"] != rc.master or st["tid"] != s.track.id or s.loop is not None or t_s < st["t_s"]:
+            self._slip = {"deck": rc.master, "tid": s.track.id, "wall": now, "t_s": t_s, "low": 0, "said": 0.0, "ratio": None}
+            return
+        if now - st["wall"] < 10.0:
+            return
+        expected = (now - st["wall"]) * float(s.rate or 1.0)
+        ratio = (t_s - st["t_s"]) / max(expected, 1e-6)
+        st.update({"wall": now, "t_s": t_s, "ratio": round(ratio, 3)})
+        if ratio < 0.92:
+            st["low"] += 1
+            if st["low"] >= 2 and now - st["said"] > 60.0:
+                st["said"] = now
+                self._event(f"⚠ the engine is behind real time: the music ran at {100 * ratio:.0f} % over the last ten seconds (stutters and holes follow) - fewer layers, or close other programs")
+                try:
+                    from lib.dj.session import log_row
+                    log_row({"event": "slip", "ratio": round(ratio, 3), "layers": self.dials.get("layers"), "decks": len(rc.songs)})
+                except Exception:
+                    pass
+        else:
+            st["low"] = 0
 
     def _horizon_pick(self, veto):
         """The conductor's pick hook (RemixConductor._pick_next): the chain's head, or "wait" when it is inside
@@ -1582,6 +1623,10 @@ class Director:
             self._horizon_step()
         except Exception as e:  # noqa: BLE001
             self.last_error = f"set: {type(e).__name__}: {e}"
+        try:
+            self._slip_step()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"slip: {type(e).__name__}: {e}"
         self._handover()
         self._warm_step()
         try:
