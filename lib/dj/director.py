@@ -1148,7 +1148,8 @@ class Director:
                         r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
                         r_end = float((x.get("groove") or [g0, g0 + 30.0])[1])
                         bar_r = 4.0 * 60.0 / float(R.bpm)
-                        from_t = max(0.0, r_start - 7 * 8 * bar_r)
+                        from lib.dj.record import pair_record_start
+                        from_t, _cut = pair_record_start(R, r_start, 8, bar_r)
                         if float(R.duration_s or 0.0) - r_end < 45.0:
                             continue                  # the groove is the record's last minute: no seam could follow the pair
                         words = f"the vocal of {S.title} over {R.title} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
@@ -1171,6 +1172,20 @@ class Director:
         R, S = pair["r"], pair["s"]
         kind = "acapella" if pair["kind"] == "vocal" else "takeover"
         rec_now = rc.songs[rc.record_deck].track.id if rc.record_deck in rc.songs else None
+        # A PLAN YOU TAKE MUST HAPPEN, or be refused NOW with the reason (user 2026-09-20: "plans have to be rock solid")
+        if not getattr(R, "has_stems", False) or not getattr(S, "has_stems", False):
+            return f"refused: {(R if not getattr(R, 'has_stems', False) else S).title[:24]} has no stems"
+        if rec_now != R.id and not (0.90 <= float(rc.master_bpm) / float(R.bpm) <= 1.10):
+            return f"refused: {R.title[:24]} ({R.bpm:.0f} bpm) is outside the tempo wall of this clock ({rc.master_bpm:.0f})"
+        if kind == "acapella":
+            bar_r = 4.0 * 60.0 / float(R.bpm)
+            if pair.get("r_end") is not None and (float(pair["r_end"]) - float(pair["r_start"])) < 10 * bar_r:
+                return f"refused: the groove of {R.title[:24]} is shorter than ten bars"
+        free = [dk for dk in ("a", "b", "c", "d") if dk not in rc.songs and dk not in rc._decoding and dk not in rc._pending]
+        need = (0 if rc.deck_of(R.id) is not None or rec_now == R.id else 1) + (0 if rc.deck_of(S.id) is not None else 1)
+        spare = [dk for dk, s in rc.songs.items() if not s.leaving and s.staged_at is not None and not s.entered and not getattr(s, "user_pick", False) and getattr(s, "user_k", None) is None]
+        if len(free) + len(spare) < need:
+            return f"refused: no deck for {S.title[:20] if need == 1 else 'the pair'} - the decks hold " + ", ".join(s.track.title[:14] for s in rc.songs.values()) + "; eject one"
         words = ""
         if R.id != rec_now:
             ok, msg = self.queue(R.id)
@@ -1179,7 +1194,13 @@ class Director:
             words = f"{R.title[:24]} is UP NEXT; "
         rc.plant_idea(R.id, kind, S.id, want_t=(pair.get("r_start") if kind == "acapella" else None),
                       want_end=(pair.get("r_end") if kind == "acapella" else None))
-        self._event(f"PAIR to play: {pair['words'][:80]}")
+        # the pair's other song is staged NOW (a part, not a record): the event then needs one phrase of window, not
+        # four (a pair on a record's early groove missed it while its vocal was still decoding - the pair smoke)
+        staged = ""
+        if rc.deck_of(S.id) is None:
+            ok_s, msg_s = rc.stage_track(S.id, as_next=False)
+            staged = f"; {S.title[:20]} {'is staging' if ok_s else 'stages when a deck frees (' + msg_s[:40] + ')'}"
+        self._event(f"PAIR to play: {pair['words'][:80]}{staged}")
         return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'}")
 
     def idea_take(self):

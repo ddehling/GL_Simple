@@ -26,6 +26,27 @@ VOCAL_LEAD_BARS = 16                   # an acapella lead-in: B's vocal this lon
 ORDER_WORDS = {"drums": "morph, drums first", "bass": "bass swap", "vocal": "acapella lead-in", "cut": "breakdown and cut"}
 
 
+def _mm(x):
+    try:
+        x = int(x)
+    except (TypeError, ValueError):
+        return "?"
+    return f"{x // 60}:{x % 60:02d}"
+
+
+def pair_record_start(track, want_t, change_bars, bar_s):
+    """(start_s, cut): where a record plays from so that a pair's groove at `want_t` is inside its play. Five phrases
+    before the groove when the record carries there; when that falls before the record's first non-intro section,
+    the record enters as a CUT two phrases before the groove (a drums-first seam from an intro entered at the
+    groove itself and the pair missed it - the pair smoke, 2026-09-20). Shared by the seam and the PAIRS list."""
+    secs = track.sections or []
+    first = next((float(s["start_s"]) for s in secs if s.get("kind") != "intro"), 0.0)
+    want = float(want_t)
+    if want - 5 * change_bars * bar_s >= first - 0.5 * bar_s:
+        return track.nearest_downbeat(want - 5 * change_bars * bar_s), False
+    return track.nearest_downbeat(max(0.0, want - 2 * change_bars * bar_s)), True
+
+
 class RecordPlay:
     # -- state -----------------------------------------------------------------------------------------------------
     def _record_init(self):
@@ -99,8 +120,8 @@ class RecordPlay:
         # A PAIR YOU CHOSE (docs/DJ_MORE_THAN_A_MIXER.md 1, DROP IT): planted for this record, it is placed like the DJ's
         # own idea but already taken, whatever MOMENTS and MIXING say
         planted = (getattr(self, "_planted", None) or {}).get(sa.track.id) if self._event_pending is None else None
-        if rate <= 0 and planted is None:
-            return
+        if rate <= 0 and planted is None and self._event_pending is None:
+            return                                    # (MOMENTS rare: no ideas of the DJ's own - a pair YOU took still arms)
         pend = self._event_pending
         bar = self.bar_n
         cb = self.change_bars
@@ -172,7 +193,9 @@ class RecordPlay:
         k0 = sa.play_from_k if sa.play_from_k is not None else bar
         # the window: from a phrase into the record - and FOUR phrases from now, a decode and a staging are real
         # seconds (at two phrases the gate's four planned events all came too late) - to two phrases before the seam
-        start_min = max(bar + 4 * cb, k0 + cb)
+        # four phrases from now (a decode and a staging are real seconds) - one when the pair's song is on a deck already
+        pre = planted is not None and self.deck_of(int(planted["track_id"])) is not None
+        start_min = max(bar + (cb if pre else 4 * cb), k0 + cb)
         end_max = sm["bar"] - 2 * cb
         if end_max - start_min < 2 * cb:
             if planted is not None:
@@ -263,7 +286,11 @@ class RecordPlay:
                     stretch = int((c["sung"][1] - c["sung"][0]) / max(bar_a * c.get("rate", 1.0), 1e-6))
                     bars = max(cb, min(4 * cb, room, stretch) // cb * cb)
                     want_t = float(c["sung"][0]) - bar_a * c.get("rate", 1.0)
-                    ok, msg = self.stage_for_bar(c["id"], want_t, K)
+                    d_s = self.deck_of(int(c["id"])) if planted is not None else None
+                    if d_s is not None and d_s in self.songs and self.songs[d_s].staged_at is not None:
+                        ok, msg = bool(self.jump(d_s, want_t, int(K))), "on its deck, re-cued"   # staged when the pair was taken
+                    else:
+                        ok, msg = self.stage_for_bar(c["id"], want_t, K)
                     if not ok:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
@@ -279,7 +306,11 @@ class RecordPlay:
                     if K is None:
                         last_why = "no steady phrase of the record in the window for a bass swap"
                         continue
-                    ok, msg = self.stage_for_bar(c["id"], float(c["landmark"]) - 2 * bar_a * c.get("rate", 1.0), K - 2)
+                    d_s = self.deck_of(int(c["id"])) if planted is not None else None
+                    if d_s is not None and d_s in self.songs and self.songs[d_s].staged_at is not None:
+                        ok, msg = bool(self.jump(d_s, float(c["landmark"]) - 2 * bar_a * c.get("rate", 1.0), int(K) - 2)), "on its deck, re-cued"
+                    else:
+                        ok, msg = self.stage_for_bar(c["id"], float(c["landmark"]) - 2 * bar_a * c.get("rate", 1.0), K - 2)
                     if not ok:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
@@ -312,7 +343,8 @@ class RecordPlay:
                 return
             if not getattr(self, "_planted_said", False):
                 self._planted_said = True
-                self._move("event_none", None, self._song_id(self.record_deck), None, f"your pair waits: {last_why[:70]}")
+                self._move("event_none", None, self._song_id(self.record_deck), None,
+                           f"your pair waits: {last_why[:60]} (window bars {start_min}-{end_max} from {bar}, the record at {_mm(t_now)})")
             return
         sa.events_done = rate                         # nothing usable for this record
         # said, not silent: a record with 349 vocal candidates got no event and the user flagged "nothing happening
@@ -335,17 +367,16 @@ class RecordPlay:
         return True
 
     def _planted_start(self, track):
-        """Where a record with a planted pair should start: five phrases before the pair's groove, on a downbeat, not
-        before its first non-intro section; None when no pair is planted for it or the pair has no groove time."""
+        """Where a record with a planted pair should start (docs/DJ_MORE_THAN_A_MIXER.md 1): five phrases before the
+        pair's groove, on a downbeat, not before its first non-intro section - and when the groove is the record's
+        FIRST groove (nothing carries before it), the record enters as a CUT two phrases before the groove, whole
+        (`pl["cut"]`). None when no pair is planted for it or the pair has no groove time."""
         pl = (getattr(self, "_planted", None) or {}).get(track.id)
         if not pl or pl.get("want_t") is None:
             return None
-        bar = self._bar_s(track, float(pl["want_t"]))
-        secs = track.sections or []
-        first = next((float(s["start_s"]) for s in secs if s.get("kind") != "intro"), 0.0)
-        # seven phrases: the swap comes a seam after the start, the event window opens four phrases after the swap
-        t0 = max(first, float(pl["want_t"]) - 7 * self.change_bars * bar)
-        return track.nearest_downbeat(t0)
+        t0, cut = pair_record_start(track, float(pl["want_t"]), self.change_bars, self._bar_s(track, float(pl["want_t"])))
+        pl["cut"] = cut
+        return t0
 
     def set_play_min(self, seconds):
         self.play_min_s = float(max(30.0, seconds))
@@ -991,6 +1022,9 @@ class RecordPlay:
         L, kind = self._seam_len()
         lm0 = self._record_landmark(sb.track, sb.env)
         order = self._seam_order(a, b, L, kind, lm0 - (L + 1) * self._bar_s(sb.track, lm0))
+        pl_b = (getattr(self, "_planted", None) or {}).get(sb.track.id)
+        if pl_b and pl_b.get("cut"):
+            order, L, kind = "cut", 4, "cut"          # a pair on the record's first groove: the record enters whole on it
 
         def place(order_, L_):
             # B's start, for the order: the stems it brings first must carry (the bass swap brings its BASS - a
