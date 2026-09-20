@@ -1347,8 +1347,13 @@ phrase for the drums and four bars for the harmony), the harmony step placed so 
 bar before B's landmark, the bass handed over under a low shelf (the old harmony's lows down to the carve as
 the new one's come up); (3) the rehearsal keeps the shape (move a phrase with body, else the cut - no order
 swap); (4) the strip and the cut untouched. docs/DJ_THE_RECORD_PLAYS.md "How the steps cross". Code and
-compile only - the planner was up; the gates (control, remix ×3, a campaign v11 for the lurch and dead-air
-numbers under the long crosses) are pending.
+compile only - the planner was up. Gates when it came down: control gate 60 presses ALL OK, 0 dead bars;
+the remix gate green three times in a row (its log now reads "its bassline and melody cross in over 2 bars");
+campaign v11 (MIXING auto, SEAMS normal): pace 2.99 min per record, dead bars 0, dead air 0 % of 13 seams,
+LURCH 15.4 % [4-42] (v10 28.6 %, v9 27 %), double bass 7.7 % (1 of 13: the two basslines overlap inside a
+cross now - the low shelf keeps it under most of the time; watch it), harmony split 0, lock p95 0.078,
+rehearsals 19 clean / 1 moved (v10: 17 / 2), events 19 planned / 16 armed (auto keeps the takeover exits, at
+unity now). The ear decides; the numbers moved the right way.
 
 ## Rules carried over (they were earned)
 
