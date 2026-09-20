@@ -706,7 +706,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.pairs_h.setProperty("dim", "true")
         self.pairs_h.setToolTip("the best pairs across the whole library, from the pairing file: a vocal that sits over a record's groove, a bassline that "
                                 "swaps under a record's drums. Double-click = HEAR eight bars in the headphones (the cue output); right-click = HEAR, "
-                                "DROP IT (the record goes UP NEXT and the pair fires when it plays), show parts")
+                                "PLAY THIS PAIR (the record goes UP NEXT and the other song's part comes in when it plays), show parts")
         pv.addWidget(self.pairs_h)
         prow = QHBoxLayout()
         self.pairs_clock = QPushButton("fits the clock")
@@ -1767,7 +1767,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         for i, p in enumerate(rows):
             it = QListWidgetItem(("· " if not p["played"] else "(played) ") + p["words"])
             it.setData(Qt.ItemDataRole.UserRole, i)
-            it.setToolTip(f"{p['words']}\nscore {p['score']:.2f}\ndouble-click: HEAR eight bars in the headphones · right-click: DROP IT")
+            it.setToolTip(f"{p['words']}\nscore {p['score']:.2f}\ndouble-click: HEAR eight bars in the headphones · right-click: PLAY THIS PAIR (the record UP NEXT, the pair when it plays)")
             col = LANE_COLORS.get("vocals" if p["kind"] == "vocal" else "bass")
             if p["played"]:
                 it.setForeground(Qt.GlobalColor.gray)
@@ -1789,7 +1789,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         m = QMenu(self)
         a = m.addAction("HEAR: eight bars in the headphones")
         a.triggered.connect(lambda _c, k=i: self._hear_pair(k))
-        a = m.addAction(f"DROP IT: {p['r'].title[:22]} UP NEXT, the pair when it plays")
+        what = (f"{p['s'].title[:20]}'s vocal comes over it" if p["kind"] == "vocal" else f"{p['s'].title[:20]}'s bassline takes over at its drop")
+        a = m.addAction(f"PLAY THIS PAIR: {p['r'].title[:22]} goes UP NEXT, and when it plays {what}")
         a.triggered.connect(lambda _c, k=i: self._drop_pair(k))
         m.addSeparator()
         for t in (p["r"], p["s"]):

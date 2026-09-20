@@ -1159,8 +1159,8 @@ class Director:
                 return f"the pair's record could not be queued: {msg}"
             words = f"{R.title[:24]} is UP NEXT; "
         rc.plant_idea(R.id, kind, S.id)
-        self._event(f"PAIR taken: {pair['words'][:80]}")
-        return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'} (taken)")
+        self._event(f"PAIR to play: {pair['words'][:80]}")
+        return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'}")
 
     def idea_take(self):
         """"Do it" on the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns a sentence."""

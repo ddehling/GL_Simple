@@ -211,7 +211,7 @@ stretched to the record's tempo and shifted by the pair's semitones, played on t
 (the button in the top row) chooses both devices: the MAIN output, where the floor plays (system default
 unless you pick one; it takes effect at the next START), and the CUE output for the preview (at once). Kept
 per machine in logs/dj_outputs.json; `dj.cue_device` in config.yaml still works as a fallback. Without a cue
-output the tab says so; a preview never plays on the floor while the Director runs. **Right-click → DROP IT**:
+output the tab says so; a preview never plays on the floor while the Director runs. **Right-click → PLAY THIS PAIR**:
 the pair's record goes UP NEXT (unless it is the record now) and the pair is planted as an IDEA already
 taken - it fires when that record plays, and THE PLAN shows it as an EVENT. A song played tonight shows grey.
 

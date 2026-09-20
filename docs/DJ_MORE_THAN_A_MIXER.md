@@ -19,7 +19,7 @@ drums, at bar precision. Today it feeds the DJ's events and the ★ rows. It bec
   shifted by the pair's semitones (`lib/dj/preview.py`, the decode helper process and RubberBand offline) -
   and played on the CUE OUTPUT: a second audio device named by `dj.cue_device` in config.yaml. Without one
   the button says so; it never plays a preview on the floor while the Director runs.
-- **DROP IT**: Y goes UP NEXT and the pair becomes an accepted IDEA (below) that fires when Y is the record.
+- **PLAY THIS PAIR**: Y goes UP NEXT and the pair becomes an accepted IDEA (below) that fires when Y is the record (it was "DROP IT" for a day: "very ambiguous phrasing").
 
 ## 2. The DJ's ideas as rows you accept
 
