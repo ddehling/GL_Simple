@@ -2046,7 +2046,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             words = [f"key {c.camelot or '?'} {kf:.2f}", f"tempo {100 * (rate - 1):+.0f}%",
                      ("same energy" if abs(e1 - e0) < 0.12 else ("hotter" if e1 > e0 else "calmer"))]
             words.append(("arrives " + " or ".join(ways)) if ways else ("the cut" if sm else ""))
-            out.append((score, c.id, c.title, " · ".join(w for w in words if w)))
+            mode = "drums" if "drums first" in ways else ("bass" if "bass swap" in ways else "cut")
+            out.append((score, c.id, c.title, " · ".join(w for w in words if w), mode))
         out.sort(key=lambda x: -x[0])
         return out[:n]
 
@@ -2068,27 +2069,30 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             it.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.mixes.addItem(it)
 
-        def row(cid, text, tip=None):
+        def row(cid, text, tip=None, mode=None):
             it = QListWidgetItem("    " + text)
             it.setData(Qt.ItemDataRole.UserRole, cid)
             if tip:
                 it.setToolTip(tip)
+            col = LANE_COLORS.get(mode) if mode else None   # THE COLOUR IS THE MIX, as in SONGS (user 2026-09-20)
+            if col is not None:
+                it.setForeground(col)
             self.mixes.addItem(it)
         pr = self._pairings_for(tid) or {}
         nxt = self._next_partners(tid)
         head("after it, as the next record" + ("" if nxt else ": nothing inside the wall"))
-        for score, cid, title, words in nxt:
-            row(cid, f"{title[:28]}   {words}", f"{title}\n{words}\nscore {score:.2f}")
+        for score, cid, title, words, mode in nxt:
+            row(cid, f"{title[:28]}   {words}", f"{title}\n{words}\nscore {score:.2f}", mode=mode)
         vo = (pr.get("vocal_over") or [])[:4]
         head("a vocal that sits over its grooves" + ("" if vo else ": none found" + ("" if pr.get("grooves") else " (no instrumental groove of 12 bars)")))
         for x in vo:
             row(int(x["id"]), f"{x['title'][:28]}   fit {x['fit']}" + (f", shift {x['shift']:+d}" if x.get("shift") else "") + (" · at its hook" if x.get("hook") else ""),
-                f"{x['title']}\nits sung stretch {_mmss(x['sung'][0])}-{_mmss(x['sung'][1])} over this song's groove {_mmss(x['groove'][0])}-{_mmss(x['groove'][1])}")
+                f"{x['title']}\nits sung stretch {_mmss(x['sung'][0])}-{_mmss(x['sung'][1])} over this song's groove {_mmss(x['groove'][0])}-{_mmss(x['groove'][1])}", mode="vocals")
         bu = (pr.get("bass_under") or [])[:4]
         head("a bassline that swaps under its drums (then it is the record)" + ("" if bu else ": none found"))
         for x in bu:
             row(int(x["id"]), f"{x['title'][:28]}   fit {x['fit']}" + (f", shift {x['shift']:+d}" if x.get("shift") else "") + f" · from {_mmss(x['landmark'])}",
-                f"{x['title']}\nits bass and melody from its drop at {_mmss(x['landmark'])}, {x.get('runway_s', 0):.0f} s after")
+                f"{x['title']}\nits bass and melody from its drop at {_mmss(x['landmark'])}, {x.get('runway_s', 0):.0f} s after", mode="bass")
         inv = self._pairings_inverse(tid)
         if inv.get("vocal") or inv.get("bass"):
             head("its own parts sit on")

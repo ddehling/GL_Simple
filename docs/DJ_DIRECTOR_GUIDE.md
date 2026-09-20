@@ -188,7 +188,8 @@ record. Plain = the cut, or nothing known. The header carries the legend; the to
 after it as the next record (key, tempo, energy, and how it would arrive - drums first, the bass swap, or
 the cut), whose vocal sits over its instrumental grooves, whose bassline swaps under its drums, and where
 its own vocal and bassline sit. Double-click a row to find that song in SONGS; right-click for the same
-commands.
+commands. Its rows wear the same lane colours as SONGS: orange = drums first, blue = a bass swap or a
+bassline under, rose = a vocal over; plain = the cut.
 
 **The right-click menu is trimmed to the pair.** Its first line says how the song fits the record playing
 (keys and fit, tempo, energy). Then only what makes sense: its vocal in (when it sings), its bassline in,
