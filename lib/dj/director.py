@@ -1080,6 +1080,22 @@ class Director:
         self._event(f"not tonight: {self.title(tid)[:30]}")
         return True
 
+    def idea_take(self):
+        """"Do it" on the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns a sentence."""
+        if self.rc is None or self.rc.master is None:
+            return "not layered"
+        ok, msg = self.rc.idea_take()
+        self._event(("IDEA taken: " if ok else "IDEA: ") + msg)
+        return msg
+
+    def idea_skip(self):
+        """"Skip" on the DJ's IDEA row. Returns a sentence."""
+        if self.rc is None or self.rc.master is None:
+            return "not layered"
+        ok, msg = self.rc.idea_skip()
+        self._event(("IDEA skipped: " if ok else "IDEA: ") + msg)
+        return msg
+
     # -- THE FLOOR: requests (docs/DJ_THE_SET.md rule 5) -----------------------------------------------------------
     def note_request(self, key, title, stage, pct=None, ready=False, track_id=None, error=None):
         """A request's state for THE PLAN: 'separating', 'pairings', 'analyzing'; ready → 'is ready' for a
@@ -2596,7 +2612,14 @@ class Director:
             if evp:
                 d_ev = rc.deck_of(evp["track_id"]) if evp.get("track_id") is not None else None
                 state = ("staged, arms two phrases before" if (d_ev is not None and rc.songs[d_ev].staged_at is not None) else "its song is decoding")
-                row(max(0, evp["in_bars"]) * bar_s, "EVENT", evp["why"][:90], state, key=("event", evp.get("track_id"), evp.get("bar")), bar=evp.get("bar"))
+                if evp.get("accepted"):
+                    row(max(0, evp["in_bars"]) * bar_s, "EVENT", evp["why"][:90], state, key=("event", evp.get("track_id"), evp.get("bar")), bar=evp.get("bar"), tid=evp.get("track_id"))
+                else:
+                    # THE DJ'S IDEA (docs/DJ_MORE_THAN_A_MIXER.md 2): proposed, not taken - right-click do it / skip;
+                    # it passes two phrases before its bar if nobody says
+                    passes = max(0, evp["in_bars"] - 2 * rc.change_bars) * bar_s
+                    row(max(0, evp["in_bars"]) * bar_s, "IDEA", evp["why"][:90],
+                        f"right-click: do it · skip · passes in {_mmss(passes)} if not taken · {state}", key=("idea", evp.get("track_id"), evp.get("bar")), bar=evp.get("bar"), tid=evp.get("track_id"))
             if sm:
                 sb = rc.songs.get(rc.seam["b"]) if rc.seam is not None else None
                 title_b = sb.track.title[:30] if sb else sm["b"][:30]
@@ -2618,7 +2641,7 @@ class Director:
                     key=("record2", sm["b"]))
             elif rec is not None:
                 staged_any = [s for d, s in rc.songs.items() if d != rd and not s.leaving and s.staged_at is not None and not getattr(s, "part_only", False)]
-                ev_tid = evp.get("track_id") if (evp and evp.get("kind") == "takeover") else None
+                ev_tid = evp.get("track_id") if (evp and evp.get("kind") == "takeover" and evp.get("accepted")) else None
                 if ev_tid is not None:
                     # THE EVENT IS THE EXIT: no seam is planned for this record; the takeover's song is the next
                     # record, the staged one follows it (its seam is planned once the takeover's song is the record)

@@ -150,7 +150,18 @@ def run(music, seed, presses, seconds, verbose):
 
     def make_press():
         kind = rng.choice(["stem_in", "stem_in", "stem_in", "vocal_late", "queue", "next", "next", "hold", "drop", "break", "moment", "moment", "moment_with",
-                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip"])
+                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea"])
+        if kind == "idea":
+            # the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2): do it or skip; with none pending, an honest "no idea pending"
+            take = rng.random() < 0.6
+            pend = getattr(rc, "_event_pending", None)
+
+            def verify(_before):
+                p = getattr(rc, "_event_pending", None)
+                if pend is None:
+                    return True                       # nothing to take: the reply "no idea pending" is the act
+                return (p is not None and p.get("accepted")) if take else (p is None or p is not pend)
+            return Press("IDEA do it" if take else "IDEA skip", (d.idea_take if take else d.idea_skip), verify, settle_bars=0.2)
         if kind == "queue_far":
             # THE SET rule 4: a song outside the tempo wall is a route (queued behind the records that reach it) or an
             # honest refusal naming the distance - never silently dropped a tick later

@@ -1658,6 +1658,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             a.triggered.connect(lambda _c, t=tid: self._queue(t))
             a = m.addAction(f"not tonight: {title} leaves the set")
             a.triggered.connect(lambda _c, t=tid: self._skip_in_set(t))
+        elif kind == "IDEA":
+            a = m.addAction(f"do it: {title}")
+            a.triggered.connect(lambda _c: self.moment_lbl.setText(d.idea_take()))
+            a = m.addAction("skip this idea")
+            a.triggered.connect(lambda _c: self.moment_lbl.setText(d.idea_skip()))
         elif kind == "REQUEST":
             a = m.addAction(f"put {title} UP NEXT")
             a.triggered.connect(lambda _c, t=tid: self._queue(t))
@@ -2395,12 +2400,15 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 it.setFont(mono)
                 it.setToolTip(f"{r['kind']}: {r['text']}\n{r.get('sub', '')}" + (f"\nbar {r['bar']}" if r.get("bar") is not None else "")
                               + ("\nright-click: put it UP NEXT · not tonight · show its parts" if r["kind"] == "THEN" else "")
+                              + ("\nright-click: do it · skip" if r["kind"] == "IDEA" else "")
                               + ("\nright-click: put it UP NEXT" if r["kind"] == "REQUEST" and r.get("id") is not None else ""))
                 it.setData(Qt.ItemDataRole.UserRole, (r["kind"], r.get("id")))
                 if r["kind"] in ("SEAM", "MOMENT", "EVENT") and r.get("t") is not None and r["t"] < 20.0:
                     it.setForeground(Qt.GlobalColor.yellow)
                 elif r["kind"] in ("THEN", "CLOCK"):
                     it.setForeground(Qt.GlobalColor.gray)
+                elif r["kind"] == "IDEA":
+                    it.setForeground(Qt.GlobalColor.magenta)
                 elif r["kind"] == "REQUEST":
                     it.setForeground(Qt.GlobalColor.cyan)
                 self.plan_list.addItem(it)

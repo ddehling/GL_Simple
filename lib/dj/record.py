@@ -123,6 +123,13 @@ class RecordPlay:
             s = self.songs.get(d) if d else None
             if s is None or s.staged_at is None or self._clock() < int(s.staged_at) + self._bar_clock():
                 return
+            if not pend.get("accepted"):
+                # AN IDEA, not an order (docs/DJ_MORE_THAN_A_MIXER.md 2): it waits in THE PLAN for "do it"; not taken
+                # by the bar it would have armed on, it passes - said
+                if bar >= pend["bar"] - 2 * cb:
+                    self._event_pending = None
+                    self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"the idea passed, not taken: {pend['why'][:70]}")
+                return
             if self._moment is not None or (self.seam is not None and self.seam["state"] == "running"):
                 return
             if bar < pend["bar"] - 2 * cb:
@@ -243,7 +250,8 @@ class RecordPlay:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "acapella", "track_id": int(c["id"]), "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": want_t,
-                                           "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})"}
+                                           "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})",
+                                           "accepted": rate >= 2}      # MOMENTS lots: the DJ takes its own ideas; some: it proposes
                 else:
                     K = None
                     for k in range(win_start, win_end + 1):
@@ -258,19 +266,10 @@ class RecordPlay:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "takeover", "track_id": int(c["id"]), "bar": int(K), "bars": 0, "t": time.time(),
-                                           "record": sa.track.id,
+                                           "record": sa.track.id, "accepted": rate >= 2,
                                            "why": f"TAKEOVER at its drop: {c['title'][:24]}'s bassline and melody under these drums, its drums a phrase later - it becomes the record (fit {c['fit']})"}
-                    if self.seam is not None:
-                        # said in the story row and the log, not a private note: the seam the plan showed is gone
-                        sb_old = self.songs.get(self.seam["b"])
-                        self._move("plan", None, self._song_id(self.record_deck), int(c["id"]),
-                                   f"the seam into {sb_old.track.title[:22] if sb_old else '?'} is dropped: the takeover with {c['title'][:22]} at its drop is this record's exit")
-                    self._seam_drop(f"the event is the exit: {c['title'][:22]} at its drop")   # (the takeover replaces the seam)
-                    try:
-                        from lib.dj.session import log_row
-                        log_row({"event": "plan", "what": "exit", "track_id": int(c["id"]), "bar": int(K), "in_bars": int(K) - bar, "why": "takeover exit"})
-                    except Exception:
-                        pass
+                    if self._event_pending["accepted"]:
+                        self._idea_exit_taken()       # (an idea only proposed keeps the seam until "do it")
                 sa.events_done = n_done + 1
                 used.add(int(c["id"]))
                 self._move("event_plan", None, self._song_id(self.record_deck), int(c["id"]),
@@ -304,12 +303,66 @@ class RecordPlay:
         if self.seam is not None and self.seam["state"] != "running":
             self._seam_drop(why or "the record changed")
 
+    def _idea_exit_taken(self):
+        """A takeover idea taken: it is the record's exit - the seam the plan showed is dropped, said in the story
+        row and the log (never a private note)."""
+        pend = self._event_pending
+        if pend is None or pend.get("kind") != "takeover":
+            return
+        title = self._track_title(int(pend["track_id"]))
+        if self.seam is not None:
+            sb_old = self.songs.get(self.seam["b"])
+            self._move("plan", None, self._song_id(self.record_deck), int(pend["track_id"]),
+                       f"the seam into {sb_old.track.title[:22] if sb_old else '?'} is dropped: the takeover with {title[:22]} at its drop is this record's exit")
+        self._seam_drop(f"the event is the exit: {title[:22]} at its drop")
+        try:
+            from lib.dj.session import log_row
+            log_row({"event": "plan", "what": "exit", "track_id": int(pend["track_id"]), "bar": int(pend["bar"]), "in_bars": int(pend["bar"]) - self.bar_n, "why": "takeover exit"})
+        except Exception:
+            pass
+
+    def _track_title(self, tid):
+        for s in self.songs.values():
+            if s.track.id == tid:
+                return s.track.title
+        t = next((x for x in self.library if x.id == tid), None)
+        return t.title if t else f"#{tid}"
+
+    def idea_take(self):
+        """"Do it": the DJ's pending idea becomes an event (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns (ok, words)."""
+        pend = self._event_pending
+        if pend is None:
+            return False, "no idea pending"
+        if pend.get("accepted"):
+            return True, "already taken"
+        pend["accepted"] = True
+        self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"you: the idea is taken - {pend['why'][:70]}")
+        if pend.get("kind") == "takeover":
+            self._idea_exit_taken()
+        return True, f"taken: {pend['why'][:60]}"
+
+    def idea_skip(self):
+        """"Skip": the DJ's pending idea is dropped, its song not offered again for this record. Returns (ok, words)."""
+        pend = self._event_pending
+        if pend is None:
+            return False, "no idea pending"
+        self._event_pending = None
+        sa = self.songs.get(self.record_deck)
+        if sa is not None:
+            used = getattr(sa, "events_used", None)
+            if used is not None:
+                used.add(int(pend["track_id"]))
+            sa.events_done = max(0, int(getattr(sa, "events_done", 1)) - 1)    # the DJ may propose another
+        self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"you: the idea is skipped - {pend['why'][:70]}")
+        return True, f"skipped: {pend['why'][:60]}"
+
     def _exit_event_coming(self):
-        """A BASS UNDER event (the DJ's TAKEOVER) is the record's exit: while it is pending or in flight no seam
-        is planned (the seam it replaced was planned again the next bar - the gate, 2026-09-16)."""
+        """A BASS UNDER event (the DJ's TAKEOVER) TAKEN is the record's exit: while it is pending or in flight no
+        seam is planned (the seam it replaced was planned again the next bar - the gate, 2026-09-16). An idea
+        only proposed leaves the seam in place."""
         pend = self._event_pending
         sa = self.songs.get(self.record_deck)
-        if pend is not None and pend.get("kind") == "takeover" and sa is not None and pend.get("record") == sa.track.id:
+        if pend is not None and pend.get("kind") == "takeover" and pend.get("accepted") and sa is not None and pend.get("record") == sa.track.id:
             return True
         m = self._moment
         return m is not None and m.get("kind") == "takeover" and bool(m.get("auto"))
@@ -1358,4 +1411,5 @@ class RecordPlay:
         return {"deck": self.record_deck, "title": s.track.title, "since_bars": since, "min_bars": self._play_min_bars(),
                 "settle_left": max(0, self._play_min_bars() - since), "kind": self._kind_at(self.record_deck, self._next_bar_clock()),
                 "events_done": int(getattr(s, "events_done", 0)), "event_rate": int(getattr(self, "event_rate", 0)),
-                "event": ({"kind": pend["kind"], "in_bars": pend["bar"] - self.bar_n, "why": pend["why"], "track_id": pend["track_id"], "bar": pend["bar"]} if pend else None)}
+                "event": ({"kind": pend["kind"], "in_bars": pend["bar"] - self.bar_n, "why": pend["why"], "track_id": pend["track_id"], "bar": pend["bar"],
+                           "accepted": bool(pend.get("accepted"))} if pend else None)}
