@@ -179,7 +179,10 @@ The **SONGS** list is the pool ranked by fit to what is playing, or, once you ha
 puts a song UP NEXT. The **filter row** narrows the list: instrumental / vocal, a step calmer / same /
 hotter, slower / same / faster, songs with a hook, unheard tonight; the sort box orders it. Hover a row
 for the song's shape and when it last played. A fitting row carries how it fits in the line: the key fit
-and the tempo step; ★ marks a pairing with the record playing.
+and the tempo step; ★ marks a pairing with the record playing. **The colour is the mix**, in the picture's
+lane colours: a song coloured like the vocal lane would come as a vocal over the record; like the bass lane,
+its bassline under it or a bass swap as the next record; like the drums lane, drums first as the next
+record. Plain = the cut, or nothing known. The header carries the legend; the tooltip says it in words.
 
 **MIXES WITH** (under UP NEXT) follows the highlighted song and says what goes with it, from the stems:
 after it as the next record (key, tempo, energy, and how it would arrive - drums first, the bass swap, or

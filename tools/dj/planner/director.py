@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, 
                              QListWidgetItem, QPushButton, QVBoxLayout, QWidget, QSizePolicy, QTabWidget)
 
 from tools.dj.planner.perform import STYLE, SetlistBox, _mmss
+from tools.dj.planner.stemlanes import LANE_COLORS
 
 DIAL_LABELS = {
     "mixing": ("MIXING", {"auto": "auto", "blend": "blend", "cut": "cut", "morph": "morph"},
@@ -1141,6 +1142,23 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 v["bass"] = [t for _, t in sorted(v["bass"], key=lambda st: -st[0])]
             self._pair_inv = inv
         return self._pair_inv.get(int(tid), {})
+
+    def _mix_mode(self, tid, fits):
+        """(lane key, words): how this song would PRIMARILY mix from here - its vocal over the record playing, its
+        bassline under it, or, as the next record, drums first / a bass swap / the cut (the pairing file's
+        seam-ability); None when nothing is known. The SONGS list colours each row by it (user 2026-09-20)."""
+        w = fits.get(int(tid)) if fits else None
+        if w:
+            return ("vocals", "its vocal over the record") if w.startswith("its vocal") else ("bass", "its bassline under the record")
+        rec = self._pairings_for(tid) or {}
+        sm = rec.get("seam") or {}
+        if not sm:
+            return None
+        if sm.get("drums"):
+            return "drums", "as the next record: drums first"
+        if sm.get("bass"):
+            return "bass", "as the next record: a bass swap"
+        return "cut", "as the next record: the cut"
 
     def _fits_now(self):
         """{song id: words} for the songs whose parts sit on the RECORD playing now."""
@@ -2298,15 +2316,28 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             it.setData(Qt.ItemDataRole.UserRole, r["id"])
             if r["ok"] is False:
                 it.setForeground(Qt.GlobalColor.gray)
+            elif self.director is not None and self.director.rc is not None:
+                # THE COLOUR IS THE MIX: the lane's colour from the picture - a vocal over the record, a bassline
+                # under it, drums first as the next record; the cut and the unknown stay plain
+                mode = self._mix_mode(r["id"], fits)
+                if mode is not None:
+                    key, words = mode
+                    col = LANE_COLORS.get(key)
+                    if col is not None:
+                        it.setForeground(col)
+                    it.setToolTip((it.toolTip() + "\n" if it.toolTip() else "") + f"mixes as: {words}")
             self.found.addItem(it)
             if r["id"] == cur:
                 self.found.setCurrentItem(it)
         self.found.verticalScrollBar().setValue(scroll)   # the list stays where the eye left it
         ref = getattr(self.director, "rank_ref", None) if self.director is not None else None
         note = getattr(self.director, "rank_note", None) if self.director is not None else None
+        legend = ""
+        if self.director is not None and self.director.rc is not None:
+            legend = "   ·   " + "  ".join(f"<span style='color:{LANE_COLORS[k].name()}'>●</span> {w}" for k, w in (("vocals", "vocal over"), ("bass", "bassline under / bass swap"), ("drums", "drums first")))
         self.found_h.setText(f"SONGS  {len(rows)}" + ((f"   ✓ fits after {ref[:22]} (last in UP NEXT)  ✗ would be rejected" if ref
                                                      else "   ✓ fits  ✗ would be rejected") if self.director is not None else "")
-                             + (f"   ·   {note}" if note else ""))
+                             + legend + (f"   ·   {note}" if note else ""))
 
     def _queue_selected(self):
         it = self.found.currentItem()
