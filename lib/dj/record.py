@@ -208,6 +208,11 @@ class RecordPlay:
             for c in cands:
                 if c["id"] in busy:
                     continue
+                if kind == "bass" and float(c.get("runway_s") or 0.0) < float(self.play_min_s) + 45.0:
+                    # the takeover's song becomes the RECORD at its drop: it needs its minimum play and a seam after
+                    # that, not the pairing file's 90 s floor (Glam Trap took over with three minutes of body,
+                    # the seam after it moved twice and it looped its last bars - flag 'runout' 2026-09-19)
+                    continue
                 if kind == "vocal":
                     ga, gb = c["groove"]
                     # the first phrase boundary in the window where the record is inside that groove with eight bars to spare
@@ -480,6 +485,11 @@ class RecordPlay:
         for ln in ("vocals", "other"):
             h = self.lanes.get(ln)
             if h is not None and h not in (sm["a"], sm["b"]) and h in self.songs:
+                if getattr(self.songs[h], "user_k", None) is not None:
+                    # a part YOU brought is never a stray: it stays through the seam until its stretch ends or you
+                    # take it out ("the system overrode my vocals choice after a few seconds" - flag 2026-09-19)
+                    self._move("plan", ln, self._song_id(h), None, f"your {ln} of {self.songs[h].track.title[:22]} stays through the seam (your order)")
+                    continue
                 self._cross(ln, None, at, beats=2.0, shape=False)
                 self._note(f"the {ln} of {self.songs[h].track.title[:22]} out: a seam begins and it belongs to neither record")
 
@@ -522,18 +532,34 @@ class RecordPlay:
                 return
             tries = int(sm.get("rehearsal_tries", 0)) + 1
             sm["rehearsal_tries"] = tries
-            if tries <= 2:
-                sm["rehearsed"] = None
-                self._seam_move(self._phrase_bar_after(sm["bar"] + 1), f"rehearsed: {why}")
-            elif tries == 3 and sm["order"] in ("drums", "bass"):
+            # THE SEAM STAYS WHERE IT IS: a failed rehearsal changes the seam's shape at its bar first (the other
+            # order, then the breakdown and cut), and moves it a phrase later only when the record has the body
+            # for it - moving first pushed the next song back a phrase at a time (three moves in thirty seconds),
+            # ran the record out into its last-bars loop, and landed the next record deep in its body (flags
+            # 'plan', 'runout' 2026-09-19)
+            sa_ = self.songs.get(self.record_deck)
+            room = False
+            try:
+                if sa_ is not None:
+                    at_ = self._next_bar_clock()
+                    t_end = self._song_time_at(self.record_deck, at_) + (sm["bar"] + int(sm["len"]) + 2 * cb - self.bar_n) * self._bar_s(sa_.track)
+                    room = sa_.loop is None and t_end < float(sa_.track.duration_s) - 8.0
+            except Exception:
+                room = False
+            if tries == 1 and sm["order"] in ("drums", "bass"):
                 new_order = "bass" if sm["order"] == "drums" else "drums"
                 sm["order"], sm["steps"], sm["rehearsed"] = new_order, self._seam_steps(new_order, sm["len"]), None
                 self._seam_cue_b()
-                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: as a {ORDER_WORDS[new_order]} instead")
-            else:
+                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: as a {ORDER_WORDS[new_order]} instead, at the same bar")
+            elif tries <= 2 and room:
+                sm["rehearsed"] = None
+                self._seam_move(self._phrase_bar_after(sm["bar"] + 1), f"rehearsed: {why}")
+            elif sm["order"] != "cut":
                 sm["order"], sm["len"], sm["steps"], sm["rehearsed"] = "cut", 4, self._seam_steps("cut", 4), f"fell back to the cut - {why}"
                 sm["drums_bar"] = sm["bar"]
-                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: the breakdown and a cut instead")
+                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: the breakdown and a cut instead, at the same bar")
+            else:
+                sm["rehearsed"] = f"plays as rehearsed - {why}"
             return
         if sm is None or sm["state"] != "planned" or sm.get("rehearsed") is not None or getattr(self, "_rehearsing", None) == (sm.get("seq"), sm["bar"]):
             return
@@ -830,6 +856,18 @@ class RecordPlay:
         after = self._bars_after_seam()
         self._move("seam_plan", None, self._song_id(a), sb.track.id, f"the seam: {words} - {why}"
                    + ("" if on_lm else (f" (its drop {after:d} bars after the seam)" if after > 0 else " (its drop falls inside the seam)")))
+        # a vocal YOU hold over the room is judged against the harmony that arrives with the seam, and said (it
+        # stays: your order) - a vocal brought over one record rode into the next one's harmony unjudged (flags
+        # 'clash', 'vocals muddy' 2026-09-19)
+        try:
+            vh = self.lanes.get("vocals")
+            if vh is not None and vh not in (a, b) and vh in self.songs and getattr(self.songs[vh], "user_k", None) is not None:
+                fit = self._pair_fit(vh, b)
+                if fit is not None and fit < 0.55:
+                    self._move("plan", "vocals", self._song_id(vh), sb.track.id,
+                               f"your vocal of {self.songs[vh].track.title[:22]} against {sb.track.title[:22]}'s harmony from the seam: fit {fit:.2f}, a clash - it stays (your order); take it out or choose another next record")
+        except Exception:
+            pass
         try:
             from lib.dj.session import log_row
             log_row({"event": "plan", "what": "seam", "track_id": sb.track.id, "bar": int(K_first), "in_bars": int(K_first) - bar, "why": why[:120], "order": order, "len": int(L)})

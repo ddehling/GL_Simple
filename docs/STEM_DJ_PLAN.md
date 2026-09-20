@@ -1280,6 +1280,26 @@ Lights follows it, its seam planned then"); THE SET pins the event's song as the
 staged one; a staged song with no seam and no event is ghosted at a phrase boundary and re-placed a phrase
 at a time, never bar by bar. Code and compile only - the planner was up; the gate is pending.
 
+**The six flags of 17:38-17:41 (the same session), read from the log.** One story: Glam Trap took over at
+its drop with three minutes of body (the pairing file asks 90 s after the landmark); the seam into Blinding
+Lights was then rehearsed and failed on marginal steps three times in thirty seconds (9 dB against 8.5, 8
+against 5.5, 13 against 9.5), each failure moving it a phrase later ('plan': "could not make up its mind";
+and the start of the next song pushed back again); Glam Trap ran out and looped its last eight bars
+('runout'); Blinding Lights, staged since the first minute, landed 274 s into itself as "a short record"
+and had its own seam ninety seconds later; the same rehearsal pattern moved that seam twice more and
+Blinding Lights looped its end too. Meanwhile the user's vocal of Next To You rode into Blinding Lights'
+harmony unjudged ('clash', 'vocals muddy') over a bed the matcher held at 0.74 under a loud vocal ('thin');
+and the user's vocal of Just Don't was cleared at the next seam's first step as a "stray" belonging to
+neither record - an unlogged note - and the record's vocal came back "singing again" ('the system overrode
+my vocals choice'). A 2.4 s dropout at 17:37:01, thirty seconds after Glam Trap took the clock with every
+lane, is not explained by the log (the record's own silence is the likely class; the day log does not carry
+silence_log). Fixed: a BASS UNDER candidate needs runway for the minimum play and a seam (play_min + 45 s),
+not 90 s; a failed rehearsal changes the seam IN PLACE first - the other order, then the breakdown and cut -
+and moves it a phrase later only when the record has the body for it; a part the user brought is never a
+stray (it stays through the seam, said); a vocal the user holds is judged against the incoming harmony when
+the seam is planned and a clash is said (it stays: their order). Not changed: the loudness matcher's bed
+level under a loud vocal (one flag, no number yet).
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
