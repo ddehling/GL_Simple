@@ -1456,7 +1456,25 @@ chose decides where its record starts - five phrases before the pair's groove, o
 pair whose record is past its groove is dropped and said ("your pair missed its groove") instead of waiting
 forever; and each row says how the pair's record follows the record playing now ("into it after Beam Me
 Up: key 0.55 (a clash)") - the 14:14 'seam' + 'clash' flags were a pair's record queued into a clash the
-list never mentioned. Code and compile only - the planner was up. Not changed: a part-song made UP NEXT becomes the record
+list never mentioned. Code and compile only - the planner was up.
+
+**"the pairs system is still not working?" (14:34, 14:46) - "plans have to be rock solid. we can't have any of this
+nonsense".** Round two from the log: the pair set the record's start but the seam's carry check walked it back
+77 bars. Round three: the start held, but the seam OUT of the record was placed thirteen bars in, before the
+pair's groove ("a short record"), and the "no room" branch dropped the pair silently; the DJ's idea had died
+at a 150 s timeout meant for events. Then THE PAIR SMOKE (`tools/tests/_dj_pair_smoke.py`: the path driven
+end to end headless, failing on the first thing that does not happen) replaced the post-mortems and found two
+more in two runs: a pair on a record's FIRST groove (nothing carries before it) entered at the groove itself
+after a drums-first seam from the intro, and its event window - four phrases for a decode - closed before the
+groove; and under MOMENTS rare the event planner returned before looking at a pending event at all. Fixed,
+all of it: the seam out of a pair's record comes after the pair's groove; a pair the record cannot hold is
+said and dropped; ideas have no timeout but their bar; the pair's other song is STAGED when the pair is
+taken, so its event needs one phrase, not four; a pair on the record's first groove enters as a cut on the
+groove, whole (`pair_record_start`, shared with the PAIRS list's "the record would start at"); a pending pair
+arms whatever MOMENTS says; and PLAY THIS PAIR refuses an impossible pair on the spot (no stems, outside the
+wall, a groove under ten bars, no deck) - a plan you take happens or is refused when you take it. Pair smoke
+green on two seeds (the cut on the groove at 1:03, the pair planned five bars later, armed, the vocal over the
+record for 16 bars, no dead bars); control gate 60 presses ALL OK; remix gate green. Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)
