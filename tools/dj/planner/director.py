@@ -1841,6 +1841,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             h.setEnabled(False)
         layered = self.director.mode == "layered"
         walled = bool(why and why.startswith("outside the tempo wall"))
+        halftime = bool(why and (why.startswith("half-time part") or why.startswith("double-time part")))
+        if halftime:
+            h = m.addAction(why)
+            h.setEnabled(False)
         if layered and not walled:
             rec = self._pairings_for(tid) or {}
             sings = rec.get("sings")
@@ -1966,6 +1970,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 from lib.dj.remix import RATE_MIN, RATE_MAX
                 rate = rc.master_bpm / float(t.bpm)
                 if not (RATE_MIN <= rate <= RATE_MAX):
+                    _r, mult = rc._part_rate(t)
+                    if mult in (2.0, 0.5):
+                        # a HALF-TIME / DOUBLE-TIME part (docs/DJ_MORE_THAN_A_MIXER.md 3): its parts come in, it is never the record
+                        return {}, f"{'half-time' if mult == 2.0 else 'double-time'} part: {t.bpm:.0f} bpm under a {rc.master_bpm:.0f} clock - its parts only, never the record"
                     return {}, f"outside the tempo wall: {t.bpm:.0f} bpm against {rc.master_bpm:.0f}"
             if not good and t.camelot and rec.track.camelot:
                 from lib.dj.brain import camelot_compat

@@ -166,6 +166,7 @@ class Song:
         self.deck = deck
         self.track = track
         self.rate = 1.0
+        self.beat_mult = 1.0             # 2.0 / 0.5: a half-time / double-time PART (never a record)
         self.shift = 0
         self.compat = None
         self.staged_at = None            # submix clock it started playing (silent)
@@ -754,7 +755,7 @@ class RemixConductor(RecordPlay):
     def _beat_s(self):
         """One beat of the clock in OUTPUT seconds (the master's source beat over its playback rate)."""
         ms = self.songs.get(self.master)
-        return self._bar_s(ms.track) / 4.0 / max(ms.rate, 1e-6) if ms else 0.5
+        return self._bar_s(ms.track) / 4.0 / max(ms.rate * float(getattr(ms, "beat_mult", 1.0) or 1.0), 1e-6) if ms else 0.5
 
     def _bar_clock(self):
         return int(4 * self._beat_s() * RATE)
@@ -1171,6 +1172,21 @@ class RemixConductor(RecordPlay):
         self._log_play(t)
         self._move("open", None, None, t.id, f"{t.title} opens on {'every lane' if len(open_lanes) == 4 else ', '.join(sorted(open_lanes)) or 'no lane'}: the clock, {t.bpm:.1f} bpm, key {t.camelot or '?'}")
 
+    def _part_rate(self, track, clock_bpm=None):
+        """(rate, beat multiple) at which `track` follows the clock: plain inside the wall; else as a HALF-TIME or
+        DOUBLE-TIME part (docs/DJ_MORE_THAN_A_MIXER.md 3 - a 64 bpm record's bassline under a 128 clock) when that
+        is inside the wall; else (rate, None)."""
+        clock = float(clock_bpm or self.master_bpm or track.bpm)
+        bpm = max(float(track.bpm or 1.0), 1e-6)
+        rate = clock / bpm
+        if RATE_MIN <= rate <= RATE_MAX:
+            return rate, 1.0
+        for mult in (2.0, 0.5):
+            r = clock / (bpm * mult)
+            if RATE_MIN <= r <= RATE_MAX:
+                return r, mult
+        return rate, None
+
     def _stage_song(self, deck):
         """Mount a decoded song, start it beat-locked with every lane closed, cued so its LANDMARK lands on
         the move that lets it in. It plays silently until then, so the PLL has settled when it is heard."""
@@ -1179,12 +1195,17 @@ class RemixConductor(RecordPlay):
             return False
         t = song.track
         rate = (self.master_bpm or t.bpm) / max(t.bpm, 1e-6)
+        mult = 1.0
         if not (RATE_MIN <= rate <= RATE_MAX):
-            self._note(f"{t.title} refused at rate {rate:.3f}")
-            self.songs.pop(deck, None)
-            self.submix.post({"cmd": "unload", "deck": deck})
-            return False
-        song.rate = rate
+            r2, m2 = self._part_rate(t)
+            if m2 is not None and m2 != 1.0 and getattr(song, "part_only", False):
+                rate, mult = r2, m2                   # a PART at half / double time; a record never
+            else:
+                self._note(f"{t.title} refused at rate {rate:.3f}")
+                self.songs.pop(deck, None)
+                self.submix.post({"cmd": "unload", "deck": deck})
+                return False
+        song.rate, song.beat_mult = rate, mult
         song.shift, song.compat = self._key_fit(t)
         at = self._next_bar_clock()
         song.staged_at = at
@@ -1215,6 +1236,7 @@ class RemixConductor(RecordPlay):
         self.submix.post_many([
             {"at": at, "cmd": "cue", "deck": deck, "time_s": t.nearest_downbeat(cue)},
             {"at": at, "cmd": "rate", "deck": deck, "value": rate},
+            {"at": at, "cmd": "beat_mult", "deck": deck, "value": float(mult)},
             {"at": at, "cmd": "pitch", "deck": deck, "semitones": float(song.shift)},
             {"at": at, "cmd": "eq", "deck": deck, "low": LOW_CARVE, "mid": 1.0, "high": 1.0, "ramp_s": 0.01},
             # the deck sleeps at gain 0 until its first lane opens (_wake): the PLL re-snaps only a near-silent
@@ -1228,6 +1250,8 @@ class RemixConductor(RecordPlay):
         self._log_play(t)
         fit = f", key fit {song.compat:.2f}" if song.compat is not None else ""
         self._note(f"{t.title} staged on {deck.upper()} (rate {rate:.3f}, shift {song.shift:+d} st{fit}; landmark {landmark:.0f}s in {to_move} bars)")
+        if mult != 1.0:
+            self._move("plan", None, None, t.id, f"{t.title[:26]} staged as a {'half-time' if mult == 2.0 else 'double-time'} part: {t.bpm:.0f} bpm under a {self.master_bpm:.0f} clock (its parts only, never the record)")
         return True
 
     def _leave_song(self, deck, at):
@@ -1246,13 +1270,14 @@ class RemixConductor(RecordPlay):
         if deck == self.master:
             others = [d for d in self.songs if d != deck and not self.songs[d].leaving]
             if others:
-                new = max(others, key=lambda d: (len(self.songs[d].held(self.lanes)), -(self.songs[d].entered_k or 0)))
+                # (a half-time / double-time part takes the clock only when nothing else can: its clock would be half / double)
+                new = max(others, key=lambda d: (float(getattr(self.songs[d], "beat_mult", 1.0) or 1.0) == 1.0, len(self.songs[d].held(self.lanes)), -(self.songs[d].entered_k or 0)))
                 ev.append({"at": at, "cmd": "end_sync", "slave": new})
                 for d in others:
                     if d != new:
                         ev.append({"at": at, "cmd": "sync", "slave": d, "master": new, "bias_beats": 0.0, "audio_pll": False})
                 self.master = new
-                self.master_bpm = float(self.songs[new].track.bpm) * self.songs[new].rate
+                self.master_bpm = float(self.songs[new].track.bpm) * self.songs[new].rate * float(getattr(self.songs[new], "beat_mult", 1.0) or 1.0)
                 self.bar_k = None
                 self._clock_follows(new)
                 self._move("clock", None, None, self.songs[new].track.id, f"{self.songs[new].track.title} takes the clock")
@@ -1292,7 +1317,7 @@ class RemixConductor(RecordPlay):
                 ev.append({"at": at, "cmd": "sync", "slave": d, "master": new, "bias_beats": 0.0, "audio_pll": False})
         self.submix.post_many(ev)
         self.master = new
-        self.master_bpm = float(self.songs[new].track.bpm) * self.songs[new].rate
+        self.master_bpm = float(self.songs[new].track.bpm) * self.songs[new].rate * float(getattr(self.songs[new], "beat_mult", 1.0) or 1.0)
         self.bar_k = None
         self._clock_follows(new)
         self._move("clock", None, None, self.songs[new].track.id, f"{self.songs[new].track.title} takes the clock (it carries the drums)")
@@ -1449,7 +1474,7 @@ class RemixConductor(RecordPlay):
                 # "layer first" for four minutes (the control gate, 2026-09-16). The song on a deck takes it.
                 cands = [dk for dk, s in self.songs.items() if not s.leaving and s.staged_at is not None]
                 if cands:
-                    new = max(cands, key=lambda dk: (len(self.songs[dk].held(self.lanes)), bool(self.songs[dk].entered)))
+                    new = max(cands, key=lambda dk: (float(getattr(self.songs[dk], "beat_mult", 1.0) or 1.0) == 1.0, len(self.songs[dk].held(self.lanes)), bool(self.songs[dk].entered)))
                     self._pass_clock(new, self._next_bar_clock())
                     self._note(f"the clock was lost: {self.songs[new].track.title[:24]} takes it")
             if self._force_move:
@@ -2794,8 +2819,13 @@ class RemixConductor(RecordPlay):
         return out[:n]
 
     def mark_next(self, track_id):
-        """A song already on a deck becomes YOUR pick for the next record (UP NEXT after a part of it was brought in)."""
+        """A song already on a deck becomes YOUR pick for the next record (UP NEXT after a part of it was brought in).
+        Returns (ok, words): a half-time / double-time part cannot be the record (its clock would be half or
+        double the room's)."""
         tid = int(track_id)
+        for s in self.songs.values():
+            if s.track.id == tid and float(getattr(s, "beat_mult", 1.0) or 1.0) != 1.0:
+                return False, f"{s.track.title[:24]} plays here at {'half' if s.beat_mult == 2.0 else 'double'} time: its parts, never the record"
         self._user_picks.add(tid)
         po = getattr(self, "_part_only", None)
         if po:
@@ -2803,6 +2833,7 @@ class RemixConductor(RecordPlay):
         for s in self.songs.values():
             if s.track.id == tid:
                 s.user_pick, s.part_only = True, False
+        return True, "your pick for the next record"
 
     def stage_track(self, track_id, as_next=True):
         """The operator picks a song from the crate: it decodes and stages on a free deck (beat-locked,
@@ -2821,7 +2852,10 @@ class RemixConductor(RecordPlay):
             return False, "already on a deck"
         rate = self.master_bpm / max(t.bpm, 1e-6)
         if not (RATE_MIN <= rate <= RATE_MAX):
-            return False, f"{t.bpm:.0f} bpm is outside the tempo wall for this clock ({rate:.3f})"
+            _r, mult = self._part_rate(t)
+            if as_next or mult in (None, 1.0):
+                return False, f"{t.bpm:.0f} bpm is outside the tempo wall for this clock ({rate:.3f})"
+            # a PART may play at half or double time (docs/DJ_MORE_THAN_A_MIXER.md 3); the record never
         free = [d for d in DECKS if d not in self.songs and d not in self._decoding and d not in self._pending]
         if not free:
             # YOUR pick outranks the conductor's own: a staged song of its choosing that nobody hears yet gives up
@@ -4148,7 +4182,7 @@ class RemixConductor(RecordPlay):
         if abs(ratio - 1.0) < 0.0015:
             return
         new_bpm = self.master_bpm * max(1.0 - TEMPO_STEP, min(1.0 + TEMPO_STEP, ratio))
-        rates = {d: new_bpm / max(s.track.bpm, 1e-6) for d, s in self.songs.items() if not s.leaving}
+        rates = {d: new_bpm / max(s.track.bpm * float(getattr(s, "beat_mult", 1.0) or 1.0), 1e-6) for d, s in self.songs.items() if not s.leaving}
         if not rates or any(not (RATE_MIN <= r <= RATE_MAX) for r in rates.values()):
             return
         at = self._next_bar_clock()

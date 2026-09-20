@@ -195,6 +195,12 @@ def run(music, seed, presses, seconds, verbose):
         if kind in ("stem_in", "vocal_late"):
             if kind == "vocal_late" and late_hook:
                 t, lane = rng.choice(late_hook), "vocals"      # tonight's case: a vocal from a song whose hook is too near its end
+            elif rng.random() < 0.2:
+                # a HALF-TIME / DOUBLE-TIME part (docs/DJ_MORE_THAN_A_MIXER.md 3): a song at about half or double the clock
+                clock = rc.master_bpm or 120.0
+                far = [x for x in stems if x.bpm and (0.90 <= clock / (x.bpm * 2.0) <= 1.10 or 0.90 <= clock / (x.bpm * 0.5) <= 1.10)]
+                t = rng.choice(far) if far else any_song()
+                lane = rng.choice(("bass", "vocals", "other"))
             else:
                 t = on_deck_song() if rng.random() < 0.4 else any_song()
                 if t is None:

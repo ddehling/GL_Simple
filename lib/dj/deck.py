@@ -80,6 +80,9 @@ class Deck:
         # tempo unchanged, pitch shifted, and the deck's TIMELINE (grid,
         # cues, beat phase) stays in original track time throughout.
         self._pitch_f = 1.0
+        # BEAT MULTIPLE (docs/DJ_MORE_THAN_A_MIXER.md 3): 2.0 = this song's beat is two of the clock's (a 64 bpm part under
+        # a 128 clock), 0.5 the other way; the PLL reads its phase at that multiple, so it locks to the clock's beat
+        self.beat_mult = 1.0
         self._rs_buf = np.zeros((0, 2), dtype=np.float32)
         self._rs_pos = 0.0
         self.loop = None         # (start_frame, end_frame) in source domain
@@ -110,6 +113,7 @@ class Deck:
 
     def load(self, samples, track_id=None, grid=None, gain_db=0.0,
              kick_offset_s=0.0, pitch_st=0.0, stems=None):
+        self.beat_mult = 1.0
         self.samples = np.asarray(samples, dtype=np.float32)
         if self.samples.ndim == 1:
             self.samples = np.repeat(self.samples[:, None], 2, axis=1)
@@ -343,7 +347,7 @@ class Deck:
         if g is None or g["period_s"] <= 0:
             return 0.0
         return ((self.source_time_s() - g["first_beat_s"])
-                / g["period_s"]) % 1.0
+                / g["period_s"] * float(getattr(self, "beat_mult", 1.0) or 1.0)) % 1.0
 
     def nudge_seconds(self, dt_s):
         """Shift the play cursor by dt_s (source-domain seconds); used by

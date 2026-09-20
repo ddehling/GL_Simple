@@ -775,6 +775,11 @@ class Director:
             return True, "already queued"
         rc = self.rc
         t = self.track(tid)
+        if rc is not None and rc.deck_of(tid) is not None:
+            okm, why_m = rc.mark_next(tid)
+            if not okm:
+                self._event(f"up next refused: {why_m}")     # (a half-time part: its parts, never the record)
+                return False, why_m
         if rc is not None and rc.master is not None and t is not None and t.bpm:
             clock = self._chain_clock()
             rate = float(clock) / float(t.bpm)

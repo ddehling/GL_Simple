@@ -227,6 +227,8 @@ class DJSubmix:
         elif cmd == "pitch":
             # key shift on a loaded deck (the stem stage moves a melodic lane toward the master key)
             deck.set_pitch(float(e.get("semitones", 0.0)))
+        elif cmd == "beat_mult":
+            deck.beat_mult = float(e.get("value", 1.0) or 1.0)   # a half-time / double-time PART (docs/DJ_MORE_THAN_A_MIXER.md 3)
         elif cmd == "filter":
             deck.filter.set(mode=e.get("mode"),
                             cutoff_hz=e.get("cutoff_hz"),
@@ -767,6 +769,7 @@ class DJSubmix:
                 "beat_phase": round(d.beat_phase(), 4) if d.ready else 0.0,
                 "rate": round(d.effective_rate(), 5),
                 "rate_trim": round(float(getattr(d, "rate_trim", 0.0) or 0.0), 5),
+                "beat_mult": float(getattr(d, "beat_mult", 1.0) or 1.0),
                 "odd_seg": _odd_segment(d),          # inside a mis-tracked grid segment: the PLL holds there
                 "gain": round(d.gain, 4),
                 "eq": [round(float(g), 3) for g in d.eq.gains],
