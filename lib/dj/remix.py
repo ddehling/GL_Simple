@@ -259,6 +259,7 @@ class RemixConductor(RecordPlay):
         self.tempo_span = 0.0            # tempo journey: 0 = fixed clock
         self.tempo_lean = 0.0            # the tempo dial: a fixed lean on the clock
         self.base_bpm = None             # the journey's centre: the opener's tempo, then (follow_clock) each record's own
+        self._vocal_hold = None          # the deck whose vocal YOU brought: the lane is its until it has sung its last (see bring, _vocal_tick)
         self.follow_clock = True         # THE CLOCK FOLLOWS THE RECORD (docs/DJ_THE_SET.md rule 3): a record that takes
         #                                  the clock pulls it to its native tempo, half a percent a bar - the set travels
         self._tempo_k = None
@@ -871,6 +872,24 @@ class RemixConductor(RecordPlay):
         sing = self._singing(s, self._song_time_at(deck, at))
         return sing is None or sing
 
+    def _sings_again_bars(self, deck, at, max_bars=96):
+        """In how many bars the song on `deck` sings again (0 = now), or None when it does not within `max_bars`
+        or its body (unknown counts as singing: nothing measured is not silence)."""
+        s = self.songs.get(deck)
+        if s is None:
+            return None
+        t0 = self._song_time_at(deck, at)
+        bar = self._bar_s(s.track, t0)
+        end = float(s.track.duration_s or 0.0)
+        for k in range(0, max_bars, 2):
+            t = t0 + k * bar
+            if end and t >= end - 2 * bar:
+                return None
+            sing = self._singing(s, t, span_s=2 * bar)
+            if sing is None or sing:
+                return k
+        return None
+
     def _vocal_gone(self, deck, at, bars=None):
         """The song on `deck` has stopped singing for the next `bars` bars (default VOCAL_REST_BARS)."""
         s = self.songs.get(deck)
@@ -1211,6 +1230,8 @@ class RemixConductor(RecordPlay):
         song = self.songs.get(deck)
         if song is None or song.leaving:
             return
+        if getattr(self, "_vocal_hold", None) == deck:
+            self._vocal_hold = None                       # your vocal's song leaves: the lane is the room's again
         beat = self._beat_s()
         # an echo or a sweep still running rings out before the deck stops
         tail = max(2 * beat * RATE, (song.fx_until - at) if song.fx_until else 0)
@@ -1505,6 +1526,12 @@ class RemixConductor(RecordPlay):
                     continue                          # staged and waiting, resting through a BREAK, or the old bed still sounding until the new one lands
                 if getattr(song, "user_k", None) is not None and k - song.user_k < 4 * self.change_bars:
                     continue                          # a song YOU brought in stays on its deck four phrases even while its lane rests (one left 2 s after its vocal paused)
+                if getattr(self, "_vocal_hold", None) == deck:
+                    # YOUR vocal holds the lane: its song stays while it will sing again within its body
+                    if self._sings_again_bars(deck, self._next_bar_clock()) is not None:
+                        continue
+                    self._vocal_hold = None
+                    self._move("rest", "vocals", song.track.id, None, f"{song.track.title[:30]} has sung its last: the record's vocal returns")
                 if song.voice_since is not None and not song.was_bed and k - song.voice_since < VOICE_MAX_PHRASES * self.change_bars:
                     continue                          # a VOICE between sung stretches keeps its deck for its phrases (one arrived through its vocal and left 24 s later at the first pause, 2026-09-13)
                 if song.idle_k is None:
@@ -2547,12 +2574,33 @@ class RemixConductor(RecordPlay):
                 return
             if since >= self.change_bars and self._vocal_gone(vd, at):
                 self._vocal_last = vd                 # a resting VOICE comes back first when it sings again
+                held = getattr(self, "_vocal_hold", None) == vd
+                if held:
+                    again = self._sings_again_bars(vd, at)
+                    if again is None:
+                        # your vocal has sung its last: the hold ends and the record's vocal may return
+                        self._vocal_hold = None
+                        self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest: it has sung its last (the record's vocal returns)")
+                    else:
+                        self._move("rest", "vocals", self._song_id(vd), None,
+                                   f"vocals of {self.songs[vd].track.title[:30]} pause (the lane is yours: silent until it sings again, in about {again} bars)")
+                else:
+                    self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
                 self._cross("vocals", None, at, beats=2.0, shape=False)
-                self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
                 self._reduck(at)
             return
         if since < VOCAL_REST_BARS:
             return
+        hold = getattr(self, "_vocal_hold", None)
+        if hold is not None:
+            if hold in self.songs and not self.songs[hold].leaving:
+                # the lane is YOURS: only your song's vocal comes back on it
+                if self._singing(self.songs[hold], self._song_time_at(hold, at)) is True and self._sings_through(hold, at, 2) is not False:
+                    self._cross("vocals", hold, at, beats=1.0, shape=False)
+                    self._move("return", "vocals", None, self._song_id(hold), f"your vocal of {self.songs[hold].track.title[:30]} is back (singing again)")
+                    self._reduck(at)
+                return
+            self._vocal_hold = None
         # back only when a song sings NOW and keeps singing through the coming bars (a sparse vocal flapped
         # rest / return every few seconds - four pairs in five minutes on 2026-09-13): the voice whose vocal
         # was resting first (a song that arrived through its vocal), then the bed - the drums' song, or,
@@ -2912,6 +2960,13 @@ class RemixConductor(RecordPlay):
         frm = self.lanes.get(lane)
         tag = self._cross(lane, deck, at, beats=1.0, shape=False)
         s.user_k = self.bar_n                         # your pick: it stays on its deck a while even when its lane rests (see _keep_runway, _vocal_tick)
+        if lane == "vocals":
+            # YOUR VOCAL HOLDS THE LANE (user 2026-09-19: "it takes my new vocals and just dumps them and returns to
+            # the original vocals ... I'm supposed to be in charge here"): when its singing pauses the lane rests
+            # in silence and comes back to THIS song when it sings again; the record's vocal returns only when
+            # this song has sung its last, when you take it out, or when you bring another
+            self._vocal_hold = deck
+            s.user_vocal = True
         if s.voice_since is None:
             s.voice_since = self.bar_n
         self._hygiene(at + int(self._beat_s() * RATE))
@@ -2931,6 +2986,8 @@ class RemixConductor(RecordPlay):
         if bed is None or self.lanes.get(lane) == bed:
             return False, "already the bed's"
         self.lane_boost.pop(lane, None)
+        if lane == "vocals":
+            self._vocal_hold = None                       # you took your vocal off: the lane is the room's again
         at = self._next_bar_clock()
         if lane == "vocals" and not self._vocal_ok(bed, at):
             tag = self._cross(lane, None, at, beats=1.0, shape=False)
@@ -3659,6 +3716,8 @@ class RemixConductor(RecordPlay):
         s = self.songs.get(deck)
         if s is None or s.leaving:
             return False
+        if getattr(self, "_vocal_hold", None) == deck:
+            self._vocal_hold = None                       # you took its song off the decks
         if s.held(self.lanes):
             s.evicted = True
             self._evict(deck)
@@ -3802,6 +3861,7 @@ class RemixConductor(RecordPlay):
             return False
         if getattr(self, "seam", None) is not None:
             self._seam_drop("your DROP takes the room")   # (a running seam's next step crossed a lane away from the DROP's song a bar later - the gate, 2026-09-16)
+        self._vocal_hold = None                           # your DROP: every lane to one song, the vocal hold included
         live = [d for d, s in self.songs.items() if not s.leaving and s.staged_at is not None]
         cands = [d for d in live if self.songs[d].entered and self.songs[d].loop is None] or [d for d in live if self.songs[d].entered]
         waiting = [d for d in live if not self.songs[d].entered]

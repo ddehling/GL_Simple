@@ -1300,6 +1300,19 @@ stray (it stays through the seam, said); a vocal the user holds is judged agains
 the seam is planned and a clash is said (it stays: their order). Not changed: the loudness matcher's bed
 level under a loud vocal (one flag, no number yet).
 
+**18:08, the next session (32105f): "it still takes my new vocals and just dumps them and returns to the
+original vocals. why is that? ... like, i'm supposed to be in charge here."** The log: the vocal of You Are
+My High in at bar 36, cued to its hook; at bar 54 its singing paused, the lane rested and the room-never-
+empty rule put the record's vocal back the same bar ("the record plays whole"); the record's vocal never
+rests, so the user's song never got the lane back and left four phrases later. The rule was written for the
+record's own vocal and never told a vocal the user chose apart. Now YOUR VOCAL HOLDS THE LANE
+(`_vocal_hold`, set by `bring` on the vocal lane): when its singing pauses the lane rests in silence and
+says for how long ("pause: the lane is yours, silent until it sings again, in about 12 bars"); only that
+song's vocal comes back on it; the record's vocal returns when the song has sung its last (said), when you
+take the vocal off, DROP, eject, or bring another; its song stays on its deck while it will sing again
+within its body; a seam's vocal step waits behind it. Code and compile only - the planner was up; the gate
+is pending.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

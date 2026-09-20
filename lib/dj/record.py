@@ -450,11 +450,14 @@ class RecordPlay:
         s = self.songs.get(rd)
         if s is not None and not s.leaving and s.entered:
             fixed = []
+            hold = getattr(self, "_vocal_hold", None)
             for ln in ("drums", "bass", "other", "vocals"):
                 h = self.lanes.get(ln)
                 if h is None or h not in self.songs or self.songs[h].leaving:
                     if ln == "vocals" and self.seam is not None and self.seam["state"] == "running":
                         continue                      # a seam's vocal step may be about to place it
+                    if ln == "vocals" and hold is not None and hold in self.songs and not self.songs[hold].leaving:
+                        continue                      # YOUR vocal holds the lane: it rests in silence until your song sings again
                     self._cross(ln, rd, at, beats=1.0, shape=False)
                     fixed.append(ln)
             if fixed:
@@ -1080,7 +1083,10 @@ class RecordPlay:
         if sb is None:
             return
         self._seam_clear_strays(at)
-        if self._vocal_ok(b, at):
+        hold = getattr(self, "_vocal_hold", None)
+        if hold is not None and hold in self.songs and not self.songs[hold].leaving and hold not in (a, b):
+            self._move("seam", "vocals", None, sb.track.id, f"the seam's vocal step waits: your vocal of {self.songs[hold].track.title[:22]} holds the lane")
+        elif self._vocal_ok(b, at):
             frm = self.lanes.get("vocals")
             tag = self._cross("vocals", b, at, beats=2.0, shape=False)
             sb.voice_since = self.bar_n
