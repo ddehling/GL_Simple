@@ -93,10 +93,13 @@ class RecordPlay:
         cued to begin on a phrase where the record is instrumental; a BASS UNDER becomes the TAKEOVER moment
         with that song, which then is the next record."""
         rate = int(getattr(self, "event_rate", 0) or 0)
-        if rate <= 0:
-            return
         sa = self.songs.get(self.record_deck)
         if sa is None or sa.leaving or not sa.entered:
+            return
+        # A PAIR YOU CHOSE (docs/DJ_MORE_THAN_A_MIXER.md 1, DROP IT): planted for this record, it is placed like the DJ's
+        # own idea but already taken, whatever MOMENTS and MIXING say
+        planted = (getattr(self, "_planted", None) or {}).get(sa.track.id) if self._event_pending is None else None
+        if rate <= 0 and planted is None:
             return
         pend = self._event_pending
         bar = self.bar_n
@@ -153,7 +156,7 @@ class RecordPlay:
             self._move("event", None, self._song_id(self.record_deck), s.track.id,
                        (f"the event: {msg}" if ok else f"the event refused: {msg}"))
             return
-        if getattr(sa, "events_done", 0) >= rate or self._moment is not None:
+        if (planted is None and getattr(sa, "events_done", 0) >= rate) or self._moment is not None:
             return
         sm = self.seam
         if sm is None or sm["state"] == "running":
@@ -161,6 +164,9 @@ class RecordPlay:
         rec = self.pairings_for(sa.track.id)
         if not rec:
             sa.events_done = rate                     # nothing known for this record: no event
+            if planted is not None:
+                self._planted.pop(sa.track.id, None)
+                self._move("event_none", None, self._song_id(self.record_deck), None, f"your pair could not be placed: {sa.track.title[:24]} has no pairing lists")
             return
         k0 = sa.play_from_k if sa.play_from_k is not None else bar
         # the window: from a phrase into the record - and FOUR phrases from now, a decode and a staging are real
@@ -181,6 +187,8 @@ class RecordPlay:
         # VOCALS none: no vocal events; some: a vocal first when one fits, else the bass swap; lots: vocals only
         # (two acapellas at MOMENTS lots) - the bass swap only when no vocal fits at all
         kinds = ["bass"] if pref_v == "none" else ["vocal", "bass"]
+        if planted is not None:
+            kinds = ["vocal"] if planted.get("kind") == "acapella" else ["bass"]
         used = getattr(sa, "events_used", None)
         if used is None:
             used = sa.events_used = set()
@@ -202,14 +210,18 @@ class RecordPlay:
         last_why = "no candidate in its lists"
         for kind in kinds:
             cands = _leaned(rec.get("vocal_over" if kind == "vocal" else "bass_under") or [])
+            if planted is not None:
+                cands = [c for c in cands if int(c["id"]) == int(planted["track_id"])]
+                if not cands:
+                    last_why = f"{self._track_title(int(planted['track_id']))[:20]} is not in this record's lists"
             win_start, win_end = start_min, end_max
-            if kind == "bass" and pref_v == "lots" and n_done == 0 and (rec.get("vocal_over") or []):
+            if kind == "bass" and pref_v == "lots" and n_done == 0 and (rec.get("vocal_over") or []) and planted is None:
                 continue                              # VOCALS lots: the first event is a vocal or nothing yet
             if kind == "bass":
                 # a BASS UNDER changes the record: it is the record's EXIT, at the end of its minimum play, not a
                 # phrase into it (one event per record at a phrase in halved the pace: 2.5 min per record - the
                 # fifth campaign); it takes the seam's own bar - the seam is dropped when it is planned
-                if getattr(self, "seam_kind", "auto") != "cut":
+                if getattr(self, "seam_kind", "auto") != "cut" and planted is None:
                     # the records change through SEAMS unless MIXING says cut: a takeover exit planned three seconds
                     # after the seam was shown replaced a morph with a slam - "the system basically lies about its
                     # transitions" (2026-09-19). Under auto / blend / morph the plan shown is the plan played.
@@ -219,9 +231,9 @@ class RecordPlay:
                 if win_end < win_start:
                     continue
             for c in cands:
-                if c["id"] in busy:
+                if c["id"] in busy and planted is None:
                     continue
-                if kind == "bass" and float(c.get("runway_s") or 0.0) < float(self.play_min_s) + 45.0:
+                if kind == "bass" and float(c.get("runway_s") or 0.0) < float(self.play_min_s) + 45.0 and planted is None:
                     # the takeover's song becomes the RECORD at its drop: it needs its minimum play and a seam after
                     # that, not the pairing file's 90 s floor (Glam Trap took over with three minutes of body,
                     # the seam after it moved twice and it looped its last bars - flag 'runout' 2026-09-19)
@@ -250,8 +262,8 @@ class RecordPlay:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "acapella", "track_id": int(c["id"]), "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": want_t,
-                                           "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})",
-                                           "accepted": rate >= 2}      # MOMENTS lots: the DJ takes its own ideas; some: it proposes
+                                           "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})" + (" - your pair" if planted else ""),
+                                           "accepted": rate >= 2 or planted is not None}      # MOMENTS lots: the DJ takes its own ideas; some: it proposes; your pair is taken
                 else:
                     K = None
                     for k in range(win_start, win_end + 1):
@@ -266,20 +278,37 @@ class RecordPlay:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "takeover", "track_id": int(c["id"]), "bar": int(K), "bars": 0, "t": time.time(),
-                                           "record": sa.track.id, "accepted": rate >= 2,
-                                           "why": f"TAKEOVER at its drop: {c['title'][:24]}'s bassline and melody under these drums, its drums a phrase later - it becomes the record (fit {c['fit']})"}
+                                           "record": sa.track.id, "accepted": rate >= 2 or planted is not None,
+                                           "why": f"TAKEOVER at its drop: {c['title'][:24]}'s bassline and melody under these drums, its drums a phrase later - it becomes the record (fit {c['fit']})" + (" - your pair" if planted else "")}
                     if self._event_pending["accepted"]:
                         self._idea_exit_taken()       # (an idea only proposed keeps the seam until "do it")
+                if planted is not None:
+                    self._planted.pop(sa.track.id, None)
                 sa.events_done = n_done + 1
                 used.add(int(c["id"]))
                 self._move("event_plan", None, self._song_id(self.record_deck), int(c["id"]),
                            f"event in {int(K) - bar} bars: {self._event_pending['why']}")
                 return
+        if planted is not None:
+            # your pair could not be placed this bar: said; it is tried again next bar while its window is open
+            if not getattr(self, "_planted_said", False):
+                self._planted_said = True
+                self._move("event_none", None, self._song_id(self.record_deck), None, f"your pair waits: {last_why[:70]}")
+            return
         sa.events_done = rate                         # nothing usable for this record
         # said, not silent: a record with 349 vocal candidates got no event and the user flagged "nothing happening
         # for too long" (2026-09-19) - the last reason names it (often: no free deck)
         self._move("event_none", None, self._song_id(self.record_deck), None,
                    f"no event for {sa.track.title[:24]}: {last_why[:70]}")
+
+    def plant_idea(self, record_tid, kind, other_tid):
+        """A PAIR YOU CHOSE (DROP IT): when `record_tid` is the record, `other_tid` comes as `kind` ("acapella" - its
+        vocal over the groove; "takeover" - its bassline under the drums, then it is the record), already taken."""
+        if not hasattr(self, "_planted") or self._planted is None:
+            self._planted = {}
+        self._planted[int(record_tid)] = {"kind": kind, "track_id": int(other_tid), "t": time.time()}
+        self._planted_said = False
+        return True
 
     def set_play_min(self, seconds):
         self.play_min_s = float(max(30.0, seconds))

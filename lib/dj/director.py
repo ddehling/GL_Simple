@@ -19,6 +19,7 @@ same song at the same song time on a bar of the song, and the two master buses c
 nothing stops. The Director ticks both engines itself (neither runs its own thread here), and nothing in
 this file opens a device: the caller attaches the submixes it is told about.
 """
+import os
 import threading
 import time
 
@@ -1084,6 +1085,82 @@ class Director:
         self._hz_sig = None
         self._event(f"not tonight: {self.title(tid)[:30]}")
         return True
+
+    # -- THE PAIRS: the mashup finder (docs/DJ_MORE_THAN_A_MIXER.md 1) ---------------------------------------------
+    def _pairings_file(self):
+        import json
+        path = os.path.join(self.music_root, ".stems", "pairings.json")
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            return None
+        if getattr(self, "_pairs_mt", None) != mt:
+            try:
+                self._pairs_data = json.load(open(path, encoding="utf-8"))
+                self._pairs_mt = mt
+            except Exception:  # noqa: BLE001
+                self._pairs_data = None
+        return getattr(self, "_pairs_data", None)
+
+    def pairs(self, n=80, fit_clock=True, with_tid=None):
+        """The best pairs across the library, from the pairing file: {kind ("vocal" | "bass"), r (the record), s (the
+        other song), score, fit, shift, r_start, s_start, words}. `fit_clock`: the record inside the wall of the
+        clock now (when one plays); `with_tid`: only pairs that involve this song. Played songs are left out."""
+        p = self._pairings_file()
+        if not p:
+            return []
+        recs = p.get("records") or {}
+        rc = self.rc
+        clock = float(rc.master_bpm) if (rc is not None and rc.master is not None) else None
+        played = self._played_ids()
+        by_id = {t.id: t for t in self.library}
+        out = []
+        for rid, r in recs.items():
+            R = by_id.get(int(rid))
+            if R is None or not getattr(R, "has_stems", False) or not R.bpm:
+                continue
+            if fit_clock and clock and not (0.90 <= clock / float(R.bpm) <= 1.10):
+                continue
+            g0 = float((r.get("grooves") or [[max(30.0, float(r.get("landmark") or 30.0))]])[0][0])
+            for kind, key in (("vocal", "vocal_over"), ("bass", "bass_under")):
+                for x in r.get(key) or []:
+                    S = by_id.get(int(x["id"]))
+                    if S is None or not getattr(S, "has_stems", False) or not S.bpm:
+                        continue
+                    if with_tid is not None and int(with_tid) not in (R.id, S.id):
+                        continue
+                    if R.id in played and S.id in played:
+                        continue
+                    if kind == "vocal":
+                        r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
+                        words = f"the vocal of {S.title[:24]} over {R.title[:24]} from {_mmss(r_start)}"
+                    else:
+                        r_start, s_start = g0, float(x.get("landmark") or 0.0)
+                        words = f"{S.title[:24]}'s bassline under {R.title[:24]}'s drums, at its drop {_mmss(s_start)}"
+                    out.append({"kind": kind, "r": R, "s": S, "score": float(x.get("score") or 0.0), "fit": x.get("fit"), "shift": int(x.get("shift") or 0),
+                                "r_start": r_start, "s_start": s_start, "words": words + f"  (fit {x.get('fit')})" + (f", shift {int(x.get('shift') or 0):+d}" if x.get("shift") else ""),
+                                "played": (R.id in played or S.id in played)})
+        out.sort(key=lambda z: (-z["score"], z["r"].title))
+        return out[:n]
+
+    def drop_pair(self, pair):
+        """DROP IT: the pair's record goes UP NEXT (unless it is the record now) and the pair is planted as an idea
+        already taken - it fires when that record plays. Returns a sentence."""
+        rc = self.rc
+        if rc is None or rc.master is None:
+            return "layer first: LAYERS two"
+        R, S = pair["r"], pair["s"]
+        kind = "acapella" if pair["kind"] == "vocal" else "takeover"
+        rec_now = rc.songs[rc.record_deck].track.id if rc.record_deck in rc.songs else None
+        words = ""
+        if R.id != rec_now:
+            ok, msg = self.queue(R.id)
+            if not ok:
+                return f"the pair's record could not be queued: {msg}"
+            words = f"{R.title[:24]} is UP NEXT; "
+        rc.plant_idea(R.id, kind, S.id)
+        self._event(f"PAIR taken: {pair['words'][:80]}")
+        return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'} (taken)")
 
     def idea_take(self):
         """"Do it" on the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns a sentence."""

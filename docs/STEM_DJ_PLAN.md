@@ -1422,7 +1422,25 @@ again", and inside a loop it sings again every pass - the lane paused and return
 last - the hold ends ("X has run out: its vocal rests, the record's vocal returns"), the lane does not come
 back to it, its deck is not kept, and an evicted song's hold is cleared. The 13:32 'dead' (Mahoya alone at
 1:56 with every stem at 0.74) is not explained by the log: no slip, no move; the record's own level is the
-likely class. Not changed: a part-song made UP NEXT becomes the record
+likely class.
+
+**"what can we do to make it more than a playlist mixer?" → "do all 4 things" (2026-09-20).** The page:
+docs/DJ_MORE_THAN_A_MIXER.md. Built, in the order 2-4-3-1: (2) THE DJ'S IDEAS AS ROWS - a planned event is an
+IDEA row in THE PLAN (do it / skip; it passes, said, two phrases before its bar; MOMENTS lots = the DJ takes
+its own; a takeover idea drops the seam only when taken); (4) BUILD (the eight bars before the record's drop
+loop once more, the bass pulled on the second pass, released into the drop on the one; press again =
+release now) and AGAIN (the current section once more from its start on the phrase) as moment kinds with
+their buttons; (3) HALF-TIME / DOUBLE-TIME PARTS - a deck's beat multiple for the PLL, the rate the clock over
+the tempo times the multiple, parts only (UP NEXT on such a song refused with the reason, the clock never
+theirs); (1) PAIRS, the fourth tab of the right column - the best pairs across the library ranked, coloured
+by lane, filtered to the clock and to the highlighted song; HEAR renders eight bars offline
+(`lib/dj/preview.py`: the decode in the helper process, RubberBand offline for the stretch and the shift,
+peak 0.9) and plays them on the CUE OUTPUT (`lib/dj/cue.py`: a second playback device named by
+`dj.cue_device` in config.yaml - this machine has a Headphones (Elgato) and a Logitech headset - never the
+floor); DROP IT queues the record and plants the pair as an idea already taken (`plant_idea`, placed by the
+event planner whatever MOMENTS and MIXING say). Gates: control (IDEA do it / skip, BUILD, AGAIN, half-time
+parts pressed), remix, the preview smoke (`_dj_preview_smoke.py`, a WAV, no device) - pending while the
+planner is up. Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)

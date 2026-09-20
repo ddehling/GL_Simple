@@ -691,6 +691,49 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         pl.setContentsMargins(6, 6, 6, 6)
         pl.addWidget(self.plan_h)
         pl.addWidget(self.plan_list, 1)
+        # THE PAIRS (docs/DJ_MORE_THAN_A_MIXER.md 1): the mashup finder - the best pairs across the library, HEAR
+        # one in the headphones (the cue output), DROP IT into the set
+        self.pairs_tab = QWidget()
+        pv = QVBoxLayout(self.pairs_tab)
+        pv.setContentsMargins(6, 6, 6, 6)
+        self.pairs_h = QLabel("PAIRS")
+        self.pairs_h.setProperty("dim", "true")
+        self.pairs_h.setToolTip("the best pairs across the whole library, from the pairing file: a vocal that sits over a record's groove, a bassline that "
+                                "swaps under a record's drums. Double-click = HEAR eight bars in the headphones (the cue output); right-click = HEAR, "
+                                "DROP IT (the record goes UP NEXT and the pair fires when it plays), show parts")
+        pv.addWidget(self.pairs_h)
+        prow = QHBoxLayout()
+        self.pairs_clock = QPushButton("fits the clock")
+        self.pairs_clock.setCheckable(True)
+        self.pairs_clock.setChecked(True)
+        self.pairs_clock.setToolTip("only pairs whose record is inside the tempo wall of the clock playing now")
+        self.pairs_with = QPushButton("with the highlighted song")
+        self.pairs_with.setCheckable(True)
+        self.pairs_with.setToolTip("only pairs that involve the song highlighted in SONGS / UP NEXT")
+        self.pairs_stop = QPushButton("■ stop")
+        self.pairs_stop.setToolTip("stop the headphone preview")
+        for b in (self.pairs_clock, self.pairs_with):
+            b.toggled.connect(lambda _c: self._fill_pairs(force=True))
+        self.pairs_stop.clicked.connect(self._pairs_stop)
+        prow.addWidget(self.pairs_clock)
+        prow.addWidget(self.pairs_with)
+        prow.addStretch(1)
+        prow.addWidget(self.pairs_stop)
+        pv.addLayout(prow)
+        self.pairs = QListWidget()
+        self.pairs.setWordWrap(True)
+        self.pairs.itemDoubleClicked.connect(lambda it: self._hear_pair(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
+        self.pairs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.pairs.customContextMenuRequested.connect(self._pairs_menu)
+        pv.addWidget(self.pairs, 1)
+        self.pairs_lbl = QLabel("")
+        self.pairs_lbl.setProperty("dim", "true")
+        self.pairs_lbl.setWordWrap(True)
+        pv.addWidget(self.pairs_lbl)
+        self._pairs_rows = []
+        self._pairs_sig = None
+        self._cue = None
+        self._preview_cache = {}
         for w in (self.now_lbl, self.now_sub, self.now_map, self.next_lbl, self.next_sub, self.next_map, self.intent_lbl, self.lanes_lbl, self.why_lbl):
             left.addWidget(w)
         self.intent_lbl.setVisible(False)
@@ -1025,6 +1068,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.right_tabs.addTab(rw, "DIALS")
         self.right_tabs.addTab(self.viewer, "PARTS")
         self.right_tabs.addTab(self.plan_tab, "PLAN")
+        self.right_tabs.addTab(self.pairs_tab, "PAIRS")
         self.right_tabs.setToolTip("DIALS: how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves; "
                                    "PLAN: what will happen next, in order, with the time from now")
         self.right_tabs.currentChanged.connect(self._right_tab_changed)
@@ -1630,6 +1674,133 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         threading.Thread(target=work, daemon=True, name="director-dropbox").start()
         QTimer.singleShot(200, poll)
 
+    # -- THE PAIRS: the mashup finder and the headphone preview (docs/DJ_MORE_THAN_A_MIXER.md 1) ---------------------
+    def _fill_pairs(self, force=False):
+        d = self.director
+        if d is None:
+            if self.pairs.count():
+                self.pairs.clear()
+            self.pairs_h.setText("PAIRS   (press START: the pairs are ranked against the clock)")
+            return
+        with_tid = None
+        if self.pairs_with.isChecked():
+            it = self.found.currentItem() or self.queue.currentItem()
+            with_tid = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
+        try:
+            rows = d.pairs(n=80, fit_clock=self.pairs_clock.isChecked(), with_tid=with_tid)
+        except Exception as e:  # noqa: BLE001
+            self.pairs_lbl.setText(f"pairs: {type(e).__name__}: {e}")
+            return
+        sig = tuple((p["kind"], p["r"].id, p["s"].id, p["played"]) for p in rows)
+        if sig == self._pairs_sig and not force:
+            return
+        self._pairs_sig = sig
+        self._pairs_rows = rows
+        self.pairs.clear()
+        for i, p in enumerate(rows):
+            it = QListWidgetItem(("· " if not p["played"] else "(played) ") + p["words"])
+            it.setData(Qt.ItemDataRole.UserRole, i)
+            it.setToolTip(f"{p['words']}\nscore {p['score']:.2f}\ndouble-click: HEAR eight bars in the headphones · right-click: DROP IT")
+            col = LANE_COLORS.get("vocals" if p["kind"] == "vocal" else "bass")
+            if p["played"]:
+                it.setForeground(Qt.GlobalColor.gray)
+            elif col is not None:
+                it.setForeground(col)
+            self.pairs.addItem(it)
+        self.pairs_h.setText(f"PAIRS  {len(rows)}" + ("  ·  inside the wall of the clock" if self.pairs_clock.isChecked() else "  ·  the whole library")
+                             + (f"  ·  with {d.title(int(with_tid))[:22]}" if with_tid is not None else ""))
+
+    def _pairs_menu(self, pos):
+        it = self.pairs.itemAt(pos)
+        if it is None or self.director is None:
+            return
+        i = it.data(Qt.ItemDataRole.UserRole)
+        if i is None or i >= len(self._pairs_rows):
+            return
+        p = self._pairs_rows[i]
+        from PyQt6.QtWidgets import QMenu
+        m = QMenu(self)
+        a = m.addAction("HEAR: eight bars in the headphones")
+        a.triggered.connect(lambda _c, k=i: self._hear_pair(k))
+        a = m.addAction(f"DROP IT: {p['r'].title[:22]} UP NEXT, the pair when it plays")
+        a.triggered.connect(lambda _c, k=i: self._drop_pair(k))
+        m.addSeparator()
+        for t in (p["r"], p["s"]):
+            a = m.addAction(f"show the parts of {t.title[:26]}")
+            a.triggered.connect(lambda _c, tt=t.id: self._show_parts(tt))
+        m.exec(self.pairs.mapToGlobal(pos))
+
+    def _cue_player(self):
+        if self._cue is None:
+            from lib.dj.cue import CuePlayer
+            self._cue = CuePlayer()
+        return self._cue
+
+    def _hear_pair(self, i):
+        """Render the pair on a worker (the decode in the helper process, RubberBand offline) and play it on the cue
+        output; never on the floor while the Director runs."""
+        if i is None or i >= len(self._pairs_rows) or self.director is None:
+            return
+        p = self._pairs_rows[i]
+        cue = self._cue_player()
+        if not cue.available:
+            self.pairs_lbl.setText(cue.why)
+            return
+        if getattr(self, "_hear_busy", False):
+            self.pairs_lbl.setText("a preview is rendering - a moment")
+            return
+        self._hear_busy = True
+        self.pairs_lbl.setText(f"rendering: {p['words'][:70]} …")
+        import threading
+        from lib.dj.stemload import decode_song
+        from lib.dj.preview import render_pair
+        music, db = self.planner.music_dir, self._db()
+        cache = self._preview_cache
+        box = {}
+
+        def loader(tid):
+            if tid in cache:
+                return cache[tid]
+            t = self.track(tid)
+            _s, stems, _l = decode_song(db.abs(t.path), music, tid, with_levels=False)
+            cache[tid] = stems
+            if len(cache) > 6:
+                cache.pop(next(iter(cache)))
+            return stems
+
+        def work():
+            try:
+                box["buf"] = render_pair(music, p["kind"], p["r"], p["s"], p["r_start"], p["s_start"], bars=8, shift=p["shift"], cache=cache, loader=loader)
+            except Exception as e:  # noqa: BLE001
+                box["err"] = f"{type(e).__name__}: {e}"
+
+        def poll():
+            if "buf" not in box and "err" not in box:
+                QTimer.singleShot(200, poll)
+                return
+            self._hear_busy = False
+            if "err" in box:
+                self.pairs_lbl.setText(f"the preview could not be rendered: {box['err'][:90]}")
+                return
+            from lib.dj.submix import RATE
+            ok, words = cue.play(box["buf"], RATE)
+            self.pairs_lbl.setText((f"hearing {words}: " if ok else "") + (p["words"][:70] if ok else words))
+        threading.Thread(target=work, daemon=True, name="director-preview").start()
+        QTimer.singleShot(200, poll)
+
+    def _drop_pair(self, i):
+        if i is None or i >= len(self._pairs_rows) or self.director is None:
+            return
+        msg = self.director.drop_pair(self._pairs_rows[i])
+        self.pairs_lbl.setText(msg)
+        self.moment_lbl.setText(msg[:90])
+        self._render_queue()
+
+    def _pairs_stop(self):
+        if self._cue is not None:
+            self._cue.stop()
+        self.pairs_lbl.setText("preview stopped")
+
     def _skip_in_set(self, tid):
         d = self.director
         if d is None:
@@ -1755,6 +1926,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
     def close(self):
         self._timer.stop()
         self._dropbox_stop()
+        if getattr(self, "_cue", None) is not None:
+            self._cue.stop()
         try:
             self.viewer.hide()
         except Exception:
@@ -2128,6 +2301,11 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.view_btn.blockSignals(True)
             self.view_btn.setChecked(on)
             self.view_btn.blockSignals(False)
+        if self.right_tabs.widget(idx) is self.pairs_tab:
+            try:
+                self._fill_pairs(force=True)
+            except Exception as e:  # noqa: BLE001
+                self.pairs_lbl.setText(f"pairs: {type(e).__name__}: {e}")
 
     def _show_parts(self, tid):
         """A song's parts, in the PARTS tab."""
@@ -2657,6 +2835,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.intent_lbl.setText(st.get("intent") or "")
         try:
             self._render_plan(st.get("plan_rows") or [])
+            # the PAIRS list follows the clock and what has played: refreshed every thirty seconds while its tab shows
+            self._pairs_tick = getattr(self, "_pairs_tick", 0) + 1
+            if self.right_tabs.currentWidget() is self.pairs_tab and (self._pairs_tick % 120 == 1):
+                try:
+                    self._fill_pairs()
+                except Exception as e:  # noqa: BLE001
+                    self.pairs_lbl.setText(f"pairs: {type(e).__name__}: {e}")
         except Exception as e:  # noqa: BLE001
             self.err_lbl.setText(f"plan: {type(e).__name__}: {e}")
         # the song maps: the playing record (by id when the status carries one, else by title) and the next

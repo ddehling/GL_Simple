@@ -200,6 +200,30 @@ song outside the tempo wall gets the reason, its parts window, and - when a chai
 "(via)", and the clock travels there record by record. In SONGS such a song reads "via 2 records" instead
 of grey. When nothing reaches it the menu says so.
 
+## PAIRS: the mashup finder (the fourth tab of the right column)
+
+The best pairs across the whole library, from the pairing file, ranked: "the vocal of X over Y from 2:10
+(fit 0.91)" in the vocal lane's colour, "X's bassline under Y's drums, at its drop 1:30 (fit 0.88)" in the
+bass lane's. **fits the clock** keeps the pairs whose record is inside the tempo wall of the clock playing;
+**with the highlighted song** keeps the pairs that involve the song highlighted in SONGS or UP NEXT.
+**Double-click = HEAR**: eight bars rendered offline from both records' stems, the vocal or bassline
+stretched to the record's tempo and shifted by the pair's semitones, played on the CUE OUTPUT - a second
+audio device named by `dj.cue_device` in config.yaml (a fragment of its name, e.g. `Headphones`). Without
+one the tab says so; a preview never plays on the floor while the Director runs. **Right-click → DROP IT**:
+the pair's record goes UP NEXT (unless it is the record now) and the pair is planted as an IDEA already
+taken - it fires when that record plays, and THE PLAN shows it as an EVENT. A song played tonight shows grey.
+
+## IDEA rows and the moments row
+
+The DJ's events are proposals: an **IDEA** row in THE PLAN ("the vocal of X over this groove for two phrases
+(fit 0.9)"), right-click **do it** or **skip**; not taken two phrases before its bar, it passes, said. MOMENTS
+lots = the DJ takes its own ideas; some = it proposes; rare = it has none. Two more buttons in the moments row
+edit the record itself: **BUILD** loops the eight bars before the record's next drop once more with the bass
+pulled on the second pass and releases into the drop on the one (press again = release now; it needs a drop
+eight bars away at least within four phrases); **AGAIN** brings the record's current section back once, from
+its start on the phrase. A song outside the tempo wall may still bring its PARTS in at half or double time
+(the menu says "half-time part"); it is never the record.
+
 ## The floor: a request during the night
 
 A song in the library **without stems** cannot be layered, and its menu offers **"make it playable"**: its
