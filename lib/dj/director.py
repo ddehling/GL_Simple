@@ -1124,11 +1124,12 @@ class Director:
                 continue
             # how the pair's RECORD would follow the record playing now: its key against it (a pair's record went UP
             # NEXT into a clash the list never mentioned - flags 'seam', 'clash' 2026-09-20)
-            into = ""
+            into, key_into = "", None
             if rec_now is not None and rec_now.id != R.id:
                 try:
                     from lib.dj.setplan import key_fit
                     kf, _sh = key_fit(rec_now.camelot, R.camelot)
+                    key_into = round(float(kf), 2)
                     into = f" · into it after {rec_now.title[:16]}: key {kf:.2f}" + (" (a clash)" if kf < 0.68 else "")
                 except Exception:
                     into = ""
@@ -1146,12 +1147,12 @@ class Director:
                         r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
                         bar_r = 4.0 * 60.0 / float(R.bpm)
                         from_t = max(0.0, r_start - 5 * 8 * bar_r)
-                        words = f"the vocal of {S.title[:24]} over {R.title[:24]} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
+                        words = f"the vocal of {S.title} over {R.title} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
                     else:
-                        r_start, s_start = g0, float(x.get("landmark") or 0.0)
-                        words = f"{S.title[:24]}'s bassline under {R.title[:24]}'s drums, at its drop {_mmss(s_start)}"
+                        r_start, s_start, from_t = g0, float(x.get("landmark") or 0.0), None
+                        words = f"{S.title}'s bassline under {R.title}'s drums, at its drop {_mmss(s_start)} - then it is the record"
                     out.append({"kind": kind, "r": R, "s": S, "score": float(x.get("score") or 0.0), "fit": x.get("fit"), "shift": int(x.get("shift") or 0),
-                                "r_start": r_start, "s_start": s_start,
+                                "r_start": r_start, "s_start": s_start, "start_t": from_t, "key_into": key_into,
                                 "words": words + f"  (fit {x.get('fit')})" + (f", shift {int(x.get('shift') or 0):+d}" if x.get("shift") else "") + into,
                                 "played": (R.id in played or S.id in played)})
         out.sort(key=lambda z: (-z["score"], z["r"].title))

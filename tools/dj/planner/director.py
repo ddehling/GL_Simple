@@ -727,7 +727,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         prow.addWidget(self.pairs_stop)
         pv.addLayout(prow)
         self.pairs = QListWidget()
-        self.pairs.setWordWrap(True)
+        self.pairs.setWordWrap(False)
+        self.pairs.setHorizontalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.pairs.itemDoubleClicked.connect(lambda it: self._hear_pair(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
         self.pairs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.pairs.customContextMenuRequested.connect(self._pairs_menu)
@@ -1764,10 +1765,27 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._pairs_sig = sig
         self._pairs_rows = rows
         self.pairs.clear()
+        import sys as _sys
+        from PyQt6.QtGui import QFont
+        mono = QFont("Consolas" if _sys.platform.startswith("win") else "Menlo", 9)
+        # ONE LINE, FIXED COLUMNS (user 2026-09-20: "too much unneeded info ... hard to read"): what comes in, how,
+        # onto which record, the fit, the key into it from the record playing, where the record would start.
+        # The words live in the tooltip.
+        any_key = any(p.get("key_into") is not None for p in rows)
         for i, p in enumerate(rows):
-            it = QListWidgetItem(("· " if not p["played"] else "(played) ") + p["words"])
+            s_t = (p["s"].title[:22]).ljust(22)
+            r_t = (p["r"].title[:22]).ljust(22)
+            how = "vocal over " if p["kind"] == "vocal" else "bass under "
+            fit = f"fit {float(p['fit'] or 0):.2f}"
+            key = ""
+            if any_key:
+                key = (f"  key {p['key_into']:.2f}" + ("!" if p["key_into"] < 0.68 else " ")) if p.get("key_into") is not None else "           "
+            at = f"  from {_mmss(p['start_t'])}" if p.get("start_t") is not None else "  at its drop"
+            line = f"{s_t} {how}{r_t}  {fit}{key}{at}" + ("  (played)" if p["played"] else "")
+            it = QListWidgetItem(line)
+            it.setFont(mono)
             it.setData(Qt.ItemDataRole.UserRole, i)
-            it.setToolTip(f"{p['words']}\nscore {p['score']:.2f}\ndouble-click: HEAR eight bars in the headphones · right-click: PLAY THIS PAIR (the record UP NEXT, the pair when it plays)")
+            it.setToolTip(f"{p['words']}\nscore {p['score']:.2f}\n\ndouble-click: HEAR eight bars in the headphones\nright-click: PLAY THIS PAIR (the record UP NEXT, the pair when it plays)")
             col = LANE_COLORS.get("vocals" if p["kind"] == "vocal" else "bass")
             if p["played"]:
                 it.setForeground(Qt.GlobalColor.gray)
@@ -1775,7 +1793,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 it.setForeground(col)
             self.pairs.addItem(it)
         self.pairs_h.setText(f"PAIRS  {len(rows)}" + ("  ·  inside the wall of the clock" if self.pairs_clock.isChecked() else "  ·  the whole library")
-                             + (f"  ·  with {d.title(int(with_tid))[:22]}" if with_tid is not None else ""))
+                             + (f"  ·  with {d.title(int(with_tid))[:22]}" if with_tid is not None else "")
+                             + "   —   part · onto the record · fit · key into it (! = a clash) · where the record starts")
 
     def _pairs_menu(self, pos):
         it = self.pairs.itemAt(pos)
