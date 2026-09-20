@@ -1355,6 +1355,18 @@ cross now - the low shelf keeps it under most of the time; watch it), harmony sp
 rehearsals 19 clean / 1 moved (v10: 17 / 2), events 19 planned / 16 armed (auto keeps the takeover exits, at
 unity now). The ear decides; the numbers moved the right way.
 
+**"takeover commands take forever to implement" - "once again, this is the system not listening to
+directions" (19:50).** The log of the two evening sessions: a TAKEOVER on a song whose bassline the user had
+already brought in was refused "its bassline is already the room's harmony" (three times - the takeover never
+finished); a TAKEOVER pressed while the DJ's own takeover was armed became "TAKEOVER now" WITH THE DJ's SONG
+(the same-kind-again = go-now rule never looked at which song); and a user's TAKEOVER landed on the song's
+drop within four phrases (up to a minute of waiting after an eight-second staging). Fixed: a takeover whose
+bassline is in finishes the job (its drums follow on the next bar, it is the record, said); a moment armed
+with a different song is cancelled and yours armed; your two-song moments look one phrase ahead for a payoff,
+else the next phrase, and the NOW / PHRASE toggle applies to them too (NOW = the next bar plus the lead).
+Code and compile only - the planner was up; the control gate (it presses TAKEOVER with, now with both
+timings) is pending.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

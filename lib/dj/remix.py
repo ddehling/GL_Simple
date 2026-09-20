@@ -3042,12 +3042,14 @@ class RemixConductor(RecordPlay):
                 return key
         return msg[:40]
 
-    def arm_moment(self, kind, auto=False, other=None):
+    def arm_moment(self, kind, auto=False, other=None, when="phrase"):
         """Arm a composed moment: choose where it lands and count down. Pressing the same moment again while
         it is armed = go now (the script starts on the next bar). `other`: the deck of the second song for
-        TAKEOVER / BRIDGE (else the newest voice or a staged song). Every arm and every refusal is counted
-        per kind (moment_stats) so an unusable moment shows itself. Returns (ok, sentence)."""
-        ok, msg = self._arm_moment_inner(kind, auto, other)
+        TAKEOVER / BRIDGE (else the newest voice or a staged song). `when` (yours, not the DJ's): "phrase" = at
+        the song's payoff within the coming phrase, else the next phrase boundary; "bar" = the next bar. Every
+        arm and every refusal is counted per kind (moment_stats) so an unusable moment shows itself. Returns
+        (ok, sentence)."""
+        ok, msg = self._arm_moment_inner(kind, auto, other, when)
         if kind in MOMENTS:
             st = self.moment_stats.setdefault(kind, {"armed": 0, "refused": {}})
             if ok:
@@ -3062,7 +3064,7 @@ class RemixConductor(RecordPlay):
                     pass
         return ok, msg
 
-    def _arm_moment_inner(self, kind, auto, other):
+    def _arm_moment_inner(self, kind, auto, other, when="phrase"):
         if kind not in MOMENTS:
             return False, "no such moment"
         if self.master is None:
@@ -3071,8 +3073,11 @@ class RemixConductor(RecordPlay):
         lead = self._moment_lead(kind)
         tune = self.moment_tune.get(kind, {})
         if self._moment is not None:
-            if self._moment["kind"] == kind and not self._moment["started"]:
+            same_song = other is None or self._moment.get("V") == other
+            if self._moment["kind"] == kind and not self._moment["started"] and same_song:
                 return self.moment_go()
+            # a different song than the armed one (the DJ's own takeover with Mahoya was armed; you asked for God
+            # Sigma and got "TAKEOVER now" with Mahoya - 2026-09-19): the armed moment goes, yours is armed
             self.moment_cancel()
         if other is not None and (other not in self.songs or self.songs[other].leaving or self.songs[other].staged_at is None):
             return False, "that song is not ready on a deck" if other in self.songs else "that song is not on a deck"
@@ -3140,6 +3145,21 @@ class RemixConductor(RecordPlay):
             V = V or self._second_song(B)
             if V is None:
                 return False, "no second song on a deck (put one UP NEXT)"
+            if self.lanes.get("bass") == V and kind == "takeover":
+                # its bassline is in already (you brought it): the TAKEOVER finishes the job - its drums follow on
+                # the next bar and it is the record (refused as "already the room's harmony" three times on
+                # 2026-09-19: "the system not listening to directions")
+                at_now = self._next_bar_clock()
+                if self.lanes.get("other") != V and self._other_free_for(V):
+                    self._cross("other", V, at_now, beats=1.0, shape=False)
+                self._cross("drums", V, at_now, beats=1.0, shape=False)
+                self._m_roles(V, B)
+                self._hygiene(at_now + int(self._beat_s() * RATE))
+                if getattr(self, "seam", None) is not None:
+                    self._seam_drop("your TAKEOVER: the record changes now")
+                self._move("bed_to", "drums", self._song_id(B), self._song_id(V),
+                           f"TAKEOVER: {self.songs[V].track.title}'s bassline is in already - its drums follow on the next bar: it is the bed")
+                return True, f"its bassline is in already: {self.songs[V].track.title[:24]}'s drums follow on the next bar - it is the record"
             if self.lanes.get("bass") == V:
                 return False, f"{self.songs[V].track.title[:24]}'s bassline is already the room's harmony"
             why = self.why_not("bass", V)
@@ -3165,8 +3185,13 @@ class RemixConductor(RecordPlay):
             # end of the record's minimum play (landed at the next drop ahead instead, the takeover came 6 bars
             # after arming and the records lasted a minute - campaign v7)
             L, what = int(self._event["bar"]), "its drop"
+        elif not auto and when == "bar" and kind in ("takeover", "bridge"):
+            L, what = self.bar_n + 1 + lead, "now"        # YOUR two-song moment, NOW: the next bar plus its lead
         else:
-            pay, what = self._payoff_in_bars(T, at, MOMENT_LOOK_PHRASES * self.change_bars)
+            # the DJ's own moment looks four phrases ahead for the song's drop; YOURS looks one phrase ahead at most
+            # (a TAKEOVER that waited a minute for a drop was "taking forever", 2026-09-19), else the next phrase
+            look = (MOMENT_LOOK_PHRASES if auto else 1) * self.change_bars
+            pay, what = self._payoff_in_bars(T, at, look)
             if pay is not None and pay >= lead - 0.05:
                 L = self.bar_n + 1 + int(round(pay))
             elif tune.get("payoff_only"):

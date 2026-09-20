@@ -1845,7 +1845,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             a = m.addAction(("★ " if star else "") + "TAKEOVER with this (its bassline on the one, its drums at the phrase)" + (f"   ({star})" if star else ""))
             if star:
                 a.setFont(bold)
-            a.triggered.connect(lambda _c, t=tid: self.moment_lbl.setText(self.director.moment_with(t, "takeover")))
+            a.triggered.connect(lambda _c, t=tid: self.moment_lbl.setText(self.director.moment_with(t, "takeover", when="phrase" if self.phrase_btn.isChecked() else "bar")))
             rc = self.director.rc
             try:
                 rec_sings = rc is not None and rc.lanes.get("vocals") == rc.record_deck and rc.record_deck in rc.songs \
@@ -1854,7 +1854,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 rec_sings = False
             if rec_sings:
                 a = m.addAction("BRIDGE with this (the record fades under its own vocal, this one's bass + drums slam)")
-                a.triggered.connect(lambda _c, t=tid: self.moment_lbl.setText(self.director.moment_with(t, "bridge")))
+                a.triggered.connect(lambda _c, t=tid: self.moment_lbl.setText(self.director.moment_with(t, "bridge", when="phrase" if self.phrase_btn.isChecked() else "bar")))
         elif walled:
             h = m.addAction(why)
             h.setEnabled(False)

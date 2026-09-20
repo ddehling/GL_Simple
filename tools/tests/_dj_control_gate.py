@@ -230,10 +230,12 @@ def run(music, seed, presses, seconds, verbose):
             if t is None:
                 t = any_song()
 
+            when = rng.choice(("phrase", "bar"))
+
             def verify(before):
                 mo = rc.moment_status()
                 return (mo is not None and mo["label"].lower() == mk) or any(mk.upper() in m for _, m in rc.moves[before["moves"]:])
-            return Press(f"{mk.upper()} with {t.title[:22]}", lambda: d.moment_with(t.id, mk), verify, settle_bars=0.5)
+            return Press(f"{mk.upper()} with {t.title[:22]} ({when})", lambda: d.moment_with(t.id, mk, when=when), verify, settle_bars=0.5)
         if kind == "stem_out":
             lane = rng.choice(LANES)
             bed = rc.lanes.get("drums")

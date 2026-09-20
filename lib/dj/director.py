@@ -1218,9 +1218,10 @@ class Director:
     def moment_status(self):
         return self.rc.moment_status() if self.rc is not None else None
 
-    def moment_with(self, track_id, kind):
+    def moment_with(self, track_id, kind, when="phrase"):
         """TAKEOVER / BRIDGE with THIS song: on a deck and ready = armed now with it as the other song; not on
-        a deck = staged first and armed the moment it is ready (layered only). Returns a sentence."""
+        a deck = staged first and armed the moment it is ready (layered only). `when`: "phrase" (its payoff
+        within the coming phrase, else the phrase) or "bar" (the next bar). Returns a sentence."""
         if kind not in ("takeover", "bridge"):
             return "only TAKEOVER and BRIDGE take a song"
         if self.rc is None or self.rc.master is None:
@@ -1230,7 +1231,7 @@ class Director:
         self.queue(tid)                               # the song of a TAKEOVER / BRIDGE is UP NEXT too
         deck = next((d for d, s in rc.songs.items() if s.track.id == tid and not s.leaving), None)
         if deck is not None and rc.songs[deck].staged_at is not None:
-            ok, msg = rc.arm_moment(kind, other=deck)
+            ok, msg = rc.arm_moment(kind, other=deck, when=when)
             self._event((f"{kind.upper()} with {self.title(tid)[:24]}: " if ok else f"{kind.upper()} refused: ") + msg)
             return msg
         if deck is None:
@@ -1238,7 +1239,7 @@ class Director:
             if not ok:
                 self._event(f"{kind.upper()} refused: {msg}")
                 return msg
-        self._pending_moment = {"track_id": tid, "kind": kind, "t": time.time()}
+        self._pending_moment = {"track_id": tid, "kind": kind, "t": time.time(), "when": when}
         self._event(f"{kind.upper()} with {self.title(tid)[:24]}: staging, armed as soon as it is ready")
         return f"{self.title(tid)[:24]} is being staged; {kind.upper()} arms the moment it is ready"
 
@@ -1254,7 +1255,7 @@ class Director:
         if deck is None:
             return
         self._pending_moment = None
-        ok, msg = self.rc.arm_moment(p["kind"], other=deck)
+        ok, msg = self.rc.arm_moment(p["kind"], other=deck, when=p.get("when", "phrase"))
         self._event((f"{p['kind'].upper()} with {self.title(p['track_id'])[:24]}: " if ok else f"{p['kind'].upper()} refused: ") + msg)
 
     # -- the dropout detector: silence on the bus is named, with what was happening ------------------------------------
