@@ -201,6 +201,8 @@ class RecordPlay:
                 # a BASS UNDER changes the record: it is the record's EXIT, at the end of its minimum play, not a
                 # phrase into it (one event per record at a phrase in halved the pace: 2.5 min per record - the
                 # fifth campaign); it takes the seam's own bar - the seam is dropped when it is planned
+                if getattr(self, "seam_kind", "auto") in ("blend", "morph"):
+                    continue                          # MIXING blend / morph: the records change through seams only - no takeover exits (user 2026-09-19)
                 win_start = max(bar + 4 * cb, k0 + self._play_min_bars() - 2 * cb)
                 win_end = seam_bar
                 if win_end < win_start:
@@ -549,12 +551,10 @@ class RecordPlay:
                     room = sa_.loop is None and t_end < float(sa_.track.duration_s) - 8.0
             except Exception:
                 room = False
-            if tries == 1 and sm["order"] in ("drums", "bass"):
-                new_order = "bass" if sm["order"] == "drums" else "drums"
-                sm["order"], sm["steps"], sm["rehearsed"] = new_order, self._seam_steps(new_order, sm["len"]), None
-                self._seam_cue_b()
-                self._move("plan", None, None, self._song_id(sm["b"]), f"the seam rehearsed {why}: as a {ORDER_WORDS[new_order]} instead, at the same bar")
-            elif tries <= 2 and room:
+            # (the order is not swapped here any more: a morph re-shaped into a bass swap on a marginal reading was one
+            # of the slams the user heard - the shape is kept; the order changes only where the drums-first placement
+            # itself cannot be found, at plan time)
+            if tries <= 2 and room:
                 sm["rehearsed"] = None
                 self._seam_move(self._phrase_bar_after(sm["bar"] + 1), f"rehearsed: {why}")
             elif sm["order"] != "cut":
@@ -1024,25 +1024,46 @@ class RecordPlay:
         return None
 
     # -- the seam's steps ----------------------------------------------------------------------------------------------
+    def _step_beats(self, what):
+        """How long a seam step CROSSES, from the SEAMS dial (user 2026-09-19: "transitions seem pretty abrupt"): quick
+        = a switch (drums 4 beats, the harmony 2 - what every seam was), normal = two bars a step, long = a phrase
+        for the drums and four bars for the harmony. The cut and the strip stay switches (a cut is a cut)."""
+        sc = float(getattr(self, "seam_scale", 1.0) or 1.0)
+        if sc <= 0.6:
+            return {"drums": 4.0, "harmony": 2.0}[what]
+        if sc >= 1.6:
+            return {"drums": 32.0, "harmony": 16.0}[what]
+        return {"drums": 8.0, "harmony": 8.0}[what]
+
+    def _harmony_lead(self):
+        """Bars the harmony step starts BEFORE the bar its cross must be complete on (the bar before B's landmark):
+        a two-bar cross starts a bar early, a four-bar one three bars early; a switch starts on its bar."""
+        return max(0, int(math.ceil(self._step_beats("harmony") / 4.0)) - 1)
+
     def _seam_steps(self, order, L):
-        """[(offset in bars from the seam's first bar, method name)] and the marks for the picture."""
+        """[(offset in bars from the seam's first bar, method name)] and the marks for the picture. The harmony
+        step is placed so its cross COMPLETES where a switch would have happened (the bar before B's landmark)."""
+        hl = self._harmony_lead()
         if order == "cut":
             steps = [(0, "_st_strip"), (4, "_st_cut"), (5, "_st_done")]
             marks = [(0, 4, ["drums", "bass"], "breakdown: drums and bass out"), (4, None, ["drums", "bass", "other"], "the cut: the new record whole")]
         elif order == "bass":
-            steps = [(0, "_st_darken"), (DARKEN_BARS, "_st_harmony"), (L, "_st_drums_in"), (L + 1, "_st_done")]
-            marks = [(0, DARKEN_BARS, ["other"], "the harmony darkens"), (DARKEN_BARS, None, ["bass", "other"], "bass swap: the new bassline and melody"),
+            h = max(1, DARKEN_BARS - hl)
+            steps = [(0, "_st_darken"), (h, "_st_harmony"), (L, "_st_drums_in"), (L + 1, "_st_done")]
+            marks = [(0, h, ["other"], "the harmony darkens"), (h, (DARKEN_BARS if hl else None), ["bass", "other"], "bass swap: the new bassline and melody" + (" cross in" if hl else "")),
                      (L, None, ["drums"], "its drums follow: the record is its")]
         elif order == "vocal":
-            steps = [(0, "_st_vocal_in"), (VOCAL_LEAD_BARS, "_st_drums_in"), (VOCAL_LEAD_BARS + L - DARKEN_BARS, "_st_darken"),
-                     (VOCAL_LEAD_BARS + L, "_st_harmony"), (VOCAL_LEAD_BARS + L + 1, "_st_done")]
+            h = VOCAL_LEAD_BARS + L - hl
+            steps = [(0, "_st_vocal_in"), (VOCAL_LEAD_BARS, "_st_drums_in"), (min(h - 1, VOCAL_LEAD_BARS + L - DARKEN_BARS), "_st_darken"),
+                     (h, "_st_harmony"), (VOCAL_LEAD_BARS + L + 1, "_st_done")]
             marks = [(0, None, ["vocals"], "acapella lead-in: the new vocal"), (VOCAL_LEAD_BARS, None, ["drums"], "its drums under the old harmony"),
-                     (VOCAL_LEAD_BARS + L - DARKEN_BARS, VOCAL_LEAD_BARS + L, ["other"], "the harmony darkens"),
-                     (VOCAL_LEAD_BARS + L, None, ["bass", "other"], "the harmony swaps: the record is its")]
+                     (min(h - 1, VOCAL_LEAD_BARS + L - DARKEN_BARS), h, ["other"], "the harmony darkens"),
+                     (h, (VOCAL_LEAD_BARS + L if hl else None), ["bass", "other"], "the harmony swaps: the record is its")]
         else:
-            steps = [(0, "_st_drums_in"), (max(1, L - DARKEN_BARS), "_st_darken"), (L, "_st_harmony"), (L + 1, "_st_done")]
-            marks = [(0, None, ["drums"], "the new drums under the old harmony"), (max(1, L - DARKEN_BARS), L, ["other"], "the harmony darkens"),
-                     (L, None, ["bass", "other"], "the harmony swaps: the record is its")]
+            h = max(1, L - hl)
+            steps = [(0, "_st_drums_in"), (max(1, min(h - 1, L - DARKEN_BARS)), "_st_darken"), (h, "_st_harmony"), (L + 1, "_st_done")]
+            marks = [(0, None, ["drums"], "the new drums under the old harmony"), (max(1, min(h - 1, L - DARKEN_BARS)), h, ["other"], "the harmony darkens"),
+                     (h, (L if hl else None), ["bass", "other"], "the harmony swaps: the record is its")]
         self._seam_marks = marks
         return steps
 
@@ -1118,10 +1139,13 @@ class RecordPlay:
         first = sm["order"] in ("drums",)
         if first:
             self._seam_clear_strays(at)
-        tag = self._cross("drums", b, at, beats=4.0, shape=False)
+        beats = self._step_beats("drums")
+        if not first:
+            beats = min(beats, 8.0)                   # drums FOLLOWING a harmony that is already in: two bars at most
+        tag = self._cross("drums", b, at, beats=beats, shape=False)
         if sb.voice_since is None:
             sb.voice_since = self.bar_n
-        self._hygiene(at + int(4 * self._beat_s() * RATE))
+        self._hygiene(at + int(beats * self._beat_s() * RATE))
         if first:
             self._move("voice_in", "drums", self._song_id(a), sb.track.id,
                        f"{sb.track.title} arrives: its drums come in under {sa.track.title[:24] if sa else '?'}'s harmony (a {sm['len']}-bar {ORDER_WORDS[sm['order']]})", shape=tag)
@@ -1146,19 +1170,30 @@ class RecordPlay:
         first = sm["order"] == "bass"
         if first:
             self._seam_clear_strays(at)
-            self.lane_boost["bass"] = (1.25, self.bar_n + self.change_bars)
-        tag = self._cross("bass", b, at, beats=2.0, shape=False)
+        # the DJ's own seam is never "loud" (the 1.25 x bass of the bass swap was one of the slams the user heard:
+        # "transitions seem pretty abrupt", 2026-09-19); loud is for the TAKEOVER you press yourself
+        beats = self._step_beats("harmony")
+        beat = self._beat_s()
+        tag = self._cross("bass", b, at, beats=beats, shape=False)
         if self._other_free_for(b, a):
-            self._cross("other", b, at, beats=2.0, shape=False)
+            self._cross("other", b, at, beats=beats, shape=False)
         gone = self._vocal_goes_with(b, a, at) if a in self.songs else ""
         if a in self.songs:
-            self.submix.post({"at": at, "cmd": "eq", "deck": a, "high": 1.0, "ramp_s": self._beat_s()})
-        self._hygiene(at + int(2 * self._beat_s() * RATE))
+            self.submix.post({"at": at, "cmd": "eq", "deck": a, "high": 1.0, "ramp_s": beat})
+        if beats > 2.0:
+            # THE BASS HANDED OVER UNDER A LOW SHELF: over the cross the old harmony's lows go down to the carve as
+            # the new one's come up from it - two basslines never sound full at once, and neither one snaps
+            from lib.dj.remix import LOW_CARVE
+            if a in self.songs:
+                self.submix.post({"at": at, "cmd": "eq", "deck": a, "low": LOW_CARVE, "ramp_s": beats * beat})
+            self.submix.post({"at": at, "cmd": "eq", "deck": b, "low": 1.0, "ramp_s": beats * beat})
+        self._hygiene(at + int(beats * beat * RATE))
+        how = ("switch in" if beats <= 2.0 else f"cross in over {beats / 4:.0f} bars")
         if first:
             self._move("voice_in", "bass", self._song_id(a), sb.track.id,
-                       f"{sb.track.title} arrives: its bassline and melody take over under {sa.track.title[:24] if sa else '?'}'s drums, loud (a {sm['len']}-bar bass swap){gone}", shape=tag)
+                       f"{sb.track.title} arrives: its bassline and melody {how} under {sa.track.title[:24] if sa else '?'}'s drums (a {sm['len']}-bar bass swap){gone}", shape=tag)
         else:
-            self._move("bed_to", "bass", self._song_id(a), sb.track.id, f"the bed passes to {sb.track.title}: its bassline and melody take over on the one{gone}", shape=tag)
+            self._move("bed_to", "bass", self._song_id(a), sb.track.id, f"the bed passes to {sb.track.title}: its bassline and melody {how}{gone}", shape=tag)
             self._seam_roles(at)
 
     def _st_strip(self, at):

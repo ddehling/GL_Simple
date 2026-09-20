@@ -60,6 +60,23 @@ week compensated for that.
    loops its last bars, once), the bed-never-empty rule, the low carve on any song holding neither drums
    nor bass, the loudness matcher, the dropout detector.
 
+## How the steps cross (2026-09-19: "transitions seem pretty abrupt")
+
+Nine record changes that day, seven of them a bassline and melody on the one, loud. Three causes, three
+rules:
+
+- **The steps cross for as long as the SEAMS dial says.** Quick = a switch (the drums over 4 beats, the
+  harmony over 2 - what every seam had been). Normal = two bars a step. Long = a phrase for the drums and
+  four bars for the harmony. The harmony step is placed so its cross COMPLETES on the bar before B's landmark,
+  where the switch used to happen; over the cross the old harmony's lows go down to the carve as the new
+  one's come up from it (the bass handed over under a low shelf - never two full basslines, never a snap).
+  The cut and the breakdown strip stay switches: a cut is a cut.
+- **The DJ's own seams and events land at unity.** The bass swap's 1.25 × bass is gone; the DJ's takeover
+  event lands at unity. Loud is for the moments you press yourself (SLAM, TAKEOVER, a stem brought in loud).
+- **MIXING blend or morph means seams only.** The takeover event - the record's exit as a slam - is planned
+  only under MIXING auto or cut. And a rehearsal that fails no longer turns a morph into a bass swap: the
+  seam moves a phrase when the record has the body, else it becomes the cut; the shape you set is kept.
+
 ## Removed
 
 The arrival rule and the voice/bed policy (`_arrangement_move` sections 1–3), `SETTLE_PHRASES`,

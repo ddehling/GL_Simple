@@ -3335,6 +3335,8 @@ class RemixConductor(RecordPlay):
                 s.entered, s.entered_k = True, self.bar_n
             self._wake(d, at)
         boost = float(self.moment_tune.get(m["kind"], {}).get("boost", MOMENT_BOOST))
+        if m.get("auto"):
+            boost = 1.0                               # the DJ's own event lands at unity; loud is for the moments YOU press (2026-09-19)
         for lane in boost_lanes:
             if self.lanes.get(lane) is not None:
                 self.lane_boost[lane] = (boost, self.bar_n + self.change_bars)
@@ -3515,7 +3517,7 @@ class RemixConductor(RecordPlay):
                 s = self.songs[V]
                 if s.voice_since is None:
                     s.voice_since = self.bar_n
-                self._move("moment", "bass", self._song_id(mm["B"]), self._song_id(V), f"TAKEOVER: the bassline and melody of {s.track.title} take over on the one, loud")
+                self._move("moment", "bass", self._song_id(mm["B"]), self._song_id(V), f"TAKEOVER: the bassline and melody of {s.track.title} take over on the one" + ("" if mm.get("auto") else ", loud"))
                 mm["end_clock"] = None                # the drums still owe their move
 
             def drums_follow(at):

@@ -1335,6 +1335,21 @@ Carte Blanche's harmony (7A, whole-trim 1.6 against Kigelia's 0.86): a level ste
 a key clash, left as it is; 'the low end wrong' at 1.6 on Carte Blanche's bass is the same whole-trim, one
 flag, no change yet.
 
+**"I feel that we don't necessarily have good transitions now. they seem pretty abrupt at times, which is
+something we worked a lot with on the dj side" (18:45).** The log agreed: nine record changes that day, seven
+a bassline and melody on the one, loud. Three causes: every record's exit was a TAKEOVER event (MOMENTS
+some), the seam steps crossed in beats (drums 4, harmony 2, a cut half a beat) while the autoDJ's exits
+fade over 16-32 beats with the EQ hand-over, and the rehearsal's first fallback turned morphs into bass
+swaps. The one-pager (four points) got "ok, do it all": (1) the DJ's exit events are seams only under MIXING
+blend / morph, and at unity under auto / cut - loud stays for the moments the user presses; (2) the seam
+steps cross for as long as the SEAMS dial says (quick = the old switches, normal = two bars a step, long = a
+phrase for the drums and four bars for the harmony), the harmony step placed so its cross completes on the
+bar before B's landmark, the bass handed over under a low shelf (the old harmony's lows down to the carve as
+the new one's come up); (3) the rehearsal keeps the shape (move a phrase with body, else the cut - no order
+swap); (4) the strip and the cut untouched. docs/DJ_THE_RECORD_PLAYS.md "How the steps cross". Code and
+compile only - the planner was up; the gates (control, remix ×3, a campaign v11 for the lurch and dead-air
+numbers under the long crosses) are pending.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
