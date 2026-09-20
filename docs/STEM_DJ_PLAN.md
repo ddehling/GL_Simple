@@ -1367,6 +1367,24 @@ else the next phrase, and the NOW / PHRASE toggle applies to them too (NOW = the
 Code and compile only - the planner was up; the control gate (it presses TAKEOVER with, now with both
 timings) is pending.
 
+**The flags of 19:44-19:52 (session d4b2fd, the first with the crosses).** 'great transition' on the first
+two-bar cross (Zephyr → Tarantula). Then three flags in one minute: 'nothing happening for too long' after
+Fellaheen played four minutes whole at VOCALS lots with no event (349 vocal candidates in its list, none
+staged - the event planner set "nothing usable" silently; the likely reason is no free deck, with the user's
+Beam Me Up and the seam's Nagar on the others); 'bad transition' and 'clash' at Beam Me Up → Nagar: Beam Me
+Up, brought in as parts (vocal, then bass) and made UP NEXT, became the record where it was playing (5:30
+in) - "a short record" of 55 s - so Nagar's bass swap came under the user's held vocal (7B over 8B, fit
+0.9) and, the moment the seam completed, the clock travelled to Nagar's tempo, +4.4 % over nine bars,
+as that vocal ended (on a second reading the vocal had rested and Beam Me Up had left the moment the travel
+began: the ramp ran on Nagar alone; the 'clash' is the swap itself). Tried and dropped, both against the remix gate's tempo
+check: a hold "only while the record is alone" (it stopped the arc's journey too) and a quarter-percent
+step (0.75 % in the gate's ten bars against the 1 % it asks) - the half-percent step stands, and whether a
+4 % travel over nine bars is audible on its own is an ear question, open. Fixed: the event planner says why a
+record got no event ("no event for X: <the last reason>"). Open from the same run: one dead bar in one of
+six remix runs inside the scripted BRIDGE's beat of nothing (the bed's vocal was at 0 in that bar too) - the
+BRIDGE-hole class, one in six. Not changed: a part-song made UP NEXT becomes the record
+where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

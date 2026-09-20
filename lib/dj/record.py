@@ -192,6 +192,7 @@ class RecordPlay:
             sgn = -1.0 if lean == "cool" else 1.0
             return sorted(cands, key=lambda c: -(c["score"] + 0.15 * sgn * ((c.get("energy") or e_rec) - e_rec)))
         seam_bar = sm["bar"]
+        last_why = "no candidate in its lists"
         for kind in kinds:
             cands = _leaned(rec.get("vocal_over" if kind == "vocal" else "bass_under") or [])
             win_start, win_end = start_min, end_max
@@ -227,6 +228,7 @@ class RecordPlay:
                             K = k
                             break
                     if K is None:
+                        last_why = "no phrase of the record inside one of its grooves in the window"
                         continue
                     tk = t_now + (K - bar - 1) * bar_a
                     room = int((gb - tk) / max(bar_a, 1e-6))
@@ -235,6 +237,7 @@ class RecordPlay:
                     want_t = float(c["sung"][0]) - bar_a * c.get("rate", 1.0)
                     ok, msg = self.stage_for_bar(c["id"], want_t, K)
                     if not ok:
+                        last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "acapella", "track_id": int(c["id"]), "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": want_t,
                                            "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})"}
@@ -245,9 +248,11 @@ class RecordPlay:
                             K = k
                             break
                     if K is None:
+                        last_why = "no steady phrase of the record in the window for a bass swap"
                         continue
                     ok, msg = self.stage_for_bar(c["id"], float(c["landmark"]) - 2 * bar_a * c.get("rate", 1.0), K - 2)
                     if not ok:
+                        last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "takeover", "track_id": int(c["id"]), "bar": int(K), "bars": 0, "t": time.time(),
                                            "record": sa.track.id, "why": f"the bassline of {c['title'][:24]} under these drums at its drop (fit {c['fit']})"}
@@ -258,6 +263,10 @@ class RecordPlay:
                            f"event in {int(K) - bar} bars: {self._event_pending['why']}")
                 return
         sa.events_done = rate                         # nothing usable for this record
+        # said, not silent: a record with 349 vocal candidates got no event and the user flagged "nothing happening
+        # for too long" (2026-09-19) - the last reason names it (often: no free deck)
+        self._move("event_plan", None, self._song_id(self.record_deck), None,
+                   f"no event for {sa.track.title[:24]}: {last_why[:70]}")
 
     def set_play_min(self, seconds):
         self.play_min_s = float(max(30.0, seconds))
