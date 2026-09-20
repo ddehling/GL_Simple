@@ -1143,16 +1143,20 @@ class Director:
                         continue
                     if R.id in played and S.id in played:
                         continue
+                    r_end = None
                     if kind == "vocal":
                         r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
+                        r_end = float((x.get("groove") or [g0, g0 + 30.0])[1])
                         bar_r = 4.0 * 60.0 / float(R.bpm)
                         from_t = max(0.0, r_start - 7 * 8 * bar_r)
+                        if float(R.duration_s or 0.0) - r_end < 45.0:
+                            continue                  # the groove is the record's last minute: no seam could follow the pair
                         words = f"the vocal of {S.title} over {R.title} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
                     else:
                         r_start, s_start, from_t = g0, float(x.get("landmark") or 0.0), None
                         words = f"{S.title}'s bassline under {R.title}'s drums, at its drop {_mmss(s_start)} - then it is the record"
                     out.append({"kind": kind, "r": R, "s": S, "score": float(x.get("score") or 0.0), "fit": x.get("fit"), "shift": int(x.get("shift") or 0),
-                                "r_start": r_start, "s_start": s_start, "start_t": from_t, "key_into": key_into,
+                                "r_start": r_start, "s_start": s_start, "r_end": r_end, "start_t": from_t, "key_into": key_into,
                                 "words": words + f"  (fit {x.get('fit')})" + (f", shift {int(x.get('shift') or 0):+d}" if x.get("shift") else "") + into,
                                 "played": (R.id in played or S.id in played)})
         out.sort(key=lambda z: (-z["score"], z["r"].title))
@@ -1173,7 +1177,8 @@ class Director:
             if not ok:
                 return f"the pair's record could not be queued: {msg}"
             words = f"{R.title[:24]} is UP NEXT; "
-        rc.plant_idea(R.id, kind, S.id, want_t=(pair.get("r_start") if kind == "acapella" else None))
+        rc.plant_idea(R.id, kind, S.id, want_t=(pair.get("r_start") if kind == "acapella" else None),
+                      want_end=(pair.get("r_end") if kind == "acapella" else None))
         self._event(f"PAIR to play: {pair['words'][:80]}")
         return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'}")
 

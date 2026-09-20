@@ -115,7 +115,8 @@ class RecordPlay:
                 and not any(p[0].id == pend["track_id"] for p in self._pending.values())
             if d is not None:
                 pend["staged_once"] = True
-            if time.time() - pend["t"] > 150.0 or (sm_ is not None and bar > sm_["bar"] - 3 * cb) \
+            timed_out = pend.get("accepted") and time.time() - pend["t"] > 150.0    # (an idea waiting on you has no clock but its bar)
+            if timed_out or (sm_ is not None and bar > sm_["bar"] - 3 * cb) \
                     or pend.get("record") != sa.track.id or d == self.record_deck or pend.get("late", 0) >= 3 or gone:
                 self._event_pending = None
                 why = ("its song left the decks" if gone else "the room changed" if (pend.get("record") != sa.track.id or d == self.record_deck)
@@ -174,6 +175,11 @@ class RecordPlay:
         start_min = max(bar + 4 * cb, k0 + cb)
         end_max = sm["bar"] - 2 * cb
         if end_max - start_min < 2 * cb:
+            if planted is not None:
+                self._planted.pop(sa.track.id, None)
+                self._move("event_none", None, self._song_id(self.record_deck), None,
+                           f"your pair could not be placed: the seam out of {sa.track.title[:22]} comes in {sm['bar'] - bar} bars, before its groove")
+                return
             sa.events_done = rate                     # no room left in this record
             return
         at = self._next_bar_clock()
@@ -314,7 +320,7 @@ class RecordPlay:
         self._move("event_none", None, self._song_id(self.record_deck), None,
                    f"no event for {sa.track.title[:24]}: {last_why[:70]}")
 
-    def plant_idea(self, record_tid, kind, other_tid, want_t=None):
+    def plant_idea(self, record_tid, kind, other_tid, want_t=None, want_end=None):
         """A PAIR YOU CHOSE (PLAY THIS PAIR): when `record_tid` is the record, `other_tid` comes as `kind` ("acapella" -
         its vocal over the groove; "takeover" - its bassline under the drums, then it is the record), already taken.
         `want_t`: where the pair's groove begins in the record - the record is then cued to START five phrases
@@ -322,7 +328,9 @@ class RecordPlay:
         at 5:12 was never inside its play - 2026-09-20)."""
         if not hasattr(self, "_planted") or self._planted is None:
             self._planted = {}
-        self._planted[int(record_tid)] = {"kind": kind, "track_id": int(other_tid), "t": time.time(), "want_t": (float(want_t) if want_t is not None else None)}
+        self._planted[int(record_tid)] = {"kind": kind, "track_id": int(other_tid), "t": time.time(),
+                                          "want_t": (float(want_t) if want_t is not None else None),
+                                          "want_end": (float(want_end) if want_end is not None else None)}
         self._planted_said = False
         return True
 
@@ -917,6 +925,15 @@ class RecordPlay:
             self._next_asap = False
         if order == "vocal":
             earliest = max(earliest, bar + 1 + VOCAL_LEAD_BARS + 2)
+        # A PAIR YOU CHOSE on this record: the seam out of it comes AFTER the pair's groove has played, whatever the
+        # minimum play says (Asteya's seam was placed thirteen bars in, before the groove - 2026-09-20)
+        pl = (getattr(self, "_planted", None) or {}).get(t.id)
+        if pl and pl.get("want_end") is not None:
+            gb_bar = bar + 1 + int(math.ceil((float(pl["want_end"]) - t_now) / max(bar_a, 1e-6))) + 1
+            if gb_bar > earliest:
+                earliest = gb_bar
+                if gb_bar + L > bar + 1 + int(math.floor((float(t.duration_s) - 8.0 - t_now) / max(bar_a, 1e-6))):
+                    return max(bar + 3, gb_bar), f"after your pair's groove (before {t.title[:22]} runs out)"
         if sa.loop is not None:
             return max(bar + 3, earliest if earliest - bar < 2 * self.change_bars else bar + 3), f"{t.title[:22]} is looping its last bars"
         from lib.dj.remix import RUNWAY_S
