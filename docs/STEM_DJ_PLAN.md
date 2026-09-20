@@ -1266,6 +1266,20 @@ imported, not clicked - the Director side of it ran in the gate; the stems path 
 runs demucs); `dj_scan.py --add` was smoked on a throwaway folder. The user's hour at the controls remains
 the open item, and the first thing to watch there is whether the THEN rows read as a plan.
 
+**2026-09-19, 17:36, the user at the controls: "the planner is not producing a stable output. it is still
+pushing back the start of songs note by note."** The session's log (sid 9504ff): the seam into Blinding
+Lights was planned at bar 5; one bar later the DJ planned its TAKEOVER event (Glam Trap's bassline at the
+end of the record's minimum play) - the event IS the record's exit, so the seam was dropped, as designed;
+for the next eighty bars there was no seam to anchor to, so the staged song's ghost in the picture was
+re-placed at "now plus a phrase" bar by bar (the 09-17 anchor fix covered only a planned seam), and THE PLAN
+said "Blinding Lights is staged · its seam is being placed (a bar or two)" for three minutes; then Glam
+Trap took over and Blinding Lights' seam appeared a minute later than first shown. Fixed: with a takeover
+event pending the picture ghosts the EVENT's song at the event's bar (anchored) and THE PLAN carries a
+RECORD row for it ("Glam Trap plays (the takeover is this record's exit) · min play until … · Blinding
+Lights follows it, its seam planned then"); THE SET pins the event's song as the next record ahead of the
+staged one; a staged song with no seam and no event is ghosted at a phrase boundary and re-placed a phrase
+at a time, never bar by bar. Code and compile only - the planner was up; the gate is pending.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

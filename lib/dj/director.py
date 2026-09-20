@@ -841,11 +841,15 @@ class Director:
         rc = self.rc
         seq = []
         if rc is not None:
+            pend = getattr(rc, "_event_pending", None)
+            if pend is not None and pend.get("kind") == "takeover" and pend.get("track_id") is not None:
+                seq.append(int(pend["track_id"]))     # THE EVENT IS THE EXIT: the takeover's song is the next record
             if rc.seam is not None and rc.songs.get(rc.seam["b"]) is not None:
                 seq.append(rc.songs[rc.seam["b"]].track.id)
             else:
-                for d, s in rc.songs.items():
-                    if d != rc.record_deck and not s.leaving and s.staged_at is not None and not getattr(s, "part_only", False) and not s.entered:
+                for d, s in sorted(rc.songs.items(), key=lambda kv: kv[1].staged_at or 0):
+                    if d != rc.record_deck and not s.leaving and s.staged_at is not None and not getattr(s, "part_only", False) and not s.entered \
+                            and s.track.id not in seq:
                         seq.append(s.track.id)
                         break
                 else:
@@ -2156,6 +2160,7 @@ class Director:
                                             "lanes": mk["lanes"], "ghost": True, "kind": "moment", "text": mk["text"]})
             plan_in = None
             seam_S = None
+            arr = {}
             try:
                 arr = rc._arrangement_status()
                 if arr.get("landing_in_bars"):
@@ -2185,13 +2190,32 @@ class Director:
             if plan_in is not None:
                 left = max(1, plan_in)
             staged = [(d, s) for d, s in rc.songs.items() if s.staged_at is not None and not s.entered and not s.leaving]
-            if staged:
+            evp = ((arr.get("record") or {}).get("event") if isinstance(arr, dict) else None) or None
+            d_e = rc.deck_of(evp["track_id"]) if (evp and evp.get("kind") == "takeover" and evp.get("track_id") is not None) else None
+            if d_e is not None and d_e in rc.songs and not rc.songs[d_e].entered:
+                # THE EVENT IS THE EXIT: the takeover's song is the next record, and the seam into the staged one
+                # was dropped when the event was planned. Its ghost sits at the event's bar, anchored - the staged
+                # song's ghost, placed at "now plus a phrase" every bar, crept along for eighty bars ("pushing back
+                # the start of songs note by note", user 2026-09-19)
+                s_e = rc.songs[d_e]
+                E = self._anchor(("event", int(evp["track_id"]), int(evp["bar"])), b + int(evp["in_bars"]))
+                ghost(("event", s_e.track.id, E), s_e.track.id, ["bass", "other"], E,
+                      rc._song_time_at(d_e, rc._next_bar_clock()) + max(1, E - b - 1) * self._bar_len(s_e.track.id))
+            elif staged:
                 d, s = staged[0]
-                at = seam_S if seam_S is not None else b + 1 + left     # the ghost sits where the seam's bracket starts, and stays there
+                if seam_S is not None:
+                    at = seam_S                                   # the ghost sits where the seam's bracket starts, and stays there
+                else:
+                    # no seam yet: the ghost waits at a phrase boundary ahead and is re-placed a PHRASE at a time
+                    # when the room passes it - never bar by bar
+                    want = b + 1 + left
+                    at = self._anchor(("staged", s.track.id, int(want // max(1, rc.change_bars))), want)
+                    if at <= b:
+                        at = self._anchor(("staged", s.track.id, int((b + 1 + left) // max(1, rc.change_bars)) + 1), b + 1 + left)
                 sm = (arr.get("seam") if isinstance(arr, dict) else None) or {}
                 first_lanes = {"drums": ["drums"], "bass": ["bass", "other"], "vocal": ["vocals"], "cut": ["drums", "bass", "other"]}.get(sm.get("order"), ["drums"])
                 ghost(("layered", s.track.id, at), s.track.id, first_lanes, at,
-                      rc._song_time_at(d, rc._next_bar_clock()) + left * self._bar_len(s.track.id))
+                      rc._song_time_at(d, rc._next_bar_clock()) + max(1, at - b - 1) * self._bar_len(s.track.id))
             else:
                 no_ghost()
 
@@ -2538,7 +2562,17 @@ class Director:
                     key=("record2", sm["b"]))
             elif rec is not None:
                 staged_any = [s for d, s in rc.songs.items() if d != rd and not s.leaving and s.staged_at is not None and not getattr(s, "part_only", False)]
-                if staged_any:
+                ev_tid = evp.get("track_id") if (evp and evp.get("kind") == "takeover") else None
+                if ev_tid is not None:
+                    # THE EVENT IS THE EXIT: no seam is planned for this record; the takeover's song is the next
+                    # record, the staged one follows it (its seam is planned once the takeover's song is the record)
+                    t_ev = max(0, evp["in_bars"]) * bar_s
+                    pm = rc._play_min_bars() * bar_s
+                    after = [s for s in staged_any if s.track.id != ev_tid]
+                    row(t_ev, "RECORD", f"{self.title(ev_tid)[:30]} plays (the takeover is this record's exit)",
+                        f"from its drop · min play until {_mmss(t_ev + pm)} · " + (f"{after[0].track.title[:24]} follows it, its seam planned then" if after else "the next record is chosen then"),
+                        key=("record-ev", ev_tid), bar=evp.get("bar"))
+                elif staged_any:
                     row(None, "NEXT", f"{staged_any[0].track.title[:30]} is staged", "its seam is being placed (a bar or two)", key=("next-staged", staged_any[0].track.id))
                 else:
                     left = (rec.get("settle_left") or 0) * bar_s
