@@ -202,8 +202,11 @@ class RecordPlay:
                 # a BASS UNDER changes the record: it is the record's EXIT, at the end of its minimum play, not a
                 # phrase into it (one event per record at a phrase in halved the pace: 2.5 min per record - the
                 # fifth campaign); it takes the seam's own bar - the seam is dropped when it is planned
-                if getattr(self, "seam_kind", "auto") in ("blend", "morph"):
-                    continue                          # MIXING blend / morph: the records change through seams only - no takeover exits (user 2026-09-19)
+                if getattr(self, "seam_kind", "auto") != "cut":
+                    # the records change through SEAMS unless MIXING says cut: a takeover exit planned three seconds
+                    # after the seam was shown replaced a morph with a slam - "the system basically lies about its
+                    # transitions" (2026-09-19). Under auto / blend / morph the plan shown is the plan played.
+                    continue
                 win_start = max(bar + 4 * cb, k0 + self._play_min_bars() - 2 * cb)
                 win_end = seam_bar
                 if win_end < win_start:
@@ -255,8 +258,19 @@ class RecordPlay:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
                     self._event_pending = {"kind": "takeover", "track_id": int(c["id"]), "bar": int(K), "bars": 0, "t": time.time(),
-                                           "record": sa.track.id, "why": f"the bassline of {c['title'][:24]} under these drums at its drop (fit {c['fit']})"}
+                                           "record": sa.track.id,
+                                           "why": f"TAKEOVER at its drop: {c['title'][:24]}'s bassline and melody under these drums, its drums a phrase later - it becomes the record (fit {c['fit']})"}
+                    if self.seam is not None:
+                        # said in the story row and the log, not a private note: the seam the plan showed is gone
+                        sb_old = self.songs.get(self.seam["b"])
+                        self._move("plan", None, self._song_id(self.record_deck), int(c["id"]),
+                                   f"the seam into {sb_old.track.title[:22] if sb_old else '?'} is dropped: the takeover with {c['title'][:22]} at its drop is this record's exit")
                     self._seam_drop(f"the event is the exit: {c['title'][:22]} at its drop")   # (the takeover replaces the seam)
+                    try:
+                        from lib.dj.session import log_row
+                        log_row({"event": "plan", "what": "exit", "track_id": int(c["id"]), "bar": int(K), "in_bars": int(K) - bar, "why": "takeover exit"})
+                    except Exception:
+                        pass
                 sa.events_done = n_done + 1
                 used.add(int(c["id"]))
                 self._move("event_plan", None, self._song_id(self.record_deck), int(c["id"]),

@@ -54,8 +54,8 @@ Three kinds, hover any heading for the detail and its live effect.
   yours), LENGTH (how long the arc runs), ENERGY and TEMPO (leans on it), VOCALS (instrumentals to
   singers), VARIETY (how far the next song may roam), and the **MOOD** chips (only songs carrying a lit
   tag may play; none lit = everything; "+N more…" opens the rest).
-- **How it mixes.** MIXING (auto / long blends / hard cuts / stem morphs; layered: the seam's kind - and under
-  blend or morph the DJ changes records through seams only, no takeover exits), PACE (how long records run:
+- **How it mixes.** MIXING (auto / long blends / hard cuts / stem morphs; layered: the seam's kind - the DJ
+  changes records through seams; only under cut may it exit a record through a takeover), PACE (how long records run:
   layered, the record's minimum play), SEAMS (how long the mixes themselves are: layered, the seam's length
   scaled by a half or double AND how long each step crosses - quick = a switch, normal = two bars a step, long
   = a phrase for the drums and four bars for the harmony, the bass handed over under a low shelf), LOOPS.

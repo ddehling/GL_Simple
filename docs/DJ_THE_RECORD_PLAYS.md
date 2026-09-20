@@ -73,9 +73,13 @@ rules:
   The cut and the breakdown strip stay switches: a cut is a cut.
 - **The DJ's own seams and events land at unity.** The bass swap's 1.25 × bass is gone; the DJ's takeover
   event lands at unity. Loud is for the moments you press yourself (SLAM, TAKEOVER, a stem brought in loud).
-- **MIXING blend or morph means seams only.** The takeover event - the record's exit as a slam - is planned
-  only under MIXING auto or cut. And a rehearsal that fails no longer turns a morph into a bass swap: the
-  seam moves a phrase when the record has the body, else it becomes the cut; the shape you set is kept.
+- **The records change through seams unless MIXING says cut.** The takeover event - the record's exit as a
+  bass swap on the one - is planned only under MIXING cut. Under auto, blend or morph the plan shown is the
+  plan played (a takeover exit planned three seconds after a morph was shown replaced it: "the system
+  basically lies about its transitions", 2026-09-19). When a takeover exit does replace a seam, the story row
+  says so ("the seam into X is dropped: the takeover with Y at its drop is this record's exit") and the log
+  carries a `plan / exit` row. And a rehearsal that fails no longer turns a morph into a bass swap: the seam
+  moves a phrase when the record has the body, else it becomes the cut; the shape you set is kept.
 
 ## Removed
 

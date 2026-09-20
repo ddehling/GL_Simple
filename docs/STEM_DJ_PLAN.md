@@ -1382,7 +1382,18 @@ step (0.75 % in the gate's ten bars against the 1 % it asks) - the half-percent 
 4 % travel over nine bars is audible on its own is an ear question, open. Fixed: the event planner says why a
 record got no event ("no event for X: <the last reason>"). Open from the same run: one dead bar in one of
 six remix runs inside the scripted BRIDGE's beat of nothing (the bed's vocal was at 0 in that bar too) - the
-BRIDGE-hole class, one in six. Not changed: a part-song made UP NEXT becomes the record
+BRIDGE-hole class, one in six.
+
+**"the system basically lies about its transitions" (20:33, session 88cae1).** The log: at 20:30:08 the plan
+said "Dunes in at bar 155: a 8-bar morph, drums first"; at 20:30:11 the DJ planned its exit event - a
+takeover with Collecting Stories at bar 64 - which drops the seam by design, through a private note, not a
+story-row line; the user queued Collecting Stories UP NEXT at 20:30:32 expecting a seam; at 20:32:51 it
+arrived as a takeover (bass and melody on the one, drums eleven seconds later), flagged 'bad transition'.
+MIXING was auto, which the afternoon's rule still allowed takeover exits under. Fixed: takeover exits only
+under MIXING cut - under auto, blend or morph the records change through seams and the plan shown is the plan
+played; a seam dropped for an event is said in the story row and logged (`plan / exit`); the event's words
+say what it is ("TAKEOVER at its drop: X's bassline and melody under these drums, its drums a phrase later -
+it becomes the record"). Code and compile only - the planner was up; the gates are pending. Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
 ## Rules carried over (they were earned)
