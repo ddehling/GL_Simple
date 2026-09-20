@@ -123,6 +123,10 @@ MOMENTS = {
     "bridge": ("BRIDGE", 8, "the bed fades out under this song's vocal; the other song's drums come in under it; a beat of nothing; "
                             "its bass, melody and drums slam on the one, the vocal carries over"),
     "acapella": ("ACAPELLA", 1, "another record's vocal over this groove for two to four phrases, from a pairing that fits, then gone"),
+    # EDITS OF THE RECORD ITSELF (docs/DJ_MORE_THAN_A_MIXER.md 4)
+    "build": ("BUILD", 16, "the eight bars before the record's drop once more, the bass pulled on the second pass; release into the drop on the one - "
+                           "the drop lands eight bars later than written, earned"),
+    "again": ("AGAIN", 1, "the record's current section once more: back to its start on the phrase, once"),
 }
 MOMENT_BOOST = 1.25              # bass and drums come back this much louder for a phrase (the peak guard keeps the bus honest)
 MOMENT_LOOK_PHRASES = 4          # a moment lands on the target song's drop or hook when one comes within this many phrases
@@ -3081,6 +3085,8 @@ class RemixConductor(RecordPlay):
             same_song = other is None or self._moment.get("V") == other
             if self._moment["kind"] == kind and not self._moment["started"] and same_song:
                 return self.moment_go()
+            if self._moment["kind"] == "build" and kind == "build" and self._moment["started"]:
+                return self._build_release()          # BUILD pressed while its loop runs: release into the drop on the next bar
             # a different song than the armed one (the DJ's own takeover with Mahoya was armed; you asked for God
             # Sigma and got "TAKEOVER now" with Mahoya - 2026-09-19): the armed moment goes, yours is armed
             self.moment_cancel()
@@ -3132,6 +3138,33 @@ class RemixConductor(RecordPlay):
             if hb is None:
                 return False, f"no hook of {self.songs[S].track.title[:24]} within {MOMENT_LOOK_PHRASES} phrases"
             T, what = S, "hook"
+        if kind == "build":
+            # THE BUILD (docs/DJ_MORE_THAN_A_MIXER.md 4): the bed must hold its bass (it is pulled on the second pass)
+            # and have a DROP eight bars away at least within four phrases; the one lands eight bars after that drop
+            if held.get("bass") != B:
+                return False, "the bed does not hold its bass (nothing to pull for the build)"
+            dp = self._drop_in_bars(B, at, MOMENT_LOOK_PHRASES * self.change_bars)
+            if dp is None:
+                return False, f"no drop of {self.songs[B].track.title[:24]} within {MOMENT_LOOK_PHRASES} phrases"
+            if dp < 8:
+                return False, f"the drop of {self.songs[B].track.title[:24]} is {int(dp)} bars away: the build needs eight before it"
+            dbar = int(round(dp))
+            build_L = self.bar_n + 1 + dbar + 8
+            build_what = f"its drop, eight bars later ({dbar} bars to the drop)"
+        if kind == "again":
+            s_b = self.songs[B]
+            t_now = self._song_time_at(B, at)
+            bar_b = self._bar_s(s_b.track, t_now)
+            sec = s_b.track.section_at(t_now) or {}
+            start = s_b.track.nearest_downbeat(float(sec.get("start_s", 0.0))) if sec else None
+            if start is None or t_now - start < 2.0 * bar_b:
+                # barely into the section: the one BEFORE it, once more
+                secs = s_b.track.sections or []
+                prev = [x for x in secs if float(x["start_s"]) < (start if start is not None else t_now) - 0.5 * bar_b]
+                if not prev:
+                    return False, f"{s_b.track.title[:24]} is at its start: nothing to bring back"
+                start = s_b.track.nearest_downbeat(float(prev[-1]["start_s"]))
+            again_start = float(start)
         if kind == "acapella":
             # ANOTHER RECORD'S VOCAL over this groove (docs/DJ_PAIRINGS.md): the other song staged (by the event
             # or by you), its sung stretch cued to begin on the one; never over a singer
@@ -3190,6 +3223,10 @@ class RemixConductor(RecordPlay):
             # end of the record's minimum play (landed at the next drop ahead instead, the takeover came 6 bars
             # after arming and the records lasted a minute - campaign v7)
             L, what = int(self._event["bar"]), "its drop"
+        elif kind == "build":
+            L, what = build_L, build_what
+        elif kind == "again":
+            L, what = self.bar_n + 1 + self._phrase_ahead(B, at, 1), "the phrase"
         elif not auto and when == "bar" and kind in ("takeover", "bridge"):
             L, what = self.bar_n + 1 + lead, "now"        # YOUR two-song moment, NOW: the next bar plus its lead
         else:
@@ -3263,12 +3300,30 @@ class RemixConductor(RecordPlay):
         if kind == "acapella":
             ev = getattr(self, "_event", None) or {}
             self._moment["bars"] = int(ev.get("bars") or int(tune.get("phrases", 4)) * self.change_bars)
+        if kind == "again":
+            self._moment["again_start"] = again_start
         self._moment["script"] = self._moment_script(kind)
         self._moment["script_marks"] = getattr(self, "_pending_marks", [])
         tt = self.songs[T].track.title[:24]
         self._move("moment_arm", None, self._song_id(B), self._song_id(V),
                    f"{'the DJ' if auto else 'you'}: {label} armed, lands in {L - self.bar_n} bars on {tt}'s {what or 'phrase'}")
         return True, f"{label} in {L - self.bar_n} bars, on {tt}'s {what or 'phrase'}"
+
+    def _build_release(self):
+        """BUILD pressed while its loop runs: the loop releases on the next bar and the drop lands the bar after
+        (the script's last two steps, brought forward; the passes not yet played are skipped)."""
+        m = self._moment
+        if m is None or m["kind"] != "build":
+            return False, "no BUILD running"
+        for off, _fn in m["script"]:
+            if off < -1:
+                m["fired"].add(off)
+        m["L"] = self.bar_n + 2
+        m["at_L"] = self._next_bar_clock() + self._bar_clock()
+        m["t_L"] = self._song_time_at(m["B"], m["at_L"])
+        m["what"] = "now"
+        self._move("moment_arm", None, self._song_id(m["B"]), None, "you: BUILD released - the drop lands on the bar after next")
+        return True, "BUILD released: the drop on the bar after next"
 
     def moment_go(self):
         """The armed moment starts on the next bar (its landing moves to the next bar plus its lead)."""
@@ -3600,6 +3655,42 @@ class RemixConductor(RecordPlay):
                       (0, slam)]
             marks = [(-(fade + 4), -4, ["drums", "bass", "other"], "BRIDGE: the bed fades under the vocal"), (-4, 0, ["drums"], "new drums under")] \
                 + ([(-1, 0, ["drums"], "hole")] if hb > 0 else []) + [(0, None, ["drums", "bass", "other"], "slam on the one")]
+        elif kind == "build":
+            # EDITS OF THE RECORD (docs/DJ_MORE_THAN_A_MIXER.md 4): the eight bars before the drop loop once more, the
+            # bass pulled on the second pass, the loop released a bar before the one so the deck runs INTO the drop
+            def loop_on(at):
+                mm = M()
+                self.song_loop(mm["B"], 8)
+                self._move("moment", None, self._song_id(mm["B"]), None, "BUILD: the eight bars before the drop, once more")
+
+            def release(at):
+                mm = M()
+                self.submix.post({"at": at, "cmd": "release_loop", "deck": mm["B"]})
+                s = self.songs.get(mm["B"])
+                if s is not None:
+                    s.user_loop = None
+                self._move("moment", None, self._song_id(mm["B"]), None, "BUILD: released - the drop on the one")
+            script = [(-16, loop_on), (-8, lambda at: out_bed(at, ("bass",), 1.0, "the bass pulled for the second pass")),
+                      (-1, release), (0, payoff_one)]
+            marks = [(-16, -8, ["drums", "bass", "other"], "BUILD: the eight bars before the drop"), (-8, 0, ["bass"], "once more, the bass pulled"),
+                     (0, None, list(STEMS), "the drop, on the one")]
+        elif kind == "again":
+            def back(at):
+                mm = M()
+                B_ = mm["B"]
+                s = self.songs.get(B_)
+                if s is None:
+                    return
+                start = float(mm.get("again_start") or 0.0)
+                self.jump(B_, start, mm["L"])
+                if getattr(self, "seam", None) is not None and self.seam["state"] != "running":
+                    self._seam_drop("AGAIN moved the record: its seam is planned afresh")
+                sec = s.track.section_at(start + 0.5) or {}
+                self._move("moment", None, self._song_id(B_), None,
+                           f"AGAIN: {s.track.title[:24]}'s {sec.get('kind', 'section')} once more from {int(start) // 60}:{int(start) % 60:02d}")
+                mm["end_clock"] = at + self._bar_clock()
+            script = [(0, back)]
+            marks = [(0, None, list(STEMS), "AGAIN: the section once more")]
         else:
             script, marks = [], []
         # the marks ride on the moment dict (set right after this returns)
@@ -3741,6 +3832,8 @@ class RemixConductor(RecordPlay):
             return int(t.get("take_bars", 8)) + 8
         if kind == "bridge":
             return int(t.get("fade_bars", 4)) + 4
+        if kind == "build":
+            return 16                                 # the loop starts sixteen bars before the one (eight before the drop, twice)
         return MOMENTS[kind][1]
 
     def eject(self, deck):

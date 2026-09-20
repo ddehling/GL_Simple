@@ -60,7 +60,7 @@ DIAL_LABELS = {
 DIAL_ORDER = ("layers", "mixing", "arc", "length", "energy", "tempo", "pace", "seams", "vocals", "variety", "loops",
               "moments", "bass", "tone", "level")
 # the composed moments, in the order they sit on the row: key -> (label, one-song label or None)
-MOMENT_ROW = (("slam", "SLAM"), ("break", "BREAK"), ("sing", "SING"), ("takeover", "TAKEOVER"), ("bridge", "BRIDGE"))
+MOMENT_ROW = (("slam", "SLAM"), ("break", "BREAK"), ("sing", "SING"), ("takeover", "TAKEOVER"), ("bridge", "BRIDGE"), ("build", "BUILD"), ("again", "AGAIN"))
 
 
 class SongMap(QWidget):

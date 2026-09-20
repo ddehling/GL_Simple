@@ -28,7 +28,7 @@ from lib.dj.submix import RATE  # noqa: E402
 BLOCK = 4410
 PACE = 1.5                                 # rendered seconds per real second (decodes are real seconds)
 LANES = ("drums", "bass", "other", "vocals")
-MOMENTS = ("slam", "break", "sing", "takeover", "bridge")
+MOMENTS = ("slam", "break", "sing", "takeover", "bridge", "build", "again")
 # the reasons a control may give instead of acting - anything else is a refusal the orders rewrite missed
 ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "no clock", "press START", "nothing armed",
            "a seam is running", "in flight", "neither drums nor bass", "looping its last bars", "no second song",
