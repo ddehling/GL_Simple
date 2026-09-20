@@ -1255,8 +1255,16 @@ its landing twelve bars on (the room went silent under a vocal that had stopped 
 lands), and the breakdown strip took a TAKEOVER song's bassline as if it were the record's (harmony travels
 together: its melody went too, the song left, one silent vocal for four bars - the strip takes only what the
 record holds; another song's bassline carries the breakdown; nothing to carry it = no strip, the cut on the
-bar). Last two rounds: 180 presses, 0 broken, 0 dead bars; the remix gate green three times; campaign v10
-below.
+bar). Last two rounds: 180 presses, 0 broken, 0 dead bars; the remix gate green three times. Campaign v10
+(8 seeds × 12 min, play 210 s, the clock following): pace 3.05 min per record (v9 3.10), 8.8 lane moves per
+ten minutes, dead bars 0, dead air 0 % [0-22] of 14 seams, lurch 28.6 % [12-55] (v9 27 %), double bass 0,
+harmony split 0, lock p95 0.078, events 20 planned / 16 armed, rehearsals 17 clean / 2 moved; the clock
+travelled 17 times, a median span of 1.5 bpm per run and 6.9 at most (the brain's picks sit near the clock;
+the span grows when the chain or the TEMPO dial asks for it). Nothing regressed. Not run: the planner tab's
+new code (the PLAN menu, the walled menu's route, "make it playable", the drop box) was compiled and
+imported, not clicked - the Director side of it ran in the gate; the stems path was not exercised (no gate
+runs demucs); `dj_scan.py --add` was smoked on a throwaway folder. The user's hour at the controls remains
+the open item, and the first thing to watch there is whether the THEN rows read as a plan.
 
 ## Rules carried over (they were earned)
 
