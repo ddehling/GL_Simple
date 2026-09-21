@@ -12,8 +12,9 @@ The pairing file knows, per record, which vocal sits over which groove and which
 drums, at bar precision. Today it feeds the DJ's events and the ★ rows. It becomes the main proposition:
 
 - **PAIRS**, a fourth tab of the right column: the best pairs across the whole library, ranked by their
-  score, filtered to what fits the clock (inside the wall) and, on request, to the song highlighted in
-  SONGS. Each row reads "the vocal of X over Y from 2:10 (fit 0.91)" or "Y's bassline under X's drums at
+  score, holding only what would play if taken now (inside the wall, a groove of ten bars, a deck for it,
+  the record playing not past its groove - every refusal of PLAY THIS PAIR applied to the list first) and,
+  on request, only pairs with the song highlighted in SONGS. Each row reads "the vocal of X over Y from 2:10 (fit 0.91)" or "Y's bassline under X's drums at
   its drop (fit 0.88)", in the lane colours.
 - **HEAR**: eight bars rendered offline - Y's groove stems with X's vocal stem stretched to Y's tempo and
   shifted by the pair's semitones (`lib/dj/preview.py`, the decode helper process and RubberBand offline) -

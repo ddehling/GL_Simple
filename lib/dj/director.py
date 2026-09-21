@@ -1104,8 +1104,9 @@ class Director:
 
     def pairs(self, n=80, fit_clock=True, with_tid=None):
         """The best pairs across the library, from the pairing file: {kind ("vocal" | "bass"), r (the record), s (the
-        other song), score, fit, shift, r_start, s_start, words}. `fit_clock`: the record inside the wall of the
-        clock now (when one plays); `with_tid`: only pairs that involve this song. Played songs are left out."""
+        other song), score, fit, shift, r_start, s_start, words}. Only pairs that would PLAY if taken now (every
+        refusal of drop_pair applied first); `with_tid`: only pairs that involve this song. (`fit_clock` is kept for
+        callers; the wall is always applied when a clock plays.)"""
         p = self._pairings_file()
         if not p:
             return []
@@ -1115,13 +1116,28 @@ class Director:
         played = self._played_ids()
         by_id = {t.id: t for t in self.library}
         rec_now = rc.songs[rc.record_deck].track if (rc is not None and rc.record_deck in rc.songs) else None
+        t_rec = 0.0
+        if rec_now is not None:
+            try:
+                t_rec = float((rc._tel_deck(rc.record_deck) or {}).get("time_s") or 0.0)
+            except Exception:
+                t_rec = 0.0
+        # ONLY PAIRS THAT WOULD PLAY IF TAKEN NOW (user 2026-09-20: "impossible pairs should not be displayed in the
+        # first place"): every refusal of drop_pair is applied here first - the wall of the clock, a groove of ten
+        # bars, a deck for what the pair needs, the record playing not past its groove
+        free = spare = 0
+        if rc is not None:
+            free = len([dk for dk in ("a", "b", "c", "d") if dk not in rc.songs and dk not in rc._decoding and dk not in rc._pending])
+            spare = len([dk for dk, s in rc.songs.items() if not s.leaving and s.staged_at is not None and not s.entered
+                         and not getattr(s, "user_pick", False) and getattr(s, "user_k", None) is None])
         out = []
         for rid, r in recs.items():
             R = by_id.get(int(rid))
             if R is None or not getattr(R, "has_stems", False) or not R.bpm:
                 continue
-            if fit_clock and clock and not (0.90 <= clock / float(R.bpm) <= 1.10):
-                continue
+            if clock and (rec_now is None or rec_now.id != R.id) and not (0.90 <= clock / float(R.bpm) <= 1.10):
+                continue                              # outside the tempo wall of the clock playing
+            need_r = 0 if (rc is not None and (rc.deck_of(R.id) is not None or (rec_now is not None and rec_now.id == R.id))) else 1
             # how the pair's RECORD would follow the record playing now: its key against it (a pair's record went UP
             # NEXT into a clash the list never mentioned - flags 'seam', 'clash' 2026-09-20)
             into, key_into = "", None
@@ -1143,16 +1159,26 @@ class Director:
                         continue
                     if R.id in played and S.id in played:
                         continue
+                    if rec_now is not None and S.id == rec_now.id:
+                        continue                      # the record playing cannot also be the part over another record
+                    if rc is not None and free + spare < need_r + (0 if rc.deck_of(S.id) is not None else 1):
+                        continue                      # no deck for the pair: drop_pair would refuse it
                     r_end = None
                     if kind == "vocal":
                         r_start, s_start = float((x.get("groove") or [g0])[0]), float((x.get("sung") or [0.0])[0])
                         r_end = float((x.get("groove") or [g0, g0 + 30.0])[1])
                         bar_r = 4.0 * 60.0 / float(R.bpm)
+                        if r_end - r_start < 10 * bar_r:
+                            continue                  # a groove under ten bars: two phrases cannot sit in it
                         from lib.dj.record import pair_record_start
                         from_t, _cut = pair_record_start(R, r_start, 8, bar_r)
                         if float(R.duration_s or 0.0) - r_end < 45.0:
                             continue                  # the groove is the record's last minute: no seam could follow the pair
+                        if rec_now is not None and rec_now.id == R.id and r_start < t_rec + 2 * 8 * bar_r:
+                            continue                  # the record playing is past (or too near) this groove
                         words = f"the vocal of {S.title} over {R.title} from {_mmss(r_start)} (the record would start at {_mmss(from_t)})"
+                    elif rec_now is not None and rec_now.id == R.id:
+                        continue                      # a bassline under the record playing is a TAKEOVER: the menu, not a pair
                     else:
                         r_start, s_start, from_t = g0, float(x.get("landmark") or 0.0), None
                         words = f"{S.title}'s bassline under {R.title}'s drums, at its drop {_mmss(s_start)} - then it is the record"

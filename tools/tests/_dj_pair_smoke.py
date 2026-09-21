@@ -94,7 +94,7 @@ def main():
             clk = f"{m.get('clock_s', 0):.0f}s"
             if m["kind"] in ("bed_to", "open", "moment") or "your pair" in txt or "event" in txt or "the seam" in txt or "ACAPELLA" in txt or "IDEA" in txt:
                 print(f"  {clk:>6} {m['kind']:10s} {txt[:120]}")
-            if m["kind"] == "bed_to" and rc.record_deck in rc.songs and rc.songs[rc.record_deck].track.id == p["r"].id and seen["record"] is None:
+            if m["kind"] == "bed_to" and p["r"].title[:20] in txt and seen["record"] is None:
                 seen["record"] = clk
                 t_rec = float((rc._tel_deck(rc.record_deck) or {}).get("time_s") or 0.0)
                 print(f"         -> {p['r'].title[:24]} is the record at its {int(t_rec) // 60}:{int(t_rec) % 60:02d} (the pair's groove {int(p['r_start']) // 60}:{int(p['r_start']) % 60:02d}-{int(p['r_end'] or 0) // 60}:{int(p['r_end'] or 0) % 60:02d}); decks: "

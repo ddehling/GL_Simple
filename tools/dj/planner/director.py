@@ -709,19 +709,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                 "PLAY THIS PAIR (the record goes UP NEXT and the other song's part comes in when it plays), show parts")
         pv.addWidget(self.pairs_h)
         prow = QHBoxLayout()
-        self.pairs_clock = QPushButton("fits the clock")
-        self.pairs_clock.setCheckable(True)
-        self.pairs_clock.setChecked(True)
-        self.pairs_clock.setToolTip("only pairs whose record is inside the tempo wall of the clock playing now")
         self.pairs_with = QPushButton("with the highlighted song")
         self.pairs_with.setCheckable(True)
         self.pairs_with.setToolTip("only pairs that involve the song highlighted in SONGS / UP NEXT")
         self.pairs_stop = QPushButton("■ stop")
         self.pairs_stop.setToolTip("stop the headphone preview")
-        for b in (self.pairs_clock, self.pairs_with):
-            b.toggled.connect(lambda _c: self._fill_pairs(force=True))
+        self.pairs_with.toggled.connect(lambda _c: self._fill_pairs(force=True))
         self.pairs_stop.clicked.connect(self._pairs_stop)
-        prow.addWidget(self.pairs_clock)
         prow.addWidget(self.pairs_with)
         prow.addStretch(1)
         prow.addWidget(self.pairs_stop)
@@ -1755,7 +1749,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             it = self.found.currentItem() or self.queue.currentItem()
             with_tid = it.data(Qt.ItemDataRole.UserRole) if it is not None else None
         try:
-            rows = d.pairs(n=80, fit_clock=self.pairs_clock.isChecked(), with_tid=with_tid)
+            rows = d.pairs(n=80, with_tid=with_tid)   # only pairs that would play if taken now
         except Exception as e:  # noqa: BLE001
             self.pairs_lbl.setText(f"pairs: {type(e).__name__}: {e}")
             return
@@ -1792,7 +1786,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             elif col is not None:
                 it.setForeground(col)
             self.pairs.addItem(it)
-        self.pairs_h.setText(f"PAIRS  {len(rows)}" + ("  ·  inside the wall of the clock" if self.pairs_clock.isChecked() else "  ·  the whole library")
+        self.pairs_h.setText(f"PAIRS  {len(rows)}  ·  what would play if taken now"
                              + (f"  ·  with {d.title(int(with_tid))[:22]}" if with_tid is not None else "")
                              + "   —   part · onto the record · fit · key into it (! = a clash) · where the record starts")
 

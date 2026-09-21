@@ -204,8 +204,10 @@ of grey. When nothing reaches it the menu says so.
 
 The best pairs across the whole library, from the pairing file, ranked: "the vocal of X over Y from 2:10
 (fit 0.91)" in the vocal lane's colour, "X's bassline under Y's drums, at its drop 1:30 (fit 0.88)" in the
-bass lane's. **fits the clock** keeps the pairs whose record is inside the tempo wall of the clock playing;
-**with the highlighted song** keeps the pairs that involve the song highlighted in SONGS or UP NEXT.
+bass lane's. The list holds only pairs that would PLAY if taken now: the record inside the tempo wall of
+the clock playing, a groove of at least ten bars, a free deck for what the pair needs, the record playing
+not yet past its groove, no song that is already the record. Everything PLAY THIS PAIR would refuse is
+left out. **with the highlighted song** keeps the pairs that involve the song highlighted in SONGS or UP NEXT.
 **Double-click = HEAR**: eight bars rendered offline from both records' stems, the vocal or bassline
 stretched to the record's tempo and shifted by the pair's semitones, played on the CUE OUTPUT. **OUTPUTS**
 (the button in the top row) chooses both devices: the MAIN output, where the floor plays (system default
