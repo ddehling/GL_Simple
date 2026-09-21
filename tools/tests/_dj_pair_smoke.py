@@ -74,9 +74,33 @@ def main():
         return 1
     pump(2 * bar_blocks())
     rec0 = rc.songs[rc.record_deck].track
-    pairs = [p for p in d.pairs(n=40, fit_clock=True) if p["kind"] == "vocal" and p["r"].id != rec0.id and not p["played"]]
+    on_record = "--on-record" in sys.argv                # the pair ON the record playing (its groove still ahead)
+    if on_record and not any(p["kind"] == "vocal" and p["r"].id == rec0.id for p in d.pairs(n=400, fit_clock=True)):
+        # the opener has no pair on it: the best pair's record is put UP NEXT (not the pair), and the pair is taken
+        # once that record PLAYS - the on-record path proper
+        cands = [p for p in d.pairs(n=400, fit_clock=True) if p["kind"] == "vocal" and p["r"].id != rec0.id and not p["played"]
+                 and float(p["r_start"]) > 120.0]     # (a groove far enough in that it is still ahead when the record plays)
+        if not cands:
+            print("FAIL: no vocal pair whose record could be queued for the on-record case")
+            return 1
+        ok_q, msg_q = d.queue(cands[0]["r"].id)
+        print(f"on-record case: {cands[0]['r'].title[:30]} UP NEXT ({msg_q}); the pair is taken once it plays")
+        t_lim = len(audio) + int(600.0 * RATE / BLOCK)
+        while len(audio) < t_lim and not (rc.record_deck in rc.songs and rc.songs[rc.record_deck].track.id == cands[0]["r"].id and rc.songs[rc.record_deck].entered):
+            pump(bar_blocks())
+        pump(2 * bar_blocks())
+        rec0 = rc.songs[rc.record_deck].track
+        if rec0.id != cands[0]["r"].id:
+            print(f"FAIL: {cands[0]['r'].title[:30]} never became the record")
+            return 1
+    pairs = [p for p in d.pairs(n=400, fit_clock=True) if p["kind"] == "vocal" and (p["r"].id == rec0.id) == on_record
+             and (not p["played"] or (on_record and p["s"].id not in d._played_ids()))]   # (the record playing counts as played)
+    # --record / --part: a NAMED pair (title prefixes) - the one that failed on the night, replayed here
+    want_r, want_s = arg("--record", "", str).lower(), arg("--part", "", str).lower()
+    if want_r or want_s:
+        pairs = [p for p in pairs if (not want_r or p["r"].title.lower().startswith(want_r)) and (not want_s or p["s"].title.lower().startswith(want_s))]
     if not pairs:
-        print("FAIL: no vocal pair inside the wall")
+        print("FAIL: no vocal pair inside the wall" + (f" matching --record '{want_r}' --part '{want_s}' (outside the wall of {rec0.bpm:.0f}, or not offered)" if (want_r or want_s) else ""))
         return 1
     p = pairs[0]
     print(f"record now: {rec0.title[:30]} ({rec0.bpm:.0f})")
@@ -84,7 +108,7 @@ def main():
     msg = d.drop_pair(p)
     print(f"PLAY THIS PAIR -> {msg}")
     t0 = len(audio)
-    seen = {"record": None, "event_plan": None, "armed": None, "vocal_in": None, "fail": None}
+    seen = {"record": ("now" if on_record else None), "event_plan": None, "armed": None, "vocal_in": None, "fail": None}
     n_moves = len(rc.move_log)
     t_end = t0 + int(seconds * RATE / BLOCK)
     while len(audio) < t_end and seen["vocal_in"] is None and seen["fail"] is None:
@@ -92,11 +116,12 @@ def main():
         for m in rc.move_log[n_moves:]:
             txt = m["text"]
             clk = f"{m.get('clock_s', 0):.0f}s"
-            if m["kind"] in ("bed_to", "open", "moment") or "your pair" in txt or "event" in txt or "the seam" in txt or "ACAPELLA" in txt or "IDEA" in txt:
+            if m["kind"] in ("bed_to", "open", "moment", "order") or "your pair" in txt or "event" in txt or "the seam" in txt or "ACAPELLA" in txt or "IDEA" in txt:
                 print(f"  {clk:>6} {m['kind']:10s} {txt[:120]}")
             if m["kind"] == "bed_to" and p["r"].title[:20] in txt and seen["record"] is None:
                 seen["record"] = clk
-                t_rec = float((rc._tel_deck(rc.record_deck) or {}).get("time_s") or 0.0)
+                d_rec = rc.deck_of(p["r"].id) or rc.record_deck
+                t_rec = float((rc._tel_deck(d_rec) or {}).get("time_s") or 0.0)
                 print(f"         -> {p['r'].title[:24]} is the record at its {int(t_rec) // 60}:{int(t_rec) % 60:02d} (the pair's groove {int(p['r_start']) // 60}:{int(p['r_start']) % 60:02d}-{int(p['r_end'] or 0) // 60}:{int(p['r_end'] or 0) % 60:02d}); decks: "
                       + ", ".join(f"{k}={s.track.title[:12]}{'(staged)' if not s.entered else ''}" for k, s in rc.songs.items()))
             if txt.startswith("event in") and "your pair" in txt:
@@ -105,7 +130,8 @@ def main():
                 seen["armed"] = clk
             if txt.startswith("ACAPELLA") and ("vocal" in txt.lower()) and m["kind"] == "moment":
                 seen["vocal_in"] = clk
-            if "your pair could not be placed" in txt or "your pair missed" in txt or "the event is dropped" in txt or "the event refused" in txt:
+            if "your pair could not be placed" in txt or "your pair missed" in txt or "the event is dropped" in txt or "the event refused" in txt \
+                    or "your pair is REFUSED" in txt or "your pair FAILED" in txt:
                 seen["fail"] = txt[:140]
         n_moves = len(rc.move_log)
         if d.last_error or rc.last_error:

@@ -136,14 +136,23 @@ class RecordPlay:
                 and not any(p[0].id == pend["track_id"] for p in self._pending.values())
             if d is not None:
                 pend["staged_once"] = True
-            timed_out = pend.get("accepted") and time.time() - pend["t"] > 150.0    # (an idea waiting on you has no clock but its bar)
-            if timed_out or (sm_ is not None and bar > sm_["bar"] - 3 * cb) \
-                    or pend.get("record") != sa.track.id or d == self.record_deck or pend.get("late", 0) >= 3 or gone:
+            # (an idea waiting on you has no clock but its bar; an ORDER's event neither - its bar may be minutes off: the
+            # on-record case placed one 138 bars ahead and the 150 s clock dropped it with its song ready, 2026-09-20)
+            timed_out = pend.get("accepted") and not pend.get("order") and time.time() - pend["t"] > 150.0
+            seam_close = sm_ is not None and bar > sm_["bar"] - 3 * cb
+            if seam_close and pend.get("order") and sm_["state"] == "planned":
+                # YOUR order outranks the DJ's seam: the seam moves past the pair, the pair stays
+                self._seam_move(self._phrase_bar_after(int(pend["bar"]) + int(pend.get("bars") or cb) + 1), "your pair comes first")
+                seam_close = False
+            if timed_out or seam_close or pend.get("record") != sa.track.id or d == self.record_deck or pend.get("late", 0) >= 3 or gone:
                 self._event_pending = None
                 why = ("its song left the decks" if gone else "the room changed" if (pend.get("record") != sa.track.id or d == self.record_deck)
                        else ("it came too late three times" if pend.get("late", 0) >= 3
-                             else ("its seam is too close" if (sm_ is not None and bar > sm_["bar"] - 3 * cb) else "its song never became ready in time")))
+                             else ("its seam is too close" if seam_close else "its song never became ready in time")))
                 self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"the event is dropped: {why}")
+                o = self._order_of(pend)
+                if o is not None:
+                    self._order_end(o, "failed", why)
                 return
             s = self.songs.get(d) if d else None
             if s is None or s.staged_at is None or self._clock() < int(s.staged_at) + self._bar_clock():
@@ -177,7 +186,18 @@ class RecordPlay:
             self.event_log.append({"kind": pend["kind"], "record": sa.track.title, "song": s.track.title, "ok": ok, "msg": msg, "bar": bar})
             self._move("event", None, self._song_id(self.record_deck), s.track.id,
                        (f"the event: {msg}" if ok else f"the event refused: {msg}"))
+            o = self._order_of(pend)
+            if o is not None:
+                self._order_end(o, "done" if ok else "failed", msg)
             return
+        if planted is not None and planted.get("state") is not None:
+            # AN ORDER (docs/DJ_ORDERS.md): its score is read, not searched - or it is still being planned (the bar its
+            # record's stems arrive), or it ended (refused / failed: said already)
+            if planted.get("state") != "fixed":
+                return
+            if planted.get("kind") == "acapella":
+                self._order_event_step(sa, planted)
+                return
         if (planted is None and getattr(sa, "events_done", 0) >= rate) or self._moment is not None:
             return
         sm = self.seam
@@ -195,7 +215,10 @@ class RecordPlay:
         # seconds (at two phrases the gate's four planned events all came too late) - to two phrases before the seam
         # four phrases from now (a decode and a staging are real seconds) - one when the pair's song is on a deck already
         pre = planted is not None and self.deck_of(int(planted["track_id"])) is not None
-        start_min = max(bar + (cb if pre else 4 * cb), k0 + cb)
+        # a pair's song already on a deck needs only a re-cue: two bars to lock and two spare - not a phrase (a record
+        # that entered on its sixteen-bar groove had one phrase boundary that fit, eight bars in, and the phrase of
+        # window skipped it - 2026-09-20)
+        start_min = max(bar + (4 if pre else 4 * cb), k0 + cb)
         end_max = sm["bar"] - 2 * cb
         if end_max - start_min < 2 * cb:
             if planted is not None:
@@ -358,6 +381,178 @@ class RecordPlay:
         self._move("event_none", None, self._song_id(self.record_deck), None,
                    f"no event for {sa.track.title[:24]}: {last_why[:70]}")
 
+    # -- ORDERS: a pair you took is a SCORE (docs/DJ_ORDERS.md) --------------------------------------------------------
+    def place_order(self, kind, record_tid, other_tid, want_t=None, want_end=None, s_start=None, s_end=None, words="", **extra):
+        """PLAY THIS PAIR: the order is created "staging"; when its record's stems are on a deck it is PLANNED once
+        (`_orders_step`) - fixed with its entry, its event time and its bars, or refused by name. The seam into
+        the record and the event then read the score. Returns the order dict (also the planted entry)."""
+        from lib.dj.orders import new_order
+        if not hasattr(self, "_planted") or self._planted is None:
+            self._planted = {}
+        if not hasattr(self, "orders") or self.orders is None:
+            self.orders = []
+        old = self._planted.get(int(record_tid))
+        if old is not None and old.get("state") in ("staging", "fixed"):
+            old["state"], old["why"], old["t_end"] = "failed", "another pair was taken on this record", time.time()
+        o = new_order(kind, record_tid, other_tid, want_t=want_t, want_end=want_end, s_start=s_start, s_end=s_end, words=words, **extra)
+        if kind != "acapella":
+            o["state"], o["why"] = "fixed", "at its drop, when the record plays"   # (the bass under: the takeover's own placement)
+        self.orders.append(o)
+        self._planted[int(record_tid)] = o
+        self._planted_said = False
+        self._orders_step()                           # (planned at once when its record is on a deck already)
+        return o
+
+    def _order_of(self, pend):
+        oid = (pend or {}).get("order")
+        if oid is None:
+            return None
+        return next((o for o in (getattr(self, "orders", None) or []) if o["id"] == oid), None)
+
+    def _order_event_step(self, sa, o):
+        """The event of a FIXED pair order on the record playing: its bar is geometry from the score's event time
+        and where the record is now - no phrase grid, no window search. The other song is cued to it; a seam in the
+        way moves past the pair; the pending event then arms as any accepted event does."""
+        bar = self.bar_n
+        cb = self.change_bars
+        if self._moment is not None:
+            return
+        sm = self.seam
+        if sm is not None and sm["state"] == "running":
+            return
+        rd = self.record_deck
+        at = self._next_bar_clock()
+        t_now = self._song_time_at(rd, at)
+        bar_a = self._bar_s(sa.track, t_now)
+        ev_t = float(o["event_t"])
+        end_t = float(o["want_end"]) if o.get("want_end") is not None else ev_t + int(o["bars"] or cb) * bar_a
+        K = bar + 1 + int(math.ceil((ev_t - t_now) / max(bar_a, 1e-6) - 1e-6))
+        late = ""
+        if K < bar + 4:
+            K = bar + 4                               # (a cue needs two bars to lock, and this bar's plan a bar)
+            late = " (a little into the groove: the record was further on than the score)"
+        tK = t_now + (K - bar - 1) * bar_a
+        room = int(math.floor((end_t - tK) / max(bar_a, 1e-6) + 0.5))
+        if room < cb - 1:
+            self._order_end(o, "failed", f"{sa.track.title[:22]}'s groove is past: {room} bars of it left at the earliest bar the vocal could come")
+            return
+        bars = max(cb, min(int(o["bars"] or cb), room // cb * cb))
+        S_id = int(o["track_id"])
+        cue = float(o["cue_t"]) if o.get("cue_t") is not None else None
+        d_s = self.deck_of(S_id)
+        if d_s is not None and d_s in self.songs and self.songs[d_s].staged_at is not None:
+            if cue is None:
+                cue = self._song_time_at(d_s, at)
+            ok, msg = bool(self.jump(d_s, cue, int(K))), "on its deck, re-cued"
+        elif d_s is not None or any(t.id == S_id for t in self._decoding.values()) or any(p[0].id == S_id for p in self._pending.values()):
+            ok, msg = False, "its song is still decoding"
+        else:
+            ok, msg = self.stage_for_bar(S_id, cue if cue is not None else 0.0, K)
+        if not ok:
+            if time.time() - float(o.get("t_fixed") or o["t"]) > 90.0:
+                self._order_end(o, "failed", f"{self._track_title(S_id)[:22]}: {msg}")
+            elif not o.get("wait_said"):
+                o["wait_said"] = True
+                self._move("order", None, sa.track.id, S_id, f"your pair waits: {self._track_title(S_id)[:22]} {msg}")
+            return
+        self._event_pending = {"kind": "acapella", "track_id": S_id, "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": cue,
+                               "record": sa.track.id, "accepted": True, "order": o["id"],
+                               "why": f"the vocal of {self._track_title(S_id)[:24]} over this groove - your pair"}
+        # the seam out of this record comes after the pair: an order outranks the DJ's placement - moved ONCE, now that
+        # the event is placed (moved every bar while the pair's song decoded, it walked - the on-record case)
+        if sm is not None and sm["state"] == "planned" and sm["bar"] < K + bars + 1:
+            self._seam_move(self._phrase_bar_after(K + bars + 1), "your pair comes first")
+        o["state"], o["event_bar"] = "running", int(K)
+        o["why"] = f"the vocal in {int(K) - bar} bars, for {bars} bars{late}"
+        sa.events_done = int(getattr(sa, "events_done", 0)) + 1
+        used = getattr(sa, "events_used", None)
+        if used is None:
+            used = sa.events_used = set()
+        used.add(S_id)
+        self._move("event_plan", None, self._song_id(rd), S_id, f"event in {int(K) - bar} bars: {self._event_pending['why']} ({bars} bars){late}")
+
+    def _order_end(self, o, state, why):
+        if o.get("state") in ("done", "refused", "failed"):
+            return
+        o["state"], o["why"], o["t_end"] = state, why, time.time()
+        if (getattr(self, "_planted", None) or {}).get(o["record_tid"]) is o:
+            self._planted.pop(o["record_tid"], None)
+        self._move("order", None, o["record_tid"], o["track_id"],
+                   ("your pair is done: " if state == "done" else ("your pair is REFUSED: " if state == "refused" else "your pair FAILED: ")) + str(why)[:120])
+        hook = getattr(self, "on_order", None)
+        if hook is not None:
+            try:
+                hook(o)
+            except Exception:
+                pass
+
+    def _orders_step(self):
+        """Every bar: a staging order whose record is on a deck with its stems is planned ONCE - fixed or refused;
+        a record that never comes, or leaves the decks before it plays, fails the order, said."""
+        orders = getattr(self, "orders", None) or []
+        for o in list(orders):
+            if o["state"] not in ("staging", "fixed"):
+                continue
+            R = self._track(o["record_tid"])
+            d_r = self.deck_of(o["record_tid"])
+            on_way = any(t.id == o["record_tid"] for t in self._decoding.values()) or any(p[0].id == o["record_tid"] for p in self._pending.values())
+            if d_r is None and not on_way:
+                if o.get("seen_deck"):
+                    self._order_end(o, "failed", f"{R.title[:24] if R else 'its record'} left the decks before it played")
+                elif time.time() - o["t"] > 120.0:
+                    self._order_end(o, "failed", f"{R.title[:24] if R else 'its record'} never reached a deck")
+                continue
+            if d_r is not None:
+                o["seen_deck"] = True
+            if o["state"] != "staging" or d_r is None:
+                continue
+            s = self.songs.get(d_r)
+            if s is None or s.env is None or R is None:
+                continue
+            if s.entered and d_r == self.record_deck:
+                # the record is PLAYING already (the pair on the record now): the entry is where it is; only the event
+                t_now = self._song_time_at(d_r, self._next_bar_clock())
+                bar_r = self._bar_s(R, float(o["want_t"] or t_now))
+                from lib.dj.orders import plan_pair_entry
+                plan = plan_pair_entry(R, s.env, o["want_t"], o["want_end"], self.change_bars, bar_r, self._stem_carries,
+                                       s_start=o.get("s_start"), s_end=o.get("s_end"))
+                if plan["ok"] and float(o["want_t"]) < t_now + 6 * bar_r:
+                    plan = dict(plan, ok=False, why=f"{R.title[:24]} is past its groove at {int(o['want_t']) // 60}:{int(o['want_t']) % 60:02d} already")
+                if plan["ok"]:
+                    o.update(entry=None, start_t=None, entry_t=None, event_t=plan["event_t"], bars=plan["bars"], cue_t=plan["cue_t"], cut=False)
+                    o["state"], o["why"], o["t_fixed"] = "fixed", f"on the record playing: the vocal at {int(plan['event_t']) // 60}:{int(plan['event_t']) % 60:02d} for {plan['bars']} bars", time.time()
+                else:
+                    self._order_end(o, "refused", plan["why"])
+                    continue
+            else:
+                from lib.dj.orders import plan_pair_entry
+                bar_r = self._bar_s(R, float(o["want_t"]))
+                plan = plan_pair_entry(R, s.env, o["want_t"], o["want_end"], self.change_bars, bar_r, self._stem_carries,
+                                       s_start=o.get("s_start"), s_end=o.get("s_end"))
+                if not plan["ok"]:
+                    self._order_end(o, "refused", plan["why"])
+                    continue
+                o.update(entry=plan["entry"], start_t=plan["start_t"], entry_t=plan["entry_t"], event_t=plan["event_t"], bars=plan["bars"],
+                         cue_t=plan["cue_t"], cut=(plan["entry"] == "cut"))
+                o["state"], o["why"], o["t_fixed"] = "fixed", plan["why"] + f"; the vocal for {plan['bars']} bars", time.time()
+            self._move("order", None, o["record_tid"], o["track_id"], "your pair is planned: " + o["why"][:140])
+            hook = getattr(self, "on_order", None)
+            if hook is not None:
+                try:
+                    hook(o)
+                except Exception:
+                    pass
+
+    def orders_status(self):
+        """The orders for THE PLAN and the picture: the live ones and the ended ones for a minute."""
+        now = time.time()
+        out = []
+        for o in getattr(self, "orders", None) or []:
+            if o["state"] in ("done", "refused", "failed") and now - float(o.get("t_end") or 0) > 60.0:
+                continue
+            out.append(dict(o))
+        return out
+
     def plant_idea(self, record_tid, kind, other_tid, want_t=None, want_end=None, s_start=None):
         """A PAIR YOU CHOSE (PLAY THIS PAIR): when `record_tid` is the record, `other_tid` comes as `kind` ("acapella" -
         its vocal over the groove; "takeover" - its bassline under the drums, then it is the record), already taken.
@@ -381,6 +576,13 @@ class RecordPlay:
         pl = (getattr(self, "_planted", None) or {}).get(track.id)
         if not pl or pl.get("want_t") is None:
             return None
+        if pl.get("state") is not None:
+            # AN ORDER (docs/DJ_ORDERS.md): decided once from the stems - the seam reads it; before it is planned there
+            # is no start yet (the seam is not placed into a record whose score is unknown)
+            if pl.get("state") != "fixed" or pl.get("entry_t") is None:
+                return None
+            pl["cut"] = pl.get("entry") == "cut"
+            return float(pl["entry_t"])
         t0, cut = pair_record_start(track, float(pl["want_t"]), self.change_bars, self._bar_s(track, float(pl["want_t"])))
         pl["cut"] = cut
         return t0
@@ -543,7 +745,12 @@ class RecordPlay:
                     self._seam_drop(f"your pick {self.songs[yours[0]].track.title[:22]} comes first")
                     sm = None
         # the events, BEFORE the seam check: a pending exit event (the takeover) has dropped its seam - stepped
-        # after it, it never armed and blocked every seam for its whole timeout (the gate, 2026-09-16)
+        # after it, it never armed and blocked every seam for its whole timeout (the gate, 2026-09-16). The ORDERS
+        # first of all: a pair's score is planned the bar its record's stems arrive, before any seam into it
+        try:
+            self._orders_step()
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"orders: {type(e).__name__}: {e}"
         try:
             self._event_step()
         except Exception as e:  # noqa: BLE001
@@ -841,14 +1048,10 @@ class RecordPlay:
         off = L if lm_off is None else lm_off
         ps = self._planted_start(t)
         if ps is not None:
-            # A PAIR'S RECORD starts where the pair needs it: the leading stems must carry from there - searched
-            # FORWARD (a phrase at most), never back (the search below walked 1992 back 77 bars from the wanted
-            # start and the pair's groove never came inside the play - 2026-09-20). B enters at the start; the swap
-            # (its "landmark") comes `off` bars later.
-            st = self._steady_from(t, sb.env, ps, max(2, min(off, L)), strict=False, lanes=lanes)
-            if st is None or st < ps or st - ps > 2 * self.change_bars * bar_b:
-                st = ps
-            st = max(st, floor_t)
+            # A PAIR'S RECORD starts where the SCORE put it (lib/dj/orders.plan_pair_entry: its drums carry two phrases
+            # from there, judged with this conductor's own judge). B enters at the start; the swap (its "landmark")
+            # comes `off` bars later. Nothing is searched here.
+            st = max(ps, floor_t)
             return st, st + off * bar_b, True, L
         # the stems the seam brings first must carry through the bars they play under the old record - judged
         # BAR BY BAR (every bar's mean over 0.7 of the line): a pre-drop pattern on and off every bar passed the
@@ -906,6 +1109,12 @@ class RecordPlay:
         def ok(x):
             return self._stem_carries(sb.env, x, span, lanes=("drums", "bass"), bar_s=bar_b) is not False
         if ok(lm):
+            return max(floor_t, lm - 4 * bar_b), lm, True, 4
+        if self._planted_start(t) is not None:
+            # A PAIR'S RECORD: the score decided where it enters (lib/dj/orders.plan_pair_entry, from these very stems
+            # with this very judge) - the seam takes it, whole, four bars after the strip. Nothing is re-decided here
+            # (entered on its groove after a re-decision, Resurrection's sixteen bars were spent before a phrase could
+            # hold the vocal - 2026-09-20)
             return max(floor_t, lm - 4 * bar_b), lm, True, 4
         end = float(t.duration_s) - MIN_RUNWAY_S - span
         cands = sorted({t.nearest_downbeat(float(x["start_s"])) for x in (t.sections or []) if x.get("kind") == "groove" and float(x["start_s"]) > lm}
@@ -1030,7 +1239,13 @@ class RecordPlay:
         lm0 = self._record_landmark(sb.track, sb.env)
         order = self._seam_order(a, b, L, kind, lm0 - (L + 1) * self._bar_s(sb.track, lm0))
         pl_b = (getattr(self, "_planted", None) or {}).get(sb.track.id)
-        if pl_b and pl_b.get("cut"):
+        if pl_b and pl_b.get("state") == "fixed" and pl_b.get("entry_t") is not None:
+            # A SCORE (docs/DJ_ORDERS.md): the entry it decided - the cut before its groove, or drums first
+            if pl_b.get("cut"):
+                order, L, kind = "cut", 4, "cut"
+            else:
+                order = "drums"
+        elif pl_b and pl_b.get("cut"):
             order, L, kind = "cut", 4, "cut"          # a pair on the record's first groove: the record enters whole on it
 
         def place(order_, L_):

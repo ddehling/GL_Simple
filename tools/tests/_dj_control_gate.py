@@ -36,7 +36,7 @@ ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "
            "not layered", "layer first", "only TAKEOVER and BRIDGE", "already", "nothing to", "no drop or hook",
            "would take nothing away", "too quiet", "the vocal you brought", "is the one playing", "nothing to take away",
            "vocal is not on the lane", "is not singing here", "no hook of", "the record playing", "already leaving",
-           "no chain of records reaches it", "has no stems", "waits for a deck")
+           "no chain of records reaches it", "has no stems", "waits for a deck", "no drop of", "REFUSED", "refused:")
 
 
 def arg(name, default, cast=str):
@@ -150,7 +150,29 @@ def run(music, seed, presses, seconds, verbose):
 
     def make_press():
         kind = rng.choice(["stem_in", "stem_in", "stem_in", "vocal_late", "queue", "next", "next", "hold", "drop", "break", "moment", "moment", "moment_with",
-                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea", "queue_nostems"])
+                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea", "queue_nostems", "pair"])
+        if kind == "pair":
+            # PLAY THIS PAIR (docs/DJ_ORDERS.md): an ORDER exists within a bar (staging or planned), with a PAIR row in THE
+            # PLAN - or it is refused at once, said. Its fate is checked at the end of the run (orders_check)
+            try:
+                offered = [p for p in d.pairs(n=40) if p["kind"] == "vocal" and not p["played"]]
+            except Exception as e:  # noqa: BLE001
+                offered = []
+                errors.append((len(audio) * BLOCK / RATE, "pairs", f"{type(e).__name__}: {e}"))
+            if not offered:
+                return Press("PLAY THIS PAIR (none offered)", lambda: "none offered", lambda _b: True, settle_bars=0.2)
+            p = rng.choice(offered[:12])
+
+            def verify(_before):
+                said = [e[1] for e in d.events[_before["events"]:]]
+                if any("REFUSED" in s or "refused" in s for s in said):
+                    return False                      # (an honest refusal: judged by the story row)
+                o = next((x for x in reversed(getattr(rc, "orders", []) or []) if x["record_tid"] == p["r"].id), None)
+                if o is None or o["state"] not in ("staging", "fixed", "running", "done"):
+                    return False
+                pr = d.status().get("plan_rows") or []
+                return o["state"] in ("running", "done") or any(r.get("kind") == "PAIR" for r in pr)
+            return Press(f"PLAY THIS PAIR {p['s'].title[:12]} over {p['r'].title[:12]}", lambda: d.drop_pair(p), verify, settle_bars=0.5)
         if kind == "queue_nostems":
             # a song without stems is refused UP NEXT at once, by name (it was queued and popped at staging - 2026-09-20)
             bare = [t for t in d.library if not getattr(t, "has_stems", False) and t.bpm]
@@ -376,6 +398,19 @@ def run(music, seed, presses, seconds, verbose):
                 print(f"          {hms} {m[:150]}")
             print(f"          room now: master {rc.master} record {rc.record_deck} lanes {rc.lanes} songs " +
                   ", ".join(f"{dk}={s.track.title[:14]}{'(leaving)' if s.leaving else ''}{'(staged)' if s.staged_at is not None and not s.entered else ''}" for dk, s in rc.songs.items()), flush=True)
+    # THE ORDERS (docs/DJ_ORDERS.md): every order ended in a said state - done, refused or failed with a reason - or is
+    # still ahead with its record not yet played; one whose record played without its event, or that lost its record
+    # and said nothing, is the failure this page exists to end
+    played_ids = {tid for tid, _w in d.played}
+    for o in getattr(rc, "orders", []) or []:
+        st = o.get("state")
+        if st in ("done", "refused", "failed"):
+            if not o.get("why"):
+                errors.append((len(audio) * BLOCK / RATE, "orders", f"order {o['id']} ended {st} without a reason"))
+            continue
+        r_gone = rc.deck_of(o["record_tid"]) is None and (o.get("seen_deck") or o["record_tid"] in played_ids)
+        if r_gone:
+            errors.append((len(audio) * BLOCK / RATE, "orders", f"order on {d.title(o['record_tid'])[:20]} is '{st}' but its record is gone (silent death)"))
     # the room stayed alive
     mono = np.concatenate(audio[opened_at:]).mean(axis=1) if len(audio) > opened_at + 10 else np.zeros(1)
     nb = int(bar_blocks() * BLOCK)

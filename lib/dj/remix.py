@@ -3224,7 +3224,10 @@ class RemixConductor(RecordPlay):
             if V is None:
                 return False, "that song is not ready on a deck" if other in self.songs else "no song for the vocal"
             if self._singing(self.songs[B], self._song_time_at(B, at)) is True:
-                return False, f"{self.songs[B].track.title[:24]} is singing here (never two singers)"
+                if (getattr(self, "_event", None) or {}).get("order"):
+                    self._note(f"{self.songs[B].track.title[:24]} sings here by its stem - your pair goes over it anyway (your order)")
+                else:
+                    return False, f"{self.songs[B].track.title[:24]} is singing here (never two singers)"
             T, what = V, "its sung stretch"
         if kind in ("takeover", "bridge"):
             V = other if (other in self.songs and other != B and not self.songs[other].leaving and self.songs[other].staged_at is not None) else None

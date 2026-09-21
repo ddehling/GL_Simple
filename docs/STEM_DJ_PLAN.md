@@ -1496,6 +1496,29 @@ minute, twins). (6) TAKEOVER / BRIDGE with a song refuse at once for what can be
 record itself, no stems, the wall). Not changed: the moment buttons refuse at the press with the reason
 (that meets the rule); the autoDJ's "would fade" songs stay queueable by design.
 
+**"the second part of the pair hasn't played" → "wasn't this problem supposed to be resolved?" → "stop chipping
+away at the margin of filter tuning and address the actual issues" → docs/DJ_ORDERS.md → "do it all"
+(2026-09-20, evening).** The Resurrection pair (its vocal over a first groove after a 62 s intro with drums and
+no bass): the PAIRS list said "starts at 0:31" from section geometry, the cut placement wanted drums AND bass
+carrying and fell forward onto the groove, the event wanted a phrase boundary with a phrase of margin and the
+one that fit was inside the margin. Three models of one fact; the DJ's taste rules judging an order; the
+display rendering state, not the plan; and a smoke that only ever took the best-scoring pair. The one-pager
+(DJ_ORDERS.md) and the build the same evening: an order is a SCORE - `lib/dj/orders.py` plans a pair once from
+the record's real stems with the conductor's own judge (three doors: drums first five phrases early; a cut at
+the latest place before the groove where its drums carry; on the groove with the vocal four bars in - else
+refused by name), and the seam, the event and the arm READ it: `_seam_b_cut` / `_seam_b_start` / `_plan_seam`
+search nothing for a scored record, the event bar is geometry from the score's time and where the record is
+(no phrase grid, no window), a seam in the way moves past the pair, the arm lets a scored acapella through
+where the record's stem sings (said). Every end is said (done / refused / failed + reason), a refused pair's
+record leaves UP NEXT, and THE PLAN's PAIR rows and the picture come from the order object itself - from the
+moment the pair is taken, not from the moment its record plays. The pair census (`_dj_pair_census.py`) runs
+that planner over the offered pairs offline and writes `.stems/pair_plans.json`; the list hides what it refused
+and says the entry it decided: top 40 → 40 feasible, 0 refused. Verified: Resurrection replayed through the
+score (planned the bar it staged: "enters whole at 0:46, a cut, its groove 8 bars on"; the vocal 12 bars on
+the groove), the best pair (16 bars), control gate seeds 5-6 with the new PLAY THIS PAIR press and the
+end-of-run orders check (60 presses ALL OK), remix gate green. Not yet: UP NEXT and TAKEOVER / BRIDGE as full
+scores; the census by the pairings pass.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

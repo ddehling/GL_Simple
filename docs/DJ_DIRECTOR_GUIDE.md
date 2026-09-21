@@ -223,8 +223,17 @@ stretched to the record's tempo and shifted by the pair's semitones, played on t
 unless you pick one; it takes effect at the next START), and the CUE output for the preview (at once). Kept
 per machine in logs/dj_outputs.json; `dj.cue_device` in config.yaml still works as a fallback. Without a cue
 output the tab says so; a preview never plays on the floor while the Director runs. **Right-click → PLAY THIS PAIR**:
-the pair's record goes UP NEXT (unless it is the record now) and the pair is planted as an IDEA already
-taken - it fires when that record plays, and THE PLAN shows it as an EVENT. A song played tonight shows grey.
+an ORDER (docs/DJ_ORDERS.md). The pair's record goes UP NEXT (unless it is the record now) and its other
+song is staged at once. The moment the record's stems are on a deck the pair is PLANNED once, from those
+stems: where the record enters (drums first five phrases before the groove; or whole, a cut, at the latest
+place before the groove where its drums carry; or on the groove itself with the vocal four bars in), and how
+many bars the vocal gets. A pair that does not fit is REFUSED then, by name, and its record leaves UP NEXT.
+From then on the seam into the record, the event and the arm read that score; nothing is searched again. THE
+PLAN carries a PAIR row from the moment you take it (planning → planned with its times → the EVENT row when it
+is armed → done, refused or failed with the reason, kept a minute), and the picture a dashed vocals mark at
+its bar with the other song's dashed clip once it is on a deck. Where the pair census has run
+(`tools/tests/_dj_pair_census.py`), the list already says the entry the planner decided and hides what it
+refused. A song played tonight shows grey.
 
 ## IDEA rows and the moments row
 
