@@ -423,18 +423,7 @@ class RemixConductor(RecordPlay):
             for t in self.brain.library:
                 if t.id in veto or not t.bpm:
                     continue
-                rate = self.master_bpm / max(t.bpm, 1e-6)
-                if not (RATE_MIN <= rate <= RATE_MAX):
-                    veto.add(t.id)
-                    continue
-                # a RECORD must have its minimum play and a seam after its body starts (one became the record
-                # with 70 s left and its own seam began 16 s later - flag 'queue' 2026-09-14)
-                need = (float(getattr(self, "play_min_s", 0.0)) + MIN_RUNWAY_S) if getattr(self, "policy", "record") == "record" else MIN_RUNWAY_S
-                if (t.duration_s - self._body_start(t)) / rate < need:
-                    veto.add(t.id)
-                    continue
-                _shift, fit = self._key_fit(t)
-                if fit is not None and fit < ENTRY_FIT:
+                if self.pick_veto_why(t) is not None:
                     veto.add(t.id)
             # THE SET (docs/DJ_THE_SET.md rule 2): the Director's chain decides the pick when it has one - the
             # live pick follows the displayed plan. "wait" = the chain's head is inside the wall where the
@@ -457,6 +446,25 @@ class RemixConductor(RecordPlay):
             return cand
         finally:
             self.brain.veto_ids = saved
+
+    def pick_veto_why(self, t):
+        """Why `t` cannot be the NEXT RECORD by the pick's own gates, or None: the tempo wall against the clock
+        now, its minimum play and a seam's runway after its body starts, its key against the room's. THE SET's
+        chain asks the same question, so the plan shown is the plan that can be picked (2026-09-20)."""
+        if not getattr(t, "bpm", None):
+            return "no tempo"
+        rate = self.master_bpm / max(float(t.bpm), 1e-6)
+        if not (RATE_MIN <= rate <= RATE_MAX):
+            return f"outside the wall ({float(t.bpm):.0f} against {float(self.master_bpm):.0f})"
+        # a RECORD must have its minimum play and a seam after its body starts (one became the record
+        # with 70 s left and its own seam began 16 s later - flag 'queue' 2026-09-14)
+        need = (float(getattr(self, "play_min_s", 0.0)) + MIN_RUNWAY_S) if getattr(self, "policy", "record") == "record" else MIN_RUNWAY_S
+        if (float(t.duration_s or 0.0) - self._body_start(t)) / rate < need:
+            return "too short for a record"
+        _shift, fit = self._key_fit(t)
+        if fit is not None and fit < ENTRY_FIT:
+            return f"a key clash ({t.camelot or '?'} against the room's {self.key_centre})"
+        return None
 
     # -- decoding (off the conductor thread) ----------------------------------------------------
     def _decode(self, track, deck):

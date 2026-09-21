@@ -2099,7 +2099,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if halftime:
             h = m.addAction(why)
             h.setEnabled(False)
-        if layered and not walled:
+        if layered and not walled and getattr(self.track(tid), "has_stems", False):
             rec = self._pairings_for(tid) or {}
             sings = rec.get("sings")
             if sings is None:
@@ -2139,9 +2139,14 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         elif walled:
             h = m.addAction(why)
             h.setEnabled(False)
-        elif layered and not getattr(self.track(tid), "has_stems", False):
-            # THE FLOOR (docs/DJ_THE_SET.md rule 5): a song without stems can be made playable tonight
-            h = m.addAction("no stems yet: it cannot be layered")
+        no_stems = False
+        if not layered or walled:
+            pass
+        elif not getattr(self.track(tid), "has_stems", False):
+            # THE FLOOR (docs/DJ_THE_SET.md rule 5): a song without stems can be made playable tonight - and is not
+            # offered UP NEXT until it is (queued, it was popped at staging - 2026-09-20)
+            no_stems = True
+            h = m.addAction("no stems yet: it cannot be layered or queued")
             h.setEnabled(False)
             a = m.addAction("▤ make it playable (its stems, about a minute on the GPU; then its pairings)")
             a.triggered.connect(lambda _c, t=tid: self._make_playable(t))
@@ -2171,7 +2176,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             up.triggered.connect(lambda _c, t=tid: self._queue_top(t))
             rm = m.addAction("✕ remove from UP NEXT")
             rm.triggered.connect(lambda _c, t=tid: self._unqueue(t))
-        else:
+        elif not no_stems:
             q = m.addAction("put it UP NEXT")
             q.triggered.connect(lambda _c, t=tid: self._queue(t))
         return m
@@ -2346,17 +2351,43 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 it.setForeground(col)
             self.mixes.addItem(it)
         pr = self._pairings_for(tid) or {}
-        nxt = self._next_partners(tid)
+        # ONLY WHAT WOULD PLAY (as in PAIRS, 2026-09-20): no song played tonight, on the decks or queued as the next
+        # record; no vocal over a groove under ten bars or in this song's last minute; no twin of the song itself
+        d = self.director
+        rc = d.rc if d is not None else None
+        played, queued, on_decks = set(), set(), set()
+        try:
+            played = set(d._played_ids()) if d is not None else set()
+            queued = set(d.up_next) if d is not None else set()
+            on_decks = {s.track.id for s in rc.songs.values() if not s.leaving} if (rc is not None and rc.master is not None) else set()
+        except Exception:
+            pass
+        rec_id = rc.songs[rc.record_deck].track.id if (rc is not None and rc.master is not None and rc.record_deck in rc.songs) else None
+        bar_t = 4.0 * 60.0 / float(t.bpm) if t.bpm else 2.0
+
+        def usable(x, vocal):
+            cid = int(x["id"])
+            c = self.track(cid)
+            if c is None or not getattr(c, "has_stems", False) or cid == t.id or c.title == t.title:
+                return False
+            if cid in played or cid == rec_id:
+                return False
+            if vocal:
+                g = x.get("groove") or [0.0, 0.0]
+                if float(g[1]) - float(g[0]) < 10 * bar_t or float(t.duration_s or 0.0) - float(g[1]) < 45.0:
+                    return False
+            return True
+        nxt = [z for z in self._next_partners(tid, n=12) if z[1] not in queued and z[1] not in on_decks][:5]
         head("after it, as the next record" + ("" if nxt else ": nothing inside the wall"))
         for score, cid, title, words, mode in nxt:
             row(cid, f"{title[:28]}   {words}", f"{title}\n{words}\nscore {score:.2f}", mode=mode)
-        vo = (pr.get("vocal_over") or [])[:4]
-        head("a vocal that sits over its grooves" + ("" if vo else ": none found" + ("" if pr.get("grooves") else " (no instrumental groove of 12 bars)")))
+        vo = [x for x in (pr.get("vocal_over") or []) if usable(x, True)][:4]
+        head("a vocal that sits over its grooves" + ("" if vo else ": none that would play" + ("" if pr.get("grooves") else " (no instrumental groove of 12 bars)")))
         for x in vo:
             row(int(x["id"]), f"{x['title'][:28]}   fit {x['fit']}" + (f", shift {x['shift']:+d}" if x.get("shift") else "") + (" · at its hook" if x.get("hook") else ""),
                 f"{x['title']}\nits sung stretch {_mmss(x['sung'][0])}-{_mmss(x['sung'][1])} over this song's groove {_mmss(x['groove'][0])}-{_mmss(x['groove'][1])}", mode="vocals")
-        bu = (pr.get("bass_under") or [])[:4]
-        head("a bassline that swaps under its drums (then it is the record)" + ("" if bu else ": none found"))
+        bu = [x for x in (pr.get("bass_under") or []) if usable(x, False)][:4]
+        head("a bassline that swaps under its drums (then it is the record)" + ("" if bu else ": none that would play"))
         for x in bu:
             row(int(x["id"]), f"{x['title'][:28]}   fit {x['fit']}" + (f", shift {x['shift']:+d}" if x.get("shift") else "") + f" · from {_mmss(x['landmark'])}",
                 f"{x['title']}\nits bass and melody from its drop at {_mmss(x['landmark'])}, {x.get('runway_s', 0):.0f} s after", mode="bass")

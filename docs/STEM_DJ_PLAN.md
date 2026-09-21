@@ -1477,6 +1477,25 @@ green on two seeds (the cut on the groove at 1:03, the pair planned five bars la
 record for 16 bars, no dead bars); control gate 60 presses ALL OK; remix gate green. Not changed: a part-song made UP NEXT becomes the record
 where it plays (it cannot be re-cued while its parts sound); the seam text already says "a short record".
 
+**"impossible pairs should not be displayed in the first place" → "are there any other systems that can
+attempt to queue up invalid mixes?" → "do them all" (2026-09-20).** PAIRS first: every refusal of PLAY THIS
+PAIR applied to the list (the wall, ten bars of groove, a deck for the pair, the record playing not past its
+groove, no song that is already the record); the "fits the clock" toggle went. Then the audit of every other
+offer against its take, six gaps, all closed: (1) UP NEXT dropped a queued song when the decks were full -
+the wait matched an old wording of staging's refusal (`"no free deck - eject one first"` against `"no free
+deck - the decks hold …"`); it waits now and says so. (2) A song without stems could be put UP NEXT in
+layered mode and was popped at staging a minute later; refused at queue time, and the menu no longer offers
+it. (3) THE SET's chain and the live pick asked different questions (key against the predecessor at the
+predecessor's clock vs key against the room at today's clock): a vetoed head fell to the brain silently and
+the THEN rows were not what played; `pick_veto_why` is the pick's gate in one place, and a head that fails it
+leaves the plan with the reason in the story row before the brain picks. (4) The DJ's IDEA was placed on a
+groove the pairing file called instrumental and refused at its bar "is singing here" nine times on the 18th;
+the placement now asks the arm's own measure (the vocal stem's envelope over eight bars). (5) MIXES WITH
+listed the pairing file unfiltered; it applies PAIRS' rules (played, on the decks, queued, ten bars, the last
+minute, twins). (6) TAKEOVER / BRIDGE with a song refuse at once for what can be known before staging (the
+record itself, no stems, the wall). Not changed: the moment buttons refuse at the press with the reason
+(that meets the rule); the autoDJ's "would fade" songs stay queueable by design.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only

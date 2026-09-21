@@ -269,17 +269,23 @@ class RecordPlay:
                     continue
                 if kind == "vocal":
                     ga, gb = c["groove"]
-                    # the first phrase boundary in the window where the record is inside that groove with eight bars to spare
-                    K = None
+                    # the first phrase boundary in the window where the record is inside that groove with eight bars to
+                    # spare - AND its vocal stem is quiet there by the arm's own measure (the pairing file's groove said
+                    # instrumental, the stem sang, and nine shown ideas were refused at their bar "is singing here" - 2026-09-18)
+                    K, sang = None, False
                     for k in range(win_start, win_end + 1):
                         if (k - k0) % cb:
                             continue
                         tk = t_now + (k - bar - 1) * bar_a
                         if ga - 0.5 * bar_a <= tk and tk + 8 * bar_a <= gb + 0.5 * bar_a:
+                            if self._singing(sa, tk, span_s=8 * bar_a) is True:
+                                sang = True
+                                continue
                             K = k
                             break
                     if K is None:
-                        last_why = "no phrase of the record inside one of its grooves in the window"
+                        last_why = ("the record sings through its groove there (by its stem)" if sang
+                                    else "no phrase of the record inside one of its grooves in the window")
                         continue
                     tk = t_now + (K - bar - 1) * bar_a
                     room = int((gb - tk) / max(bar_a, 1e-6))

@@ -189,7 +189,16 @@ after it as the next record (key, tempo, energy, and how it would arrive - drums
 the cut), whose vocal sits over its instrumental grooves, whose bassline swaps under its drums, and where
 its own vocal and bassline sit. Double-click a row to find that song in SONGS; right-click for the same
 commands. Its rows wear the same lane colours as SONGS: orange = drums first, blue = a bass swap or a
-bassline under, rose = a vocal over; plain = the cut.
+bassline under, rose = a vocal over; plain = the cut. Like PAIRS, it lists only what would play: no song
+played tonight, on the decks or already queued as the next record, no vocal over a groove under ten bars
+or in the song's last minute.
+
+**Nothing is offered that would be refused.** The same rule runs through every list and menu: a song
+without stems is not offered UP NEXT (only "make it playable"); TAKEOVER and BRIDGE refuse at once for what
+can be known before staging (the record itself, no stems, the wall); a queued song whose deck is not free
+WAITS in UP NEXT and says so, it is not dropped; the DJ's IDEA is placed only where the record's vocal
+stem is quiet by the same measure the arm uses; and THE SET's next hop is asked the pick's own questions
+when the pick comes - a hop that fails them leaves the plan, said in the story row, before the brain picks.
 
 **The right-click menu is trimmed to the pair.** Its first line says how the song fits the record playing
 (keys and fit, tempo, energy). Then only what makes sense: its vocal in (when it sings), its bassline in,

@@ -36,7 +36,7 @@ ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "
            "not layered", "layer first", "only TAKEOVER and BRIDGE", "already", "nothing to", "no drop or hook",
            "would take nothing away", "too quiet", "the vocal you brought", "is the one playing", "nothing to take away",
            "vocal is not on the lane", "is not singing here", "no hook of", "the record playing", "already leaving",
-           "no chain of records reaches it")
+           "no chain of records reaches it", "has no stems", "waits for a deck")
 
 
 def arg(name, default, cast=str):
@@ -150,7 +150,28 @@ def run(music, seed, presses, seconds, verbose):
 
     def make_press():
         kind = rng.choice(["stem_in", "stem_in", "stem_in", "vocal_late", "queue", "next", "next", "hold", "drop", "break", "moment", "moment", "moment_with",
-                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea"])
+                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea", "queue_nostems"])
+        if kind == "queue_nostems":
+            # a song without stems is refused UP NEXT at once, by name (it was queued and popped at staging - 2026-09-20)
+            bare = [t for t in d.library if not getattr(t, "has_stems", False) and t.bpm]
+            t = rng.choice(bare) if bare else None
+            if t is None:
+                # every song here has stems: one stands in without them for the length of the call (the flag is put back
+                # before the reply returns; the chain's worker may plan one round without it - harmless)
+                cands = [x for x in stems if deck_of(x.id) is None and x.id not in d.up_next]
+                t = rng.choice(cands) if cands else any_song()
+
+            def press():
+                had = getattr(t, "has_stems", False)
+                t.has_stems = False if had else had
+                try:
+                    return d.queue(t.id)
+                finally:
+                    t.has_stems = had
+
+            def verify(_before):
+                return int(t.id) not in d.up_next and any("has no stems" in e[1] for e in d.events[_before["events"]:])
+            return Press(f"UP NEXT no stems {t.title[:18]}", press, verify, settle_bars=0.2)
         if kind == "idea":
             # the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2): do it or skip; with none pending, an honest "no idea pending"
             take = rng.random() < 0.6

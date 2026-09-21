@@ -776,6 +776,11 @@ class Director:
             return True, "already queued"
         rc = self.rc
         t = self.track(tid)
+        if rc is not None and rc.master is not None and t is not None and not getattr(t, "has_stems", False):
+            # refused NOW, not at staging a minute later (it was queued, then popped as "not in the stem library")
+            msg = f"{t.title[:28]} has no stems: it cannot be layered - make it playable first (right-click)"
+            self._event(f"up next refused: {msg}")
+            return False, msg
         if rc is not None and rc.deck_of(tid) is not None:
             okm, why_m = rc.mark_next(tid)
             if not okm:
@@ -1034,9 +1039,11 @@ class Director:
         rc = self.rc
         if rc is None or not self.horizon:
             return None, False
-        for h in self.horizon[:2]:
+        while self.horizon:
+            h = self.horizon[0]
             t = self.track(h["id"])
             if t is None or t.id in self.set_skips:
+                self.horizon = self.horizon[1:]
                 continue
             if t.id not in veto:
                 return t, False
@@ -1045,7 +1052,19 @@ class Director:
             if base and getattr(rc, "follow_clock", True) and t.bpm and 0.90 <= base / float(t.bpm) <= 1.10 \
                     and abs(float(rc.master_bpm) / base - 1.0) > 0.005:
                 return None, True
-            return None, False
+            # the chain's head cannot be picked by the pick's own gates: it LEAVES THE PLAN, said, and the next hop is
+            # asked - the brain picked silently instead and the THEN rows were not what played (2026-09-20)
+            why = None
+            try:
+                why = rc.pick_veto_why(t)
+            except Exception:
+                why = None
+            if why is None:
+                busy = {s.track.id for s in rc.songs.values()} | {x.id for x in rc._decoding.values()} | {p[0].id for p in rc._pending.values()}
+                why = "on the decks now" if t.id in busy else ("played tonight" if t.id in self._played_ids() else "the pick's gate")
+            self.horizon = self.horizon[1:]
+            self._hz_why = f"{t.title[:20]}: {why}"
+            self._event(f"the set: {t.title[:24]} cannot be the next record ({why}) - it leaves the plan")
         return None, False
 
     def route_to(self, track_id):
@@ -1393,7 +1412,22 @@ class Director:
             return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
         rc = self.rc
         tid = int(track_id)
-        self.queue(tid)                               # the song of a TAKEOVER / BRIDGE is UP NEXT too
+        t = self.track(tid)
+        # refused NOW for what can be known now (a staged song that fails a minute later is the pattern to avoid) - said
+        # in the story row too (the control gate reads the row, not the reply)
+        why0 = None
+        if rc.record_deck in rc.songs and rc.songs[rc.record_deck].track.id == tid:
+            why0 = f"{self.title(tid)[:24]} is the record playing: {kind.upper()} takes another song"
+        elif t is not None and not getattr(t, "has_stems", False):
+            why0 = f"{self.title(tid)[:24]} has no stems: make it playable first"
+        elif rc.deck_of(tid) is None and t is not None and t.bpm and not (0.90 <= float(rc.master_bpm) / float(t.bpm) <= 1.10):
+            why0 = f"{self.title(tid)[:24]} ({float(t.bpm):.0f} bpm) is outside the tempo wall of this clock ({float(rc.master_bpm):.0f})"
+        if why0:
+            self._event(f"{kind.upper()} refused: {why0}")
+            return why0
+        okq, whyq = self.queue(tid)                   # the song of a TAKEOVER / BRIDGE is UP NEXT too
+        if not okq and rc.deck_of(tid) is None:
+            return whyq                               # (queue said it)
         deck = next((d for d, s in rc.songs.items() if s.track.id == tid and not s.leaving), None)
         if deck is not None and rc.songs[deck].staged_at is not None:
             ok, msg = rc.arm_moment(kind, other=deck, when=when)
@@ -1843,7 +1877,13 @@ class Director:
                 if ok:
                     self._event(f"up next {self.title(head)[:30]}: {msg}")
                     self._fed_wait = None
-                elif msg not in ("no free deck - eject one first", "already on a deck"):
+                elif msg.startswith("no free deck"):
+                    # the decks are full of songs that are playing or yours: the head WAITS for a deck (it was popped -
+                    # the wait matched an old wording of the refusal, 2026-09-20), said once
+                    if getattr(self, "_fed_wait", None) != head:
+                        self._fed_wait = head
+                        self._event(f"up next {self.title(head)[:24]} waits for a deck: {msg[len('no free deck - '):]}")
+                elif msg != "already on a deck":
                     rc, t = self.rc, self.track(head)
                     base = float(getattr(rc, "base_bpm", 0) or 0)
                     # THE CLOCK FOLLOWS THE RECORD: a song outside the wall against today's clock but inside it
