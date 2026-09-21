@@ -1238,14 +1238,14 @@ class Director:
                 return f"the pair's record could not be queued: {msg}"
             words = f"{R.title[:24]} is UP NEXT; "
         rc.plant_idea(R.id, kind, S.id, want_t=(pair.get("r_start") if kind == "acapella" else None),
-                      want_end=(pair.get("r_end") if kind == "acapella" else None))
+                      want_end=(pair.get("r_end") if kind == "acapella" else None), s_start=pair.get("s_start"))
         # the pair's other song is staged NOW (a part, not a record): the event then needs one phrase of window, not
         # four (a pair on a record's early groove missed it while its vocal was still decoding - the pair smoke)
         staged = ""
         if rc.deck_of(S.id) is None:
             ok_s, msg_s = rc.stage_track(S.id, as_next=False)
             staged = f"; {S.title[:20]} {'is staging' if ok_s else 'stages when a deck frees (' + msg_s[:40] + ')'}"
-        self._event(f"PAIR to play: {pair['words'][:80]}{staged}")
+        self._event(f"PAIR to play: {pair['words'].split('  (fit')[0][:120]}{staged}")
         return words + (f"when it plays, {S.title[:24]}'s {'vocal comes over it' if kind == 'acapella' else 'bassline takes over at its drop'}")
 
     def idea_take(self):
@@ -2464,7 +2464,49 @@ class Director:
             # A VOCAL EVENT (the DJ's idea, or a pair you chose) on the vocals lane, at its bar for its bars: a mark while it
             # is an idea, a dashed clip once taken - THE PLAN's EVENT row and the picture say the same thing
             ev_v = evp if (evp and evp.get("kind") == "acapella" and evp.get("track_id") is not None) else None
-            if ev_v is not None:
+            # A PAIR YOU TOOK, before its event is placed (planted on its record): the same mark and clip, at the bar its
+            # groove reaches - on the record playing, or on the next record after its seam (user 2026-09-20: "the
+            # timeline STILL doesn't show the plan")
+            pair_v = None
+            if ev_v is None:
+                try:
+                    sm_p = (arr.get("seam") if isinstance(arr, dict) else None) or {}
+                    rd_p = rc.record_deck
+                    for rid, pl in list((getattr(rc, "_planted", None) or {}).items()):
+                        if pl.get("kind") != "acapella" or pl.get("want_t") is None:
+                            continue
+                        R = self.track(int(rid))
+                        if R is None:
+                            continue
+                        want = float(pl["want_t"])
+                        n_v = 2 * rc.change_bars
+                        if pl.get("want_end") is not None:
+                            n_v = max(rc.change_bars, min(4 * rc.change_bars, int((float(pl["want_end"]) - want) / max(self._bar_len(R.id), 1e-6)) // rc.change_bars * rc.change_bars))
+                        d_r = rc.deck_of(R.id)
+                        if d_r is not None and d_r == rd_p:
+                            t_now_r = float((rc._tel_deck(rd_p) or {}).get("time_s") or 0.0)
+                            want_b = b + 1 + int(round((want - t_now_r) / max(self._bar_len(R.id), 1e-6)))
+                            Ev = self._anchor(("pair", int(pl["track_id"]), int(rid)), want_b)
+                        elif sm_p and seam_S is not None and d_r is not None and rc.seam is not None and rc.seam.get("b") == d_r:
+                            from lib.dj.record import pair_record_start
+                            start_t, _cut = pair_record_start(R, want, rc.change_bars, 4.0 * 60.0 / float(R.bpm or 120.0))
+                            enter = seam_S + (int(sm_p.get("len") or 0) if sm_p.get("order") == "cut" else 0)
+                            Ev = self._anchor(("pair", int(pl["track_id"]), sm_p.get("seq")), enter + int(round((want - float(start_t)) / max(self._bar_len(R.id), 1e-6))))
+                        else:
+                            continue
+                        pair_v = (int(Ev), int(n_v), int(pl["track_id"]), pl.get("s_start"), f"YOUR PAIR: the vocal of {self.title(int(pl['track_id']))[:20]} over {R.title[:18]}")
+                        break
+                except Exception:
+                    pair_v = None
+            if ev_v is None and pair_v is not None:
+                Ev, n_v, sid_v, s0, text_v = pair_v
+                self.plan_marks.append({"bar": Ev, "end_bar": Ev + n_v, "lanes": ["vocals"], "ghost": True, "kind": "event", "text": text_v[:60]})
+                d_v = rc.deck_of(sid_v)
+                if d_v is not None and d_v in rc.songs and rc.songs[d_v].staged_at is not None:
+                    ghost(("pair", sid_v, Ev), sid_v, ["vocals"], Ev, float(s0) if s0 is not None else rc._song_time_at(d_v, rc._next_bar_clock()), end_bar=Ev + n_v, slot="voice")
+                else:
+                    no_ghost("voice")
+            elif ev_v is not None:
                 Ev = self._anchor(("event", int(ev_v["track_id"]), int(ev_v["bar"])), b + int(ev_v["in_bars"]))
                 n_v = int(ev_v.get("bars") or 2 * rc.change_bars)
                 self.plan_marks.append({"bar": Ev, "end_bar": Ev + n_v, "lanes": ["vocals"], "ghost": True, "kind": "event",
@@ -2838,10 +2880,12 @@ class Director:
                     passes = max(0, evp["in_bars"] - 2 * rc.change_bars) * bar_s
                     row(max(0, evp["in_bars"]) * bar_s, "IDEA", evp["why"][:90],
                         f"right-click: do it · skip · passes in {_mmss(passes)} if not taken · {state}", key=("idea", evp.get("track_id"), evp.get("bar")), bar=evp.get("bar"), tid=evp.get("track_id"))
+            t_seam_v, seam_b_tid = None, None
             if sm:
                 sb = rc.songs.get(rc.seam["b"]) if rc.seam is not None else None
                 title_b = sb.track.title[:30] if sb else sm["b"][:30]
                 t_seam = max(0, sm["in_bars"]) * bar_s
+                t_seam_v, seam_b_tid = t_seam, (sb.track.id if sb else None)
                 where = sm["why"]
                 land = ("its drop lands on the swap" if sm.get("on_landmark") else (f"its drop {sm['drop_after_bars']} bars after the seam" if (sm.get("drop_after_bars") or 0) > 0 else "its drop falls inside the seam"))
                 reh = sm.get("rehearsed")
@@ -2876,6 +2920,38 @@ class Director:
                     row(None, "NEXT", "no next record staged yet",
                         ("the DJ stages its pick while this record plays toward its minimum" if left > 0 else "the DJ is picking now") + " · put a song UP NEXT to decide it",
                         key=("next-none",))
+            # A PAIR YOU TOOK (PLAY THIS PAIR) before its event is placed: planted on its record - shown at every stage
+            # (queued, the next record, the record playing) so the plan carries it from the moment you took it (user
+            # 2026-09-20: "the pair doesn't seem to show up on the plan? Just the opening part")
+            for rid, pl in list((getattr(rc, "_planted", None) or {}).items()):
+                try:
+                    R, S = self.track(int(rid)), self.track(int(pl["track_id"]))
+                    if R is None or S is None:
+                        continue
+                    from lib.dj.record import pair_record_start
+                    want = pl.get("want_t")
+                    what = (f"the vocal of {S.title[:24]} over {R.title[:24]}" + (f" from {_mmss(float(want))}" if want is not None else "")
+                            if pl.get("kind") == "acapella" else f"{S.title[:24]}'s bassline takes over {R.title[:24]} at its drop - then it is the record")
+                    d_s = rc.deck_of(S.id)
+                    s_state = ("its song is on a deck, ready" if (d_s is not None and rc.songs[d_s].staged_at is not None)
+                               else ("its song is decoding" if d_s is not None else "its song stages when a deck frees"))
+                    d_r = rc.deck_of(R.id)
+                    rate_r = float(rc.songs[d_r].rate or 1.0) if (d_r is not None and rc.songs[d_r].rate) else float(rc.master_bpm) / float(R.bpm or rc.master_bpm)
+                    if d_r == rd and rd in rc.songs:
+                        t_now_r = float((rc._tel_deck(rd) or {}).get("time_s") or 0.0)
+                        t_p = max(0.0, (float(want) - t_now_r) / max(rate_r, 1e-6)) if want is not None else None
+                        row(t_p, "PAIR", what, f"your pair · on this record · placed two phrases before its bar · {s_state}", key=("pair", int(rid), S.id), tid=S.id)
+                    elif seam_b_tid is not None and int(rid) == seam_b_tid and t_seam_v is not None:
+                        bar_r = 4.0 * 60.0 / float(R.bpm or 120.0)
+                        start_t, cut = pair_record_start(R, float(want), rc.change_bars, bar_r) if want is not None else (None, False)
+                        t_p = (t_seam_v + (float(want) - float(start_t)) / max(rate_r, 1e-6)) if (want is not None and start_t is not None) else None
+                        row(t_p, "PAIR", what, f"your pair · when {R.title[:20]} is the record" + (f" (it starts at {_mmss(float(start_t))}" + (", a cut on the groove)" if cut else ")") if start_t is not None else "") + f" · {s_state}",
+                            key=("pair", int(rid), S.id), tid=S.id)
+                    else:
+                        where = "UP NEXT" if int(rid) in self.up_next else ("on a deck" if d_r is not None else "not queued - put it UP NEXT")
+                        row(None, "PAIR", what, f"your pair · when {R.title[:20]} plays ({where}) · {s_state}", key=("pair", int(rid), S.id), tid=S.id)
+                except Exception as e:  # noqa: BLE001
+                    row(None, "PAIR", f"a pair on {self.title(int(rid))[:24]}", f"({type(e).__name__}: {e})"[:80], key=("pair", int(rid), 0))
             on_decks = {s.track.id for s in rc.songs.values()}
             after = [self.title(t)[:24] + (" (via)" if t in self.via_ids else "") for t in self.up_next
                      if t not in on_decks or (rc.seam is None or rc.songs.get(rc.seam["b"]) is None or rc.songs[rc.seam["b"]].track.id != t)]

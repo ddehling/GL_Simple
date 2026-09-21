@@ -2701,8 +2701,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                               + ("\nright-click: do it · skip" if r["kind"] == "IDEA" else "")
                               + ("\nright-click: put it UP NEXT" if r["kind"] == "REQUEST" and r.get("id") is not None else ""))
                 it.setData(Qt.ItemDataRole.UserRole, (r["kind"], r.get("id")))
-                if r["kind"] in ("SEAM", "MOMENT", "EVENT") and r.get("t") is not None and r["t"] < 20.0:
+                if r["kind"] in ("SEAM", "MOMENT", "EVENT", "PAIR") and r.get("t") is not None and r["t"] < 20.0:
                     it.setForeground(Qt.GlobalColor.yellow)
+                elif r["kind"] == "PAIR":
+                    it.setForeground(LANE_COLORS.get("vocals") or Qt.GlobalColor.magenta)
                 elif r["kind"] in ("THEN", "CLOCK"):
                     it.setForeground(Qt.GlobalColor.gray)
                 elif r["kind"] == "IDEA":

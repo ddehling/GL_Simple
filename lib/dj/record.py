@@ -358,7 +358,7 @@ class RecordPlay:
         self._move("event_none", None, self._song_id(self.record_deck), None,
                    f"no event for {sa.track.title[:24]}: {last_why[:70]}")
 
-    def plant_idea(self, record_tid, kind, other_tid, want_t=None, want_end=None):
+    def plant_idea(self, record_tid, kind, other_tid, want_t=None, want_end=None, s_start=None):
         """A PAIR YOU CHOSE (PLAY THIS PAIR): when `record_tid` is the record, `other_tid` comes as `kind` ("acapella" -
         its vocal over the groove; "takeover" - its bassline under the drums, then it is the record), already taken.
         `want_t`: where the pair's groove begins in the record - the record is then cued to START five phrases
@@ -368,7 +368,8 @@ class RecordPlay:
             self._planted = {}
         self._planted[int(record_tid)] = {"kind": kind, "track_id": int(other_tid), "t": time.time(),
                                           "want_t": (float(want_t) if want_t is not None else None),
-                                          "want_end": (float(want_end) if want_end is not None else None)}
+                                          "want_end": (float(want_end) if want_end is not None else None),
+                                          "s_start": (float(s_start) if s_start is not None else None)}   # (where the part's sung stretch begins - the picture)
         self._planted_said = False
         return True
 
