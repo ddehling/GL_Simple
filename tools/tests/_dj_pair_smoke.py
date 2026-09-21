@@ -111,8 +111,23 @@ def main():
     seen = {"record": ("now" if on_record else None), "event_plan": None, "armed": None, "vocal_in": None, "fail": None}
     n_moves = len(rc.move_log)
     t_end = t0 + int(seconds * RATE / BLOCK)
+    seen.update({"mark": None, "clip": None, "row": None})
     while len(audio) < t_end and seen["vocal_in"] is None and seen["fail"] is None:
         pump(bar_blocks())
+        # THE PICTURE AND THE PLAN must carry the pair before its event is placed (user 2026-09-20: "the timeline STILL
+        # doesn't show the plan"): a dashed vocals mark "YOUR PAIR", the other song's dashed clip on the voice slot once it
+        # is on a deck, and a PAIR row in THE PLAN
+        try:
+            clk_now = f"{rc._clock() / RATE:.0f}s"
+            if seen["mark"] is None and any(str(m.get("text", "")).startswith("YOUR PAIR") or str(m.get("text", "")).startswith("EVENT:") for m in d.plan_marks):
+                seen["mark"] = clk_now
+            slot = (getattr(d, "_ghost_slots", {}) or {}).get("voice", (None, []))
+            if seen["clip"] is None and slot[1] and any(c.id in slot[1] and c.track_id == p["s"].id for c in d.tl.clips):
+                seen["clip"] = clk_now
+            if seen["row"] is None and any(r.get("kind") in ("PAIR", "EVENT") for r in (d.status().get("plan_rows") or [])):
+                seen["row"] = clk_now
+        except Exception as e:  # noqa: BLE001
+            seen["fail"] = f"picture check: {type(e).__name__}: {e}"
         for m in rc.move_log[n_moves:]:
             txt = m["text"]
             clk = f"{m.get('clock_s', 0):.0f}s"
@@ -143,6 +158,9 @@ def main():
     sil = [s["clock_s"] for s in getattr(rc, "silence_log", []) if s.get("clock_s") is not None]
     dead = [i for i, r in enumerate(rms) if r < -45.0 and not any(abs((t0 * BLOCK + (i + 1) * nb) / RATE - c) < 2.0 * nb / RATE for c in sil)]
     print(f"\nrecord played at {seen['record']}, the pair planned at {seen['event_plan']}, armed at {seen['armed']}, the vocal in at {seen['vocal_in']}; dead bars {len(dead)} of {len(rms)}")
+    print(f"the picture: PAIR row in THE PLAN from {seen['row']}, the vocals mark from {seen['mark']}, the other song's clip from {seen['clip']}")
+    if seen["fail"] is None and seen["vocal_in"] is not None and (seen["row"] is None or seen["mark"] is None or seen["clip"] is None):
+        seen["fail"] = "the pair played but the plan / the picture never showed it (row %s, mark %s, clip %s)" % (seen["row"], seen["mark"], seen["clip"])
     if seen["fail"]:
         print(f"FAIL: {seen['fail']}")
         return 1
@@ -150,6 +168,13 @@ def main():
         print("FAIL: the pair's vocal never came in" + ("" if seen["record"] else " (its record never played)"))
         return 1
     if dead:
+        # where the room went silent, with the moves around it and the decks' state (as the control gate prints it)
+        for i in dead[:3]:
+            t_dead = (t0 * BLOCK + (i + 1) * nb) / RATE
+            print(f"  DEAD at {t_dead:.0f}s ({rms[i]:.0f} dB)")
+            for m in rc.move_log:
+                if m.get("clock_s") is not None and -6.0 < t_dead - m["clock_s"] < 30.0:
+                    print(f"          {m['clock_s']:.0f}s {m['kind']:10s} {m['text'][:110]}")
         print(f"FAIL: {len(dead)} dead bars")
         return 1
     print("ALL OK")

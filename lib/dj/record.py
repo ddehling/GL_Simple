@@ -512,9 +512,9 @@ class RecordPlay:
             if s.entered and d_r == self.record_deck:
                 # the record is PLAYING already (the pair on the record now): the entry is where it is; only the event
                 t_now = self._song_time_at(d_r, self._next_bar_clock())
-                bar_r = self._bar_s(R, float(o["want_t"] or t_now))
+                bar_r = 4.0 * float(R.period_s)
                 from lib.dj.orders import plan_pair_entry
-                plan = plan_pair_entry(R, s.env, o["want_t"], o["want_end"], self.change_bars, bar_r, self._stem_carries,
+                plan = plan_pair_entry(R, s.env, o["want_t"], o["want_end"], 8, bar_r, self._stem_carries,
                                        s_start=o.get("s_start"), s_end=o.get("s_end"))
                 if plan["ok"] and float(o["want_t"]) < t_now + 6 * bar_r:
                     plan = dict(plan, ok=False, why=f"{R.title[:24]} is past its groove at {int(o['want_t']) // 60}:{int(o['want_t']) % 60:02d} already")
@@ -526,8 +526,10 @@ class RecordPlay:
                     continue
             else:
                 from lib.dj.orders import plan_pair_entry
-                bar_r = self._bar_s(R, float(o["want_t"]))
-                plan = plan_pair_entry(R, s.env, o["want_t"], o["want_end"], self.change_bars, bar_r, self._stem_carries,
+                # a PHRASE IS EIGHT BARS for the score whatever PACE says (PACE is the record's minimum play): the census
+                # plans with eight, so the list's "enters at" and the live entry are the same decision
+                bar_r = 4.0 * float(R.period_s)
+                plan = plan_pair_entry(R, s.env, o["want_t"], o["want_end"], 8, bar_r, self._stem_carries,
                                        s_start=o.get("s_start"), s_end=o.get("s_end"))
                 if not plan["ok"]:
                     self._order_end(o, "refused", plan["why"])
