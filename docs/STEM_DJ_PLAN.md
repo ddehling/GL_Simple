@@ -1519,6 +1519,31 @@ the groove), the best pair (16 bars), control gate seeds 5-6 with the new PLAY T
 end-of-run orders check (60 presses ALL OK), remix gate green. Not yet: UP NEXT and TAKEOVER / BRIDGE as full
 scores; the census by the pairings pass.
 
+**2026-09-21, the morning at the controls (five reports, each answered from the log within the hour):**
+(1) "the plan does not match the timeline" - the next-record ghost drew the first staged song, not the seam's
+B (two staged: the DJ's pick and the pair's record); the PLAYING list did not redraw on a state word; a 0:00
+groove said 0:00 for an entry heard at 0:12. (2) "the vocals from another song last a pathetic amount of
+time" - 8 and 16 bars live, then "ACAPELLA over: the vocal goes" and its song off the deck: the acapella
+script's two-to-four-phrases-and-gone was the DJ's rule for its own idea, applied to the user's choice; a
+vocal YOU chose (a pair, an idea taken) now holds the lane under the vocal hold's rules until it has sung its
+last or you take it out - the smoke measures the hold (48 bars and still holding). (3) "why can't this stuff
+run when the planner is playing?" → "stutters are understandable. It's just when the system decides to simply
+not play anything that I criticise" - the gates run at IDLE priority for the whole process tree
+(`tools/tests/_low_priority.py`, first import; the 09-12 helper ran at normal priority because it was spawned
+before the drop) and may run beside the live planner, one at a time. (4) "the system refused a suggested
+pair" - Raw's groove at 0:00, 16 bars: the list said "enters at 0:00" from the census of the night before;
+the morning's planner (a cut is heard six bars in at the earliest) refused it - the census was stale against
+its own planner; verdicts now carry `PLAN_VERSION`, and the list's own geometry applies the cut floor for a
+groove at the record's very start. (5) "the system takes a long time to start a new song ... when it starts
+up" - 8 to 16 s from START to the first note across twelve sessions: the Director built at START (1.5-7 s),
+the decode helper spawned on the first decode (2-3 s; the warm-up was placed after it), the opener's decode
+(5-8 s). READY BEFORE START: all three while the window sits open (`Director.prepare`, off the GUI thread);
+START attaches the engine and plays within a bar; the start smoke measures 7.4 s → 0.6 s. Verified after all
+five: Resurrection and the best pair (the picture checked: PAIR row from the take, the vocals mark and the
+other song's clip from the staging; the ghost's identity against the seam), control gate seeds 7-8 ALL OK,
+remix gate green. Lessons written to memory: a census is only as true as the planner that wrote it; replay
+the failing case by name; the user holds SILENCE BY DECISION against the system, not a stutter from load.
+
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
