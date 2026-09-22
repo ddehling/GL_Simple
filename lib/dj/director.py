@@ -256,14 +256,51 @@ class Director:
         self._last_plan = None
 
     # -- lifecycle ---------------------------------------------------------------------------------------
+    def _ready_signature(self):
+        return (self.theme, self.pool_name, tuple(sorted(self.tags)), self.dials["layers"] != "one")
+
+    def prepare(self):
+        """READY BEFORE START (user 2026-09-21: "the system takes a long time to start a new song ... when it starts
+        up" - 8 to 16 s from START to the first note, all of it the helper's spawn and the opener's decode): the
+        conductor is built now, the decode helper warmed, the opener picked and decoded into its deck. START then
+        attaches the engine and the opener plays within a bar. If the theme, the pool or the moods change before
+        START, the opener is picked afresh then (the signature). Returns the opener, or None."""
+        from lib.dj.stemload import warm, decode_song
+        try:
+            warm()
+        except Exception:
+            pass
+        rc = self._new_conductor(attach=False)
+        first = rc._pick_first()
+        if first is None:
+            return None
+        samples, stems, rms = decode_song(self.db.abs(first.path), self.music_root, first.id, rc._body_start(first), first.sections)
+        with rc._lock:
+            rc._pending["a"] = (first, samples, stems, rms)
+        self._rc_ready, self._ready_first, self._ready_sig = rc, first, self._ready_signature()
+        self._event(f"ready before START: {first.title[:30]} is decoded on deck A")
+        return first
+
     def start(self, threaded=True):
         want = "one" if self.dials["layers"] == "one" else "layered"
         try:
             if want == "one":
                 self.system = self._new_system()
             else:
-                self.rc = self._new_conductor()
-                self.rc.start(threaded=False)
+                rc_ready = getattr(self, "_rc_ready", None)
+                if rc_ready is not None and getattr(self, "_ready_sig", None) == self._ready_signature():
+                    # prepared: the opener is on its deck already - the same conductor, attached now
+                    self.rc = rc_ready
+                    self._attach("dj_remix", self.rc.submix)
+                    self._apply_to_conductor(self.rc)
+                    self.rc.start(first_track=self._ready_first, threaded=False)
+                else:
+                    if rc_ready is not None:
+                        with rc_ready._lock:
+                            rc_ready._pending.clear()  # (the dials changed under it: picked afresh)
+                    self.rc = self._new_conductor()
+                    self.rc.start(threaded=False)
+                self._rc_ready = None
         except Exception as e:  # noqa: BLE001
             self.last_error = f"{type(e).__name__}: {e}"
             return False

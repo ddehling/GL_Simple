@@ -569,6 +569,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.planner = planner
         self.engine = None
         self.director = None
+        self._prep, self._prep_busy = None, False        # READY BEFORE START: a Director built and its opener decoded while the window sits open
+        QTimer.singleShot(1500, self._prepare)
         self._own_db = None
         self._lib = None
         self._colors = {}
@@ -1430,6 +1432,30 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         else:
             self.close()
 
+    def _prepare(self):
+        """READY BEFORE START (user 2026-09-21: "the system takes a long time to start a new song ... when it starts
+        up"): while the window sits open, a Director is built (the library, the brain), the decode helper is warmed
+        and the opener is picked and decoded onto its deck - off the GUI thread. START then attaches the engine and
+        the first note comes within a bar instead of 8-16 s later. Dials changed before START re-pick the opener."""
+        import threading
+        if self.director is not None or self._prep_busy or self._prep is not None:
+            return
+        music, theme = self.planner.music_dir, self.theme_box.currentText()
+        self._prep_busy = True
+
+        def work():
+            try:
+                from lib.dj.director import Director
+                d = Director(music, engine=None, theme=theme)
+                first = d.prepare()
+                if first is not None and self.director is None:
+                    self._prep = d
+            except Exception as e:  # noqa: BLE001
+                self._prep_err = f"{type(e).__name__}: {e}"
+            finally:
+                self._prep_busy = False
+        threading.Thread(target=work, daemon=True, name="director-prepare").start()
+
     def _start(self):
         from lib.audio_engine import AudioEngine
         from lib.dj.director import Director, DIALS
@@ -1446,7 +1472,15 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.engine.device_name = main_device_name()  # the MAIN output chosen under OUTPUTS ("" = the system default)
         except Exception:
             pass
-        self.director = Director(self.planner.music_dir, engine=self.engine, theme=self.theme_box.currentText())
+        prep, self._prep = self._prep, None
+        if prep is not None and prep.music_root == self.planner.music_dir:
+            # READY BEFORE START: the prepared Director, the engine attached now; a theme changed since re-picks
+            prep.engine, prep._attach = self.engine, self.engine.attach_track
+            if prep.theme != self.theme_box.currentText():
+                prep.set_theme(self.theme_box.currentText())
+            self.director = prep
+        else:
+            self.director = Director(self.planner.music_dir, engine=self.engine, theme=self.theme_box.currentText())
         for name, group in self.dial_groups.items():
             for b in group.buttons():
                 if b.isChecked():
@@ -2031,6 +2065,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.start_btn.setProperty("kind", "go")
         self.start_btn.style().unpolish(self.start_btn)
         self.start_btn.style().polish(self.start_btn)
+        QTimer.singleShot(3000, self._prepare)        # ready again for the next START
 
     def showEvent(self, ev):
         super().showEvent(ev)
