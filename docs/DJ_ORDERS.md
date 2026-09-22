@@ -119,6 +119,16 @@ without the stems). Lesson: a census is only as true as the planner that wrote i
 on every planner change, the same day. Remaining gap: a pair on a record's first bars can only begin ten bars
 in; beginning the vocal ON the cut itself would need the acapella armed across the seam.
 
+**Same day, the evening's flags:** "this pair sucked" / "the vocals in the pair are too faint to hear mostly" -
+God Sigma's vocal at unity (a stem against another song is never trimmed up; its stem is quiet by the
+library's measure) under Duskraver's bed at 0.86, and the hold RESTING the lane in every four-bar pause and
+fading it back on the first detected beat: eight rests and returns in three minutes, the head of every phrase
+lost. Now a chosen vocal is brought to the library's vocal level (up to +6 dB) and its lane stays through its
+pauses. "bad transition / seam" - the score chose a cut into My Darkside at 2:17 because door 1 tried drums
+first at exactly five phrases before the groove (2:32, where the drums do not carry) and never at 2:17 where
+they do; door 1 now tries five, four, six, three, seven and eight phrases before it (PLAN_VERSION 3, census
+re-run).
+
 **Not yet.** UP NEXT and TAKEOVER / BRIDGE as full scores (they refuse at once for what is known, wait for a
 deck, and show a row; their landing is still the arm's decision when the song is ready). The census is run by
 hand, not by the pairings pass. The bass pair (TAKEOVER at the other song's drop) keeps its own placement.

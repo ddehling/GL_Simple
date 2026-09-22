@@ -176,7 +176,13 @@ def main():
                 break
             held["bars"] += 1
         stretch_bars = int((float(p.get("s_end") or 0) - float(p.get("s_start") or 0)) / max(rc._bar_s(p["s"].track if hasattr(p["s"], "track") else p["s"]), 1e-6)) if p.get("s_end") else 48
-        print(f"the vocal held its lane {held['bars']} bars" + (f", then: {held['end']}" if held["end"] else " and still holds (the run ended)"))
+        rests = [m["text"][:80] for m in rc.move_log[n_moves:] if m["kind"] == "rest" and p["s"].title[:20] in m["text"] and "sung its last" not in m["text"]]
+        d_s2 = rc.deck_of(p["s"].id)
+        g_v = float(((rc._tel_deck(d_s2) or {}).get("stem_gains") or {}).get("vocals") or 0.0) if d_s2 else 0.0
+        print(f"the vocal held its lane {held['bars']} bars" + (f", then: {held['end']}" if held["end"] else " and still holds (the run ended)")
+              + f"; its lane gain {g_v:.2f}; rests in its pauses: {len(rests)}")
+        if rests:
+            seen["fail"] = f"your vocal was rested in its pauses ({len(rests)}x): {rests[0]}"
         if held["end"] is not None and held["bars"] < min(24, stretch_bars) and "sung its last" not in held["end"] and "run out" not in held["end"]:
             seen["fail"] = f"your vocal was let go after {held['bars']} bars: {held['end']}"
     d.stop(0.1)

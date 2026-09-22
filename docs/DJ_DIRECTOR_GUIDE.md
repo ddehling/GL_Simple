@@ -232,9 +232,10 @@ stems: where the record enters (drums first five phrases before the groove; or w
 place before the groove where its drums carry; or on the groove itself with the vocal four bars in), and how
 many bars the vocal gets. A pair that does not fit is REFUSED then, by name, and its record leaves UP NEXT.
 From then on the seam into the record, the event and the arm read that score; nothing is searched again. The
-vocal is YOURS once it is in: like a vocal you bring by hand it holds the lane - resting where it pauses, back
-when it sings - until its song has sung its last, or you take it out (READY: its vocal button, or the lane
-back to the bed). It is not "two to four phrases and gone"; that is the DJ's own idea, not taken. The same
+vocal is YOURS once it is in: like a vocal you bring by hand it holds the lane until its song has sung its
+last, or you take it out (READY: its vocal button, or the lane back to the bed). In its pauses the lane stays
+its (the stem is silent there anyway; resting and fading it back cut the head off every phrase), and it is
+brought to the library's vocal level, up to +6 dB - a quiet vocal stem is not left faint under the record. It is not "two to four phrases and gone"; that is the DJ's own idea, not taken. The same
 holds for an IDEA you take with "do it". THE PLAN carries a PAIR row from the moment you take it (planning → planned with its times → the EVENT row when it
 is armed → done, refused or failed with the reason, kept a minute), and the picture a dashed vocals mark at
 its bar with the other song's dashed clip once it is on a deck. Where the pair census has run

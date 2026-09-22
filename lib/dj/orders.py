@@ -16,7 +16,7 @@ import math
 import time
 
 STATES = ("staging", "fixed", "running", "done", "refused", "failed")
-PLAN_VERSION = 2             # bump on ANY change to plan_pair_entry: census verdicts of another version are not believed
+PLAN_VERSION = 3             # bump on ANY change to plan_pair_entry: census verdicts of another version are not believed
 #                              (the census of 09-20 said "enters at 0:00" for a pair the 09-21 planner refused - the list
 #                              offered it, the take refused it: the very thing the census exists to prevent)
 CUT_STRIP_BARS = 4           # a cut plays the record silently this long before it is heard
@@ -75,11 +75,19 @@ def plan_pair_entry(track, env, want_t, want_end, change_bars, bar_s, stem_carri
     def drums_carry(t):
         return stem_carries(env, t, span, lanes=("drums",), bar_s=bar) is not False
 
-    # (1) drums first, five phrases early
-    ps = nd(want - 5 * cb * bar)
-    if ps >= max(floor_t, first - 0.5 * bar) and drums_carry(ps):
+    # (1) drums first, five phrases early - or four, six, three, seven, eight: the morph is the record's own way in;
+    # tried at one place only, My Darkside got the cut at 2:17 because its drums did not carry at 2:32 but did at 2:17
+    # (flag 'bad transition / seam', 2026-09-21)
+    ps = None
+    for k in (5, 4, 6, 3, 7, 8):
+        p = nd(want - k * cb * bar)
+        if p >= max(floor_t, first - 0.5 * bar) and drums_carry(p):
+            ps = p
+            break
+    if ps is not None:
+        n_ph = int(round((want - ps) / (cb * bar)))
         out.update(ok=True, entry="drums", start_t=float(ps), entry_t=float(ps), event_t=float(nd(want)),
-                   why=f"{title} enters at {_mm(ps)}, drums first, its groove five phrases on")
+                   why=f"{title} enters at {_mm(ps)}, drums first, its groove {n_ph} phrases on")
     else:
         # (2) a cut before the groove, its drums carrying from there
         tt = nd(want - 2 * cb * bar)

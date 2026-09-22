@@ -997,7 +997,11 @@ class RemixConductor(RecordPlay):
         g = self._trim(deck, lane)
         bed = self.lanes.get("drums")
         if bed is not None and deck != bed and self.lanes.get("bass") != deck:
-            g = min(g, 1.0)                           # a stem set against another song is never trimmed UP past unity
+            s_ = self.songs.get(deck)
+            if not (lane == "vocals" and s_ is not None and getattr(s_, "user_vocal", False)):
+                g = min(g, 1.0)                       # a stem set against another song is never trimmed UP past unity...
+            # ...except a VOCAL YOU CHOSE (a pair, a bring): it is brought to the library's vocal level, up to +6 dB
+            # (God Sigma's quiet vocal stem sat at unity under Duskraver's bed at 0.86 - "too faint to hear", 2026-09-21)
         if lane == "other":
             if bed is not None and deck != bed and self.lanes.get("bass") != deck:
                 g *= OTHER_VOICE                      # a melody on a song holding neither drums nor bass is a texture (HARMONY TRAVELS TOGETHER: the bass holder's melody is the room's harmony, full)
@@ -2627,8 +2631,14 @@ class RemixConductor(RecordPlay):
                         self._vocal_hold = None
                         self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest: it has sung its last (the record's vocal returns)")
                     else:
-                        self._move("rest", "vocals", self._song_id(vd), None,
-                                   f"vocals of {self.songs[vd].track.title[:30]} pause (the lane is yours: silent until it sings again, in about {again} bars)")
+                        # YOUR vocal pauses: the lane STAYS its - its stem is silent in the pause anyway, and resting it
+                        # then fading it back in on the first detected beat cut the head off every phrase (eight rests and
+                        # returns in three minutes; "the vocals in the pair are too faint to hear mostly", 2026-09-21)
+                        if getattr(self.songs[vd], "_pause_said", None) != vd:
+                            self.songs[vd]._pause_said = vd
+                            self._move("plan", "vocals", self._song_id(vd), None,
+                                       f"vocals of {self.songs[vd].track.title[:30]} pause (the lane stays yours: it sings again in about {again} bars)")
+                        return
                 else:
                     self._move("rest", "vocals", self._song_id(vd), None, f"vocals of {self.songs[vd].track.title[:30]} rest (the singing stops)")
                 self._cross("vocals", None, at, beats=2.0, shape=False)

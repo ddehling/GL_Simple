@@ -1543,6 +1543,13 @@ five: Resurrection and the best pair (the picture checked: PAIR row from the tak
 other song's clip from the staging; the ghost's identity against the seam), control gate seeds 7-8 ALL OK,
 remix gate green. Lessons written to memory: a census is only as true as the planner that wrote it; replay
 the failing case by name; the user holds SILENCE BY DECISION against the system, not a stutter from load.
+**The evening's flags (same day):** "the vocals in the pair are too faint to hear mostly" - the chosen vocal
+at unity (never trimmed up against another song) under a bed at 0.86, and the hold resting the lane in every
+four-bar pause with a one-beat fade back on the first detected beat (eight rests in three minutes, the head
+of every phrase lost): a chosen vocal is now brought to the library's vocal level and its lane stays through
+its pauses. "bad transition / seam" - the score's drums-first door tried one place (five phrases before the
+groove) and fell to the cut; it tries five, four, six, three, seven, eight (PLAN_VERSION 3). Verified: both
+named pairs (the vocal held 48 bars, 0 rests, lane gain 1.6), remix gate, census 60/60.
 
 ## Rules carried over (they were earned)
 
