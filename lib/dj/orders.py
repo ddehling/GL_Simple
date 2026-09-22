@@ -16,6 +16,11 @@ import math
 import time
 
 STATES = ("staging", "fixed", "running", "done", "refused", "failed")
+PLAN_VERSION = 2             # bump on ANY change to plan_pair_entry: census verdicts of another version are not believed
+#                              (the census of 09-20 said "enters at 0:00" for a pair the 09-21 planner refused - the list
+#                              offered it, the take refused it: the very thing the census exists to prevent)
+CUT_STRIP_BARS = 4           # a cut plays the record silently this long before it is heard
+FLOOR_BARS = 2               # ...and never from before this (a cue needs two bars to lock)
 
 
 def new_order(kind, record_tid, other_tid, want_t=None, want_end=None, s_start=None, s_end=None, words="", **extra):
@@ -64,7 +69,7 @@ def plan_pair_entry(track, env, want_t, want_end, change_bars, bar_s, stem_carri
         out["why"] = f"{title}'s groove at {_mm(want)} is {groove_bars:.0f} bars: a phrase is needed"
         return out
     first = _first_body(track)
-    floor_t = 2.0 * bar
+    floor_t = FLOOR_BARS * bar
     span = 2 * cb * bar
 
     def drums_carry(t):
@@ -88,9 +93,9 @@ def plan_pair_entry(track, env, want_t, want_end, change_bars, bar_s, stem_carri
                 break
         # (a cut plays the record silently for four bars - the strip - before it is heard: it cannot be heard earlier
         # than four bars past the floor; a groove labelled at 0:00 is entered at 0:12, and said so)
-        cut_min = floor_t + 4 * bar
+        cut_min = floor_t + CUT_STRIP_BARS * bar
         if found is not None and found >= cut_min:
-            out.update(ok=True, entry="cut", start_t=float(found - 4 * bar), entry_t=float(found), event_t=float(nd(want)),
+            out.update(ok=True, entry="cut", start_t=float(found - CUT_STRIP_BARS * bar), entry_t=float(found), event_t=float(nd(want)),
                        why=f"{title} enters whole at {_mm(found)} (a cut), its groove {int(round((want - found) / bar))} bars on")
         else:
             # (3) on the groove itself: the vocal four bars in
@@ -100,7 +105,7 @@ def plan_pair_entry(track, env, want_t, want_end, change_bars, bar_s, stem_carri
                 out["why"] = (f"{title}'s drums carry nowhere before its groove at {_mm(want)} and the groove is {groove_bars:.0f} bars: "
                               f"entering on it, the vocal would have {max(0.0, (end - ev_t) / bar):.0f} bars")
                 return out
-            out.update(ok=True, entry="cut", start_t=float(entry_t - 4 * bar), entry_t=float(entry_t), event_t=float(ev_t),
+            out.update(ok=True, entry="cut", start_t=float(entry_t - CUT_STRIP_BARS * bar), entry_t=float(entry_t), event_t=float(ev_t),
                        why=f"{title} enters whole on its groove at {_mm(entry_t)} (nothing of it carries before); the vocal four bars in")
     # the vocal's length: whole phrases inside the groove from the event, at most four, at least one - and no
     # longer than the other song's sung stretch
@@ -116,6 +121,22 @@ def plan_pair_entry(track, env, want_t, want_end, change_bars, bar_s, stem_carri
     out["bars"] = int(bars)
     out["cue_t"] = (float(s_start) - bar * float(s_rate or 1.0)) if s_start is not None else None
     return out
+
+
+def geometry_ok(want_t, want_end, bar_s, change_bars=8):
+    """What the LIST can know without the stems (the doors that need no envelope): a groove at the record's very
+    start has no earlier place to enter - it is door (3) only, and its floor is exact: the record is heard from
+    FLOOR + STRIP bars, the vocal four bars later, and a phrase must remain. Returns (ok, why)."""
+    bar = float(bar_s)
+    want, end = float(want_t), float(want_end)
+    cb = int(change_bars)
+    if (end - want) / bar < cb - 0.5:
+        return False, "a groove under a phrase"
+    if want < (FLOOR_BARS + CUT_STRIP_BARS) * bar + 0.5 * bar:
+        ev = max(want, (FLOOR_BARS + CUT_STRIP_BARS) * bar) + 4 * bar
+        if (end - ev) / bar < cb - 0.5:
+            return False, f"a groove at the record's very start: entered at {_mm((FLOOR_BARS + CUT_STRIP_BARS) * bar)} with the vocal four bars in, {max(0.0, (end - ev) / bar):.0f} bars would remain"
+    return True, ""
 
 
 def order_words(o, title_of):

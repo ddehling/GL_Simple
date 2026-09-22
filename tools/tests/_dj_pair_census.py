@@ -15,6 +15,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
+from tools.tests._low_priority import PRIORITY  # noqa: E402  (idle priority: it may run beside the live planner)
 os.environ.setdefault("DJ_NO_PLAY_LOG", "1")
 os.environ.setdefault("DJ_NO_MIDI", "1")
 
@@ -32,7 +33,7 @@ def main():
     n = arg("--n", 60, int)
     want_r = arg("--record", "", str).lower()
     from lib.dj import director as D
-    from lib.dj.orders import plan_pair_entry
+    from lib.dj.orders import plan_pair_entry, PLAN_VERSION
     from lib.dj.remix import RemixConductor
     from lib.dj.stemload import decode_song
     d = D.Director(music, engine=None, theme="groove")
@@ -71,7 +72,7 @@ def main():
                                        s_start=p.get("s_start"), s_end=p.get("s_end"), s_rate=p.get("s_rate") or 1.0)
             key = f"{R.id}:{int(round(p['r_start']))}"
             plans[key] = {"ok": bool(plan["ok"]), "why": plan["why"][:160], "entry": plan.get("entry"), "entry_t": plan.get("entry_t"),
-                          "event_t": plan.get("event_t"), "bars": plan.get("bars"), "t": time.time(), "record": R.title[:40]}
+                          "event_t": plan.get("event_t"), "bars": plan.get("bars"), "t": time.time(), "record": R.title[:40], "v": PLAN_VERSION}
             if plan["ok"]:
                 n_ok += 1
             else:

@@ -17,6 +17,7 @@ import numpy as np
 os.environ["DJ_NO_PLAY_LOG"] = "1"
 os.environ["DJ_NO_MIDI"] = "1"
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from tools.tests._low_priority import PRIORITY  # noqa: E402  (idle priority for this process and its helpers: it may run beside the live planner)
 from lib.dj.submix import RATE  # noqa: E402
 
 BLOCK = 4410
@@ -127,12 +128,12 @@ def main():
             if seen["row"] is None and any(r.get("kind") in ("PAIR", "EVENT") for r in (d.status().get("plan_rows") or [])):
                 seen["row"] = clk_now
             # the NEXT ghost on the timeline is the seam's own next record, never another staged song (2026-09-21)
-            if rc.seam is not None and rc.seam.get("b") in rc.songs and seen["fail"] is None:
+            sb_ = rc.songs.get(rc.seam["b"]) if rc.seam is not None else None
+            if sb_ is not None and rc.seam.get("state") == "planned" and sb_.staged_at is not None and not sb_.entered and seen["fail"] is None:
                 nslot = (getattr(d, "_ghost_slots", {}) or {}).get("next", (None, []))
                 ghost_tids = {c.track_id for c in d.tl.clips if c.id in nslot[1]}
-                b_tid = rc.songs[rc.seam["b"]].track.id
-                if ghost_tids and b_tid not in ghost_tids:
-                    seen["fail"] = f"the timeline's next ghost is {sorted(ghost_tids)} but the seam's next record is {b_tid} ({rc.songs[rc.seam['b']].track.title[:24]})"
+                if ghost_tids and sb_.track.id not in ghost_tids:
+                    seen["fail"] = f"the timeline's next ghost is {sorted(ghost_tids)} but the seam's next record is {sb_.track.id} ({sb_.track.title[:24]})"
         except Exception as e:  # noqa: BLE001
             seen["fail"] = f"picture check: {type(e).__name__}: {e}"
         for m in rc.move_log[n_moves:]:

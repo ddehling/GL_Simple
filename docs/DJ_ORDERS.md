@@ -110,6 +110,15 @@ its own idea, applied to the user's choice. A vocal YOU chose (a pair, or an ide
 holds the lane under the vocal hold's rules - until it has sung its last, or you take it out; the moment ends
 a bar after the vocal is in and the hold carries it. The smoke measures the hold for six phrases.
 
+**Same morning, "the system refused a suggested pair":** Raw's groove at 0:00, 16 bars - the list said "enters
+at 0:00" from the census of the night before; the planner, changed that morning (a cut is heard six bars in at
+the earliest), refused it at take time: the census was stale against its own planner. Now the census verdicts
+carry `PLAN_VERSION` and a planner of another version ignores them, and the list's own geometry applies the
+same floor for a groove at the record's very start (door 3 is the only door there, so the list can be exact
+without the stems). Lesson: a census is only as true as the planner that wrote it - bump the version and re-run
+on every planner change, the same day. Remaining gap: a pair on a record's first bars can only begin ten bars
+in; beginning the vocal ON the cut itself would need the acapella armed across the seam.
+
 **Not yet.** UP NEXT and TAKEOVER / BRIDGE as full scores (they refuse at once for what is known, wait for a
 deck, and show a row; their landing is still the arm's decision when the song is ready). The census is run by
 hand, not by the pairings pass. The bass pair (TAKEOVER at the other song's drop) keeps its own placement.

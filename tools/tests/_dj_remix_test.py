@@ -17,6 +17,7 @@ import numpy as np
 
 os.environ["DJ_NO_PLAY_LOG"] = "1"                      # the gate's plays are not the night's history
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from tools.tests._low_priority import PRIORITY  # noqa: E402  (idle priority for this process and its helpers: it may run beside the live planner)
 from lib.dj.submix import RATE  # noqa: E402
 
 FAILS = []

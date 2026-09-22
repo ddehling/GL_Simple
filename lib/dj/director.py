@@ -1218,7 +1218,13 @@ class Director:
                             continue                  # the record playing is past (or too near) this groove
                         # THE CENSUS'S WORD (docs/DJ_ORDERS.md): the planner that executes the pair, run over the stems offline -
                         # a pair it refused is not shown; where it accepted, the entry it decided is said
+                        from lib.dj.orders import geometry_ok, PLAN_VERSION
+                        g_ok, _g_why = geometry_ok(r_start, r_end, bar_r, 8)
+                        if not g_ok:
+                            continue                  # (what the list can know without the stems: the same floor the planner applies)
                         plan = plans.get(f"{R.id}:{int(round(r_start))}")
+                        if plan is not None and int(plan.get("v") or 1) != PLAN_VERSION:
+                            plan = None               # a census of another planner: not believed either way
                         if plan is not None and not plan.get("ok", True):
                             continue
                         if plan is not None and plan.get("entry_t") is not None:
@@ -1261,9 +1267,14 @@ class Director:
                 return f"refused: the groove of {R.title[:24]} is shorter than ten bars"
             try:
                 from lib.dj.record import pair_record_start
+                from lib.dj.orders import geometry_ok
                 _s0, cut0 = pair_record_start(R, float(pair["r_start"]), 8, bar_r)
                 if cut0 and pair.get("r_end") is not None and (float(pair["r_end"]) - float(pair["r_start"])) < 16 * bar_r:
                     return f"refused: {R.title[:24]}'s first groove is shorter than sixteen bars (the record enters on it)"
+                if pair.get("r_end") is not None:
+                    g_ok, g_why = geometry_ok(float(pair["r_start"]), float(pair["r_end"]), bar_r, 8)
+                    if not g_ok:
+                        return f"refused: {R.title[:24]}: {g_why}"
             except Exception:
                 pass
         free = [dk for dk in ("a", "b", "c", "d") if dk not in rc.songs and dk not in rc._decoding and dk not in rc._pending]
@@ -2594,6 +2605,10 @@ class Director:
                 E = self._anchor(("event", int(evp["track_id"]), int(evp["bar"])), b + int(evp["in_bars"]))
                 ghost(("event", s_e.track.id, E), s_e.track.id, ["bass", "other"], E,
                       rc._song_time_at(d_e, rc._next_bar_clock()) + max(1, E - b - 1) * self._bar_len(s_e.track.id))
+            elif staged and rc.seam is not None and not any(dd == rc.seam.get("b") for dd, _s in staged):
+                # a seam whose next record is not a staged-and-silent song (it has entered - the seam completes - or it
+                # is still decoding): no ghost, rather than another staged song drawn at this seam's bracket
+                no_ghost()
             elif staged:
                 # THE SEAM'S OWN next record, when there is a seam - not the first staged song on the decks (two staged
                 # songs, the DJ's pick and a pair's record: the ghost drew the DJ's pick at the seam into the other -
