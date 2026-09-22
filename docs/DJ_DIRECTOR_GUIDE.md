@@ -7,7 +7,10 @@
 ## Start
 
 Pick a **theme** (what kind of songs, the shape of the night) and, if you want, a **playlist** as the pool.
-Press **START**. The autoDJ plays one record at a time exactly as it always has; every dial only leans it.
+Press **START**. The first note comes within a bar: while the window sat open the tab already built the
+Director, warmed the decode helper and decoded the opener onto its deck (a theme, pool or mood changed before
+START picks afresh, which costs the decode again). The autoDJ plays one record at a time exactly as it always
+has; every dial only leans it.
 Press **STOP** to end the night.
 
 ## The one big switch: LAYERS
