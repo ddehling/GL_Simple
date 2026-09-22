@@ -39,6 +39,7 @@ import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from tools.tests._low_priority import PRIORITY  # noqa: E402  (idle priority for this process and its helpers: it may run beside the live planner)
 os.environ.setdefault("DJ_NO_PLAY_LOG", "1")
 os.environ.setdefault("DJ_NO_MIDI", "1")
 from lib.dj.submix import RATE  # noqa: E402
