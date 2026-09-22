@@ -438,6 +438,9 @@ class Director:
     def _apply_to_conductor(self, rc):
         d = self.dials
         rc.avoid_ids = self._played_ids()             # nothing played tonight comes back
+        if not getattr(rc, "seam_wav_dir", None):
+            from lib.dj.session import LOG_DIR, headless
+            rc.seam_wav_dir = None if headless() else os.path.join(LOG_DIR, "seams")   # every rehearsed seam as audio (HEAR THE SEAM, the flags)
         if not getattr(rc, "_seeded", False):
             self._seed_brain(rc.brain)
             rc._seeded = True
@@ -968,7 +971,7 @@ class Director:
         kept = []
         for h in self.horizon:
             t = self.track(h["id"])
-            reason = setplan.hop_ok(prev, t, clock, played=played | set(pinned), avoid=self.set_skips | busy, play_min_s=float(rc.play_min_s))
+            reason = setplan.hop_ok(prev, t, clock, played=played | set(pinned), avoid=self.set_skips | busy | set(getattr(rc, "unfit_ids", ()) or ()), play_min_s=float(rc.play_min_s))
             if reason is not None:
                 if reason == "not tonight" and t is not None and t.id in busy and t.id not in self.set_skips:
                     reason = "on the decks now"
@@ -1026,7 +1029,7 @@ class Director:
         except Exception:
             recs = {}
         lean = {"slower": -1.0, "hold": 0.0, "faster": 1.0}.get(d["tempo"], 0.0)
-        args = dict(clock_bpm=(float(cur.bpm) if follow else float(rc.master_bpm)), arc_fn=self._arc_at, played=set(played), avoid=set(self.set_skips),
+        args = dict(clock_bpm=(float(cur.bpm) if follow else float(rc.master_bpm)), arc_fn=self._arc_at, played=set(played), avoid=set(self.set_skips) | set(getattr(rc, "unfit_ids", ()) or ()),
                     busy=set(busy), play_min_s=float(rc.play_min_s), n=5 - len(kept), follow=follow, t0=t0,
                     seed=(int(self._hz_t) // 86400) + 1, pinned=list(pinned) + kept_ids, lean=lean)
         self._hz_busy = True
@@ -1881,6 +1884,16 @@ class Director:
                 "bar": round(self._bar, 1), "events": [f"{h} {m}" for h, m in self.events[-6:]],
                 "last_verdict": ({k: v for k, v in self.last_verdict.items() if k in ("up", "what", "learn", "did")} if self.last_verdict else None),
                 "last_dropout": self.last_dropout}
+        # a SEAM flag comes with the sound: the last rehearsed seam's render is kept beside the flag (docs/DJ_THE_BLEND.md)
+        try:
+            lw = getattr(self.rc, "last_seam_wav", None) if self.rc is not None else None
+            if lw and os.path.exists(lw[1]):
+                import shutil
+                keep = os.path.join(os.path.dirname(lw[1]), f"flag_{time.strftime('%Y%m%d_%H%M%S')}_{kind}.wav")
+                shutil.copyfile(lw[1], keep)
+                snap["seam_wav"] = keep
+        except Exception:
+            pass
         try:
             snap["arc"] = {k: v for k, v in self.arc_status().items() if k in ("word", "target", "elapsed_s", "length_s", "shape")}
         except Exception:
@@ -3119,7 +3132,7 @@ class Director:
                 if last_pm:
                     sub = "MOVED: " + last_pm["text"].split(" - ")[-1][:70] + " · " + sub
                 text = (f"{title_b} comes in · {sm['words'].split(': ', 1)[-1]}" if sm.get("state") != "running" else f"SEAM RUNNING: {sm['words'].split(': ', 1)[-1]}")
-                row(t_seam, "SEAM", text, sub, key=("seam", sm.get("seq"), sm.get("bar")), bar=sm.get("bar"))
+                row(t_seam, "SEAM", text, sub, key=("seam", sm.get("seq"), sm.get("bar")), bar=sm.get("bar"), tid=(sb.track.id if sb else None))
                 t_rec2 = t_seam + int(sm["len"]) * bar_s
                 pm = rc._play_min_bars() * bar_s
                 row(t_rec2, "RECORD", f"{title_b} plays", f"min play until {_mmss(t_rec2 + pm)} · its seam is planned when its next record is staged",

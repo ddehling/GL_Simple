@@ -65,9 +65,10 @@ week compensated for that.
 Nine record changes that day, seven of them a bassline and melody on the one, loud. Three causes, three
 rules:
 
-- **The steps cross for as long as the SEAMS dial says.** Quick = a switch (the drums over 4 beats, the
-  harmony over 2 - what every seam had been). Normal = two bars a step. Long = a phrase for the drums and
-  four bars for the harmony. The harmony step is placed so its cross COMPLETES on the bar before B's landmark,
+- **The steps cross for as long as the SEAMS dial says** (THE BLEND, docs/DJ_THE_BLEND.md, 2026-09-21: "fast,
+  no blending, no artistry" - two-bar steps were three switches a phrase apart). A seam is 32 bars (64 as a
+  blend); quick = two-bar crosses, normal = a phrase per cross, long = two phrases; every cross is equal
+  power. The harmony step is placed so its cross COMPLETES on the bar before B's landmark,
   where the switch used to happen; over the cross the old harmony's lows go down to the carve as the new
   one's come up from it (the bass handed over under a low shelf - never two full basslines, never a snap).
   The cut and the breakdown strip stay switches: a cut is a cut.
@@ -86,6 +87,12 @@ rules:
   and ease back to their own level over the phrase after the cross (`step_trim`; `_lane_gain` reads it, so a
   re-post in between lands on the eased value). The morph stays a morph. Only a HOLE still moves the seam or
   falls back to the cut.
+- **The placement must leave a record (2026-09-21).** The pick's runway rule reads the section map; the seam's
+  placement reads the stems. Medes' bass carried nowhere the seam could use before 6:09 of its 7:33, the bass
+  swap put it in there, and it was the record for thirty seconds. Now a placement that leaves the next record
+  less than its minimum play plus a runway makes that song UNFIT as the next record tonight (`unfit_ids`: the
+  picker, the chain and the seam skip it; the story row and an `unfit` log row say why) - unless it is YOUR
+  pick, which plays as a short record, said.
 
 ## Removed
 

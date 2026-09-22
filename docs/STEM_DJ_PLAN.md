@@ -1565,7 +1565,28 @@ the arriving stems are trimmed by that much at the cross and ease back over a ph
 only. The gate then found (seed 9) two dead bars in a NEXT-forced cut's strip: the record's vocal "sang" by
 its own measure but was near silent in the room; the seam's strip now applies the BREAK's absolute rule
 (what stays must reach BREAK_LEFT_MIN of the library's drum level) - seed 9 clean after. Verified: remix gate,
-Resurrection, control gate seed 9.
+Resurrection, control gate seed 9. **Three more "bad transition / seam" flags (20:15-20:27):** the middle one
+was a thirty-second record - Medes' bass carries nowhere the seam could use before 6:09 of its 7:33, the bass
+swap put it in there, and its seam out was forced "before its minimum play" into its quiet tail (the room at
+-28 dB). The pick's runway rule reads the section map, the placement reads the stems, and where they
+disagreed the placement won silently. Now such a placement makes the song UNFIT as the next record tonight
+(said, logged, skipped by the picker, the chain and the seam; a user's pick plays as a short record, said). The
+other two (a build's drums under the record; a bass swap into a record's groove) have no measurable cause in
+the log and wait for the user's word.
+
+**"what is all this building to? seems like we're making a bunch of weak instructions with no feedback and
+rough transitions" → "the transitions are really rough right now. fast, no blending, no artistry" → "yes"
+(2026-09-21, night): THE BLEND (docs/DJ_THE_BLEND.md).** The honest answer: the plumbing was true by the gates
+and nothing the gates measure hears a seam; every seam rule is a proxy, and at the default SEAMS setting a
+"16-bar morph" was three two-bar switches a phrase apart with the outgoing record gone in a beat and a half,
+linear ramps dipping the bus in every cross, and any rehearsal verdict collapsing the shape to the cut. The
+page and the build the same night: a seam is 32 bars (64 as a blend), every cross a phrase and equal power
+(the deck's stem ramp: sin in, cos out), the harmony lead and landmark offset following the cross, A's vocal
+leaving over the cross, B's leading stems entering only from a groove of its own that carries, the placement
+ladder 32 → 16 → 8 → the cut; the rehearsal models the real crosses, renders every rehearsed seam as AUDIO
+(logs/seams/), a 'seam' flag keeps the sound beside it, and HEAR THE SEAM plays the render on the cue output
+from the PLAN's SEAM row - the headphone cue promised on 09-13, delivered. Not yet: the campaign's before /
+after numbers and six renders for the ear.
 
 ## Rules carried over (they were earned)
 

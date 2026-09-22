@@ -522,8 +522,17 @@ class Deck:
                 self._stem_ramp = None
             else:
                 f = 1.0 - rem / tot
-                self.stem_gain = {k: start[k] + (targets[k] - start[k]) * f
-                                  for k in targets}
+                if tot >= 1.0:
+                    # EQUAL POWER over a long cross (docs/DJ_THE_BLEND.md 2): a stem going out follows cos, one coming
+                    # in follows sin - two decks crossing over a phrase hold the bus level through the middle (a
+                    # straight line dipped it every cross); switches under a second stay linear
+                    import math
+                    up, dn = math.sin(0.5 * math.pi * f), math.cos(0.5 * math.pi * f)
+                    self.stem_gain = {k: (start[k] + (targets[k] - start[k]) * up) if targets[k] >= start[k]
+                                      else (targets[k] + (start[k] - targets[k]) * dn) for k in targets}
+                else:
+                    self.stem_gain = {k: start[k] + (targets[k] - start[k]) * f
+                                      for k in targets}
                 self._stem_ramp = (start, targets, rem, tot)
         self.stretch.rate = self.effective_rate() / self._pitch_f
         with self._lock:

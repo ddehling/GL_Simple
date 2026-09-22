@@ -1916,6 +1916,45 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self._cue.stop()
         self.pairs_lbl.setText("preview stopped")
 
+    def _hear_seam(self):
+        """HEAR THE SEAM: the rehearsal's wav when it has rendered this seam, else a render now on a worker; played on
+        the cue output, never on the floor."""
+        d = self.director
+        if d is None or d.rc is None or d.rc.seam is None:
+            self.moment_lbl.setText("no seam planned")
+            return
+        cue = self._cue_player()
+        if not cue.available:
+            self.moment_lbl.setText(cue.why)
+            return
+        rc = d.rc
+        seq = rc.seam.get("seq")
+        lw = getattr(rc, "last_seam_wav", None)
+        import threading
+
+        def work():
+            try:
+                if lw and lw[0] == seq and os.path.exists(lw[1]):
+                    import wave
+                    import numpy as np
+                    with wave.open(lw[1], "rb") as w:
+                        rate = w.getframerate()
+                        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype="<i2").reshape(-1, 2).astype(np.float32) / 32768.0
+                    samples = pcm
+                else:
+                    from lib.dj.rehearse import render_wav
+                    r = render_wav(rc, rc.seam)
+                    if r is None:
+                        self.moment_lbl.setText("the seam cannot be rendered yet (a deck without stems, or the song is sounding already)")
+                        return
+                    samples, rate = r
+                ok, words = cue.play(samples, rate)
+                self.moment_lbl.setText(("HEAR THE SEAM: playing on the cue output" if ok else words) + (" (the rehearsal's render)" if lw and lw[0] == seq else " (rendered now)"))
+            except Exception as e:  # noqa: BLE001
+                self.moment_lbl.setText(f"hear the seam: {type(e).__name__}: {e}")
+        self.moment_lbl.setText("rendering the seam …")
+        threading.Thread(target=work, daemon=True, name="hear-seam").start()
+
     def _skip_in_set(self, tid):
         d = self.director
         if d is None:
@@ -1952,6 +1991,12 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         elif kind == "REQUEST":
             a = m.addAction(f"put {title} UP NEXT")
             a.triggered.connect(lambda _c, t=tid: self._queue(t))
+        elif kind == "SEAM":
+            # HEAR THE SEAM (docs/DJ_THE_BLEND.md): the rehearsal's render of the seam to come, on the cue output
+            a = m.addAction(f"HEAR THE SEAM into {title} (the rehearsal's render, on the cue output)")
+            a.triggered.connect(lambda _c: self._hear_seam())
+            a = m.addAction("■ stop the cue")
+            a.triggered.connect(lambda _c: self._pairs_stop())
         else:
             return
         v = m.addAction("show its parts (the PARTS tab)")

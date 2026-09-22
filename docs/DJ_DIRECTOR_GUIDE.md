@@ -64,9 +64,10 @@ Three kinds, hover any heading for the detail and its live effect.
   tag may play; none lit = everything; "+N more…" opens the rest).
 - **How it mixes.** MIXING (auto / long blends / hard cuts / stem morphs; layered: the seam's kind - the DJ
   changes records through seams; only under cut may it exit a record through a takeover), PACE (how long records run:
-  layered, the record's minimum play), SEAMS (how long the mixes themselves are: layered, the seam's length
-  scaled by a half or double AND how long each step crosses - quick = a switch, normal = two bars a step, long
-  = a phrase for the drums and four bars for the harmony, the bass handed over under a low shelf), LOOPS.
+  layered, the record's minimum play), SEAMS (how long the mixes themselves are: layered, a seam is 32 bars,
+  64 as a blend, and each cross is a phrase long, equal power, the bass handed over under a low shelf - quick
+  halves it to two-bar crosses, long doubles it; the new record's drums come in only from a groove of its own
+  that carries; right-click the PLAN's SEAM row to HEAR THE SEAM on the cue output before it plays), LOOPS.
   The DJ's own seams and events land at unity; loud is for what you press.
 - **How it plays.** BASS, TONE, LEVEL on the mix bus; MOMENTS (how often the DJ arms its own moments, the
   same five as yours: rare / some / lots). FX is off the surface (the moments carry their own shapes); the

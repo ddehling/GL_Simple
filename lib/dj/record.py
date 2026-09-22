@@ -18,7 +18,7 @@ from lib.dj.submix import RATE
 
 MIN_RUNWAY_S = 90.0                    # (lib/dj/remix.py's: a landmark must leave this much body)
 PLAY_MIN_S = 210.0                     # a record plays at least this long (the club default; PACE bends it)
-SEAM_BARS = {"cut": 4, "morph": 16, "blend": 32}
+SEAM_BARS = {"cut": 4, "morph": 32, "blend": 64}   # THE BLEND (docs/DJ_THE_BLEND.md, 2026-09-21): a seam is long; a cross is a phrase
 DARKEN_HIGH = 0.7                      # the departing harmony's high shelf over the bars before the swap (a fade to darkness; 0.35 opened
                                        # a 10 dB hole under the new drums and a 13 dB lurch at the swap - the campaign)
 DARKEN_BARS = 4
@@ -994,7 +994,8 @@ class RecordPlay:
         """The next record: a song staged and waiting (your UP NEXT first), else a song you brought a part of
         in (it is heard; the seam morphs into it)."""
         cands = [(d, s) for d, s in self.songs.items() if d != self.record_deck and not s.leaving and not s.evicted
-                 and s.staged_at is not None and s.env is not None and not s.was_bed and not getattr(s, "part_only", False)]
+                 and s.staged_at is not None and s.env is not None and not s.was_bed and not getattr(s, "part_only", False)
+                 and not getattr(s, "unfit", None)]
         if not cands:
             return None
         cands.sort(key=lambda ds: (not getattr(ds[1], "user_pick", False), ds[1].entered, ds[1].staged_at or 0))
@@ -1022,7 +1023,8 @@ class RecordPlay:
         B's harmony, so the drop is B's own build resolving inside its harmony, not a step in the mix (the
         drop's 9-13 dB rise on the completion bar was the lurch class every campaign kept - v6)."""
         if order == "bass":
-            return DARKEN_BARS + 1
+            hl = self._harmony_lead()
+            return max(1, DARKEN_BARS - hl) + hl + 1  # (the harmony cross completes the bar before the landmark, whatever its length)
         if order == "vocal":
             return VOCAL_LEAD_BARS + L + 1
         if order == "cut":
@@ -1084,13 +1086,24 @@ class RecordPlay:
         # BAR BY BAR (every bar's mean over 0.7 of the line): a pre-drop pattern on and off every bar passed the
         # two-second test and the campaign heard it as holes and lurches
         lead = max(2.0 * bar_b, min(off, L) * bar_b)
+
+        def entry_ok(tt):
+            # THE BLEND (docs/DJ_THE_BLEND.md 5): B's leading stems come in from a GROOVE of its own that carries through
+            # the cross - never from a build or an intro (Astra's build drums under In The Beginning, flag 2026-09-21)
+            if self._stem_carries(sb.env, tt, lead, lanes=lanes, bar_s=bar_b) is False:
+                return False
+            if t.sections:
+                kind = (t.section_at(tt + 0.25 * bar_b) or {}).get("kind")
+                if kind in ("intro", "build", "breakdown", "outro"):
+                    return False
+            return True
         t0 = lm - off * bar_b
-        if t0 >= floor_t and self._stem_carries(sb.env, t0, lead, lanes=lanes, bar_s=bar_b) is not False:
+        if t0 >= floor_t and entry_ok(t0):
             return t0, lm, True, L
         step = 4 * bar_b
         tt = t0 - step
         while tt >= floor_t:
-            if self._stem_carries(sb.env, tt, lead, lanes=lanes, bar_s=bar_b) is not False:
+            if entry_ok(tt):
                 return tt, lm, False, L
             tt -= step
         if lm_off is None:
@@ -1299,6 +1312,9 @@ class RecordPlay:
             if r is None and order_ in ("vocal", "bass"):
                 order_ = "drums"
                 r = place(order_, L_)
+            if r is None and L_ > 16:
+                L_ = 16                               # a shorter blend before a plainer one (docs/DJ_THE_BLEND.md 5)
+                r = place(order_, L_)
             if r is None and L_ > 8:
                 L_ = 8
                 r = place(order_, L_)
@@ -1307,6 +1323,30 @@ class RecordPlay:
                 r = place(order_, L_)
             return order_, r
         order, (tb, lm, on_lm, L) = placed(order, L)
+        # THE PLACEMENT MUST LEAVE A RECORD (2026-09-21: Medes' bass carried nowhere before 6:09 of its 7:33 - the bass
+        # swap put it in there, it was the record for thirty seconds, and its seam out was forced into its quiet tail;
+        # "bad transition / seam" twice). The pick's runway rule reads the section map; the placement reads the
+        # stems. Where they disagree, the song is UNFIT as the next record tonight - unless it is YOUR pick (said) -
+        # and the picker moves on.
+        try:
+            from lib.dj.remix import MIN_RUNWAY_S
+            left = float(sb.track.duration_s) - float(lm)
+            need = 0.9 * (float(self.play_min_s) + MIN_RUNWAY_S)   # (a tenth of margin: a song one second under the line is not unfit - the remix gate)
+            if left < need and not (getattr(sb, "user_pick", False) or getattr(self, "_planted", {}).get(sb.track.id)):
+                self.unfit_ids = getattr(self, "unfit_ids", set()) | {sb.track.id}
+                sb.unfit = f"its stems carry only from {int(lm) // 60}:{int(lm) % 60:02d} of {int(sb.track.duration_s) // 60}:{int(sb.track.duration_s) % 60:02d}: {left:.0f} s would remain, {need:.0f} needed"
+                self._move("plan", None, self._song_id(a), sb.track.id, f"{sb.track.title[:26]} cannot be the next record: {sb.unfit} - another is picked")
+                try:
+                    from lib.dj.session import log_row
+                    log_row({"event": "unfit", "track_id": sb.track.id, "lm": round(float(lm), 1), "left_s": round(left), "need_s": round(need)})
+                except Exception:
+                    pass
+                self._leave_song(b, self._next_bar_clock())
+                return
+            if left < need:
+                self._move("plan", None, self._song_id(a), sb.track.id, f"{sb.track.title[:26]} will be a short record (your pick): its stems carry only from {int(lm) // 60}:{int(lm) % 60:02d}, {left:.0f} s of it remain")
+        except Exception:
+            pass
         if order == "cut":
             kind = "cut"
         K, why = self._seam_a_bar(a, L, order)
@@ -1508,12 +1548,14 @@ class RecordPlay:
         """How long a seam step CROSSES, from the SEAMS dial (user 2026-09-19: "transitions seem pretty abrupt"): quick
         = a switch (drums 4 beats, the harmony 2 - what every seam was), normal = two bars a step, long = a phrase
         for the drums and four bars for the harmony. The cut and the strip stay switches (a cut is a cut)."""
+        # THE BLEND (docs/DJ_THE_BLEND.md): quick = two-bar crosses (what "normal" was: three switches a phrase apart -
+        # "fast, no blending, no artistry", 2026-09-21), normal = a phrase per cross, long = two phrases
         sc = float(getattr(self, "seam_scale", 1.0) or 1.0)
         if sc <= 0.6:
-            return {"drums": 4.0, "harmony": 2.0}[what]
+            return {"drums": 8.0, "harmony": 8.0}[what]
         if sc >= 1.6:
-            return {"drums": 32.0, "harmony": 16.0}[what]
-        return {"drums": 8.0, "harmony": 8.0}[what]
+            return {"drums": 64.0, "harmony": 64.0}[what]
+        return {"drums": 32.0, "harmony": 32.0}[what]
 
     def _harmony_lead(self):
         """Bars the harmony step starts BEFORE the bar its cross must be complete on (the bar before B's landmark):
@@ -1530,7 +1572,7 @@ class RecordPlay:
         elif order == "bass":
             h = max(1, DARKEN_BARS - hl)
             steps = [(0, "_st_darken"), (h, "_st_harmony"), (L, "_st_drums_in"), (L + 1, "_st_done")]
-            marks = [(0, h, ["other"], "the harmony darkens"), (h, (DARKEN_BARS if hl else None), ["bass", "other"], "bass swap: the new bassline and melody" + (" cross in" if hl else "")),
+            marks = [(0, h, ["other"], "the harmony darkens"), (h, (h + hl if hl else None), ["bass", "other"], "bass swap: the new bassline and melody" + (" cross in" if hl else "")),
                      (L, None, ["drums"], "its drums follow: the record is its")]
         elif order == "vocal":
             h = VOCAL_LEAD_BARS + L - hl
@@ -1621,7 +1663,7 @@ class RecordPlay:
             self._seam_clear_strays(at)
         beats = self._step_beats("drums")
         if not first:
-            beats = min(beats, 8.0)                   # drums FOLLOWING a harmony that is already in: two bars at most
+            beats = min(beats, 16.0)                  # drums FOLLOWING a harmony that is already in: four bars at most
         self._step_trim_arm(b, ("drums",), at, beats)
         tag = self._cross("drums", b, at, beats=beats, shape=False)
         self._step_trim_ease(b, ("drums",), at, beats)
@@ -1661,7 +1703,7 @@ class RecordPlay:
         if self._other_free_for(b, a):
             self._cross("other", b, at, beats=beats, shape=False)
         self._step_trim_ease(b, ("bass", "other"), at, beats)
-        gone = self._vocal_goes_with(b, a, at) if a in self.songs else ""
+        gone = self._vocal_goes_with(b, a, at, beats=beats) if a in self.songs else ""   # (the vocal leaves over the phrase, with its harmony)
         if a in self.songs:
             self.submix.post({"at": at, "cmd": "eq", "deck": a, "high": 1.0, "ramp_s": beat})
         if beats > 2.0:

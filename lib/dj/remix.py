@@ -453,6 +453,8 @@ class RemixConductor(RecordPlay):
         chain asks the same question, so the plan shown is the plan that can be picked (2026-09-20)."""
         if not getattr(t, "bpm", None):
             return "no tempo"
+        if t.id in getattr(self, "unfit_ids", ()):
+            return "its stems carry too late for a record (found at its seam tonight)"
         rate = self.master_bpm / max(float(t.bpm), 1e-6)
         if not (RATE_MIN <= rate <= RATE_MAX):
             return f"outside the wall ({float(t.bpm):.0f} against {float(self.master_bpm):.0f})"
@@ -1870,7 +1872,7 @@ class RemixConductor(RecordPlay):
         fits = [f for f in (self._pair_fit(a, b, at), self._pair_fit(a, b, at + 2 * self._bar_clock())) if f is not None]
         return not fits or min(fits) >= CLASH_BELOW + 0.1      # (+0.1: a vocal carried at the clash line flapped held-down / back-up four times in fifteen seconds)
 
-    def _vocal_goes_with(self, d, old, at):
+    def _vocal_goes_with(self, d, old, at, beats=2.0):
         """At a bed change: the old song's vocal goes out WITH its harmony. (It used to carry over when the keys
         fitted; twice in one evening a same-key vocal over the new harmony was flagged 'clash' - the ear hears
         two songs fighting where the Camelot wheel hears none. Bring it back yourself if you want it: yours holds.)
@@ -1880,7 +1882,7 @@ class RemixConductor(RecordPlay):
         s_old = self.songs.get(old)
         if s_old is not None and getattr(s_old, "user_k", None) is not None and getattr(self, "_vocal_hold", None) == old:
             return "; your vocal of it stays"
-        self._cross("vocals", None, at, beats=2.0, shape=False)
+        self._cross("vocals", None, at, beats=float(beats), shape=False)
         return "; its vocal goes with its harmony"
 
     def _other_free_for(self, d, frm=None):

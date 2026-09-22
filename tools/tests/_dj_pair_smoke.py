@@ -45,6 +45,16 @@ def main():
         return 1
     rc = d.rc
     rc.rng = random.Random(seed)
+    # the rehearsal's audio (docs/DJ_THE_BLEND.md "hear it before it plays"): every rehearsed seam is rendered to a wav
+    # in the run's own folder - checked at the end (a file per rehearsed seam, not empty)
+    import tempfile
+    wav_dir = os.path.join(tempfile.gettempdir(), "dj_pair_smoke_seams")
+    rc.seam_wav_dir = wav_dir
+    for f in (os.listdir(wav_dir) if os.path.isdir(wav_dir) else []):
+        try:
+            os.remove(os.path.join(wav_dir, f))
+        except OSError:
+            pass
     gen = engine._mixer()
     next(gen)
     gen.send(256)
@@ -192,6 +202,14 @@ def main():
     sil = [s["clock_s"] for s in getattr(rc, "silence_log", []) if s.get("clock_s") is not None]
     dead = [i for i, r in enumerate(rms) if r < -45.0 and not any(abs((t0 * BLOCK + (i + 1) * nb) / RATE - c) < 2.0 * nb / RATE for c in sil)]
     print(f"\nrecord played at {seen['record']}, the pair planned at {seen['event_plan']}, armed at {seen['armed']}, the vocal in at {seen['vocal_in']}; dead bars {len(dead)} of {len(rms)}")
+    wavs = sorted(f for f in (os.listdir(wav_dir) if os.path.isdir(wav_dir) else []) if f.endswith(".wav"))
+    rehearsed = sum(1 for m in rc.move_log if "rehearsed" in m["text"])
+    sizes = [os.path.getsize(os.path.join(wav_dir, f)) for f in wavs]
+    print(f"the seams' audio: {len(wavs)} wav(s) for {len(rc.rehearsal_log)} rehearsals ({', '.join(f'{s // 1024} KB' for s in sizes[:6])})")
+    if rc.rehearsal_log and not wavs and seen["fail"] is None:
+        seen["fail"] = f"{len(rc.rehearsal_log)} seams rehearsed but no seam wav was written ({rc.last_error})"
+    if any(s < 200 * 1024 for s in sizes) and seen["fail"] is None:
+        seen["fail"] = "a seam wav is under 200 KB: an empty render"
     print(f"the picture: PAIR row in THE PLAN from {seen['row']}, the vocals mark from {seen['mark']}, the other song's clip from {seen['clip']}")
     if seen["fail"] is None and seen["vocal_in"] is not None and (seen["row"] is None or seen["mark"] is None or seen["clip"] is None):
         seen["fail"] = "the pair played but the plan / the picture never showed it (row %s, mark %s, clip %s)" % (seen["row"], seen["mark"], seen["clip"])

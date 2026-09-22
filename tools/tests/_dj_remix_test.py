@@ -426,9 +426,17 @@ def main():
     bpm0 = rc.master_bpm
     rc.set_energy_lean(0.4)
     rc.set_tempo_span(0.04)
-    paced(int(10 * bars * RATE) // block)
-    rates_ok = all(0.90 <= s.rate <= 1.10 for s in rc.songs.values())
-    check(rc.master_bpm > bpm0 * 1.01 and rates_ok, f"tempo journey: clock {bpm0:.2f} -> {rc.master_bpm:.2f} bpm, every song inside the wall {rates_ok}")
+    # the clock follows the record: it travels at the HANDOVER - with 32-bar seams (THE BLEND) a handover is not in ten
+    # bars, so the check waits up to forty for a handover or a next record staged faster (the journey under way)
+    ahead, journey, rates_ok = [], False, True
+    for _k in range(4):
+        paced(int(10 * bars * RATE) // block)
+        rates_ok = all(0.90 <= s.rate <= 1.10 for s in rc.songs.values())
+        ahead = [float(s.track.bpm) for s in rc.songs.values() if not s.entered and s.staged_at is not None and s.track.bpm]
+        journey = rc.master_bpm > bpm0 * 1.01 or any(b > bpm0 * 1.01 for b in ahead)
+        if journey or not rates_ok:
+            break
+    check(journey and rates_ok, f"tempo journey: clock {bpm0:.2f} -> {rc.master_bpm:.2f} bpm (next records {[round(b) for b in ahead]}), every song inside the wall {rates_ok}")
     rc.set_tempo_span(0.0)
     rc.set_energy_lean(0.0)
     # recording: a WAV with the move log beside it
@@ -533,7 +541,9 @@ def main():
     off_lm = [s for s in sl if s["on_lm"] and s["moved"] == 0 and abs(s["err_bars"]) > 1.5]   # (a seam you moved lands where it can)
     plans_seam = sum(1 for m in rc.move_log if m["kind"] == "seam_plan")
     n_events = sum(1 for m in rc.move_log if m["kind"] == "event" and "refused" not in m["text"])
-    check(len(sl) >= 1 and not off_lm and plans_seam <= len(sl) + 3 + n_events,   # (+3: the script's RECALL, TAKEOVER and DROP each re-plan one; an event replaces its record's seam)
+    n_unfit = sum(1 for m in rc.move_log if "cannot be the next record" in m["text"])          # (a placement that would leave no record: re-picked, said)
+    n_moment_abandon = sum(1 for m in rc.move_log if "abandoned: your moment" in m["text"])   # (the script's BREAK / SLAM over a running seam)
+    check(len(sl) >= 1 and not off_lm and plans_seam <= len(sl) + 4 + n_events + n_unfit + n_moment_abandon,   # (+4: the script's RECALL, TAKEOVER, DROP and NEXT each re-plan one; an event replaces its record's seam)
           f"SEAMS: {len(sl)} completed {orders}, {plans_seam} planned; landmark off by > 1 bar: {len(off_lm)}"
           + (f" e.g. {off_lm[0]}" if off_lm else "") + (f"; e.g. {sl[0]['a'][:16]} -> {sl[0]['b'][:16]} {sl[0]['order']} {sl[0]['len']} bars {sl[0]['err_bars']:+.1f}" if sl else ""))
     # PLAY LENGTH: a record not cut short by NEXT or a DROP plays at least the minimum before its seam completes
