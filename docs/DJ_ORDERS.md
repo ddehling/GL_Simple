@@ -101,6 +101,15 @@ now have a MOMENT row while staging. The pair census writes `.stems/pair_plans.j
 what it refused and says the entry it decided. The control gate presses PLAY THIS PAIR and checks at the end
 that no order died silently; the pair smoke fails on a refused or failed order and has the named cases.
 
+**2026-09-21, the morning after:** "the plan does not match the timeline" - the next-record ghost drew the
+first staged song, not the seam's B; the PLAYING list did not redraw on a state word; a 0:00 groove said
+0:00 for an entry that is heard at 0:12 - all three fixed, the smoke checks the ghost's identity. Then "the
+vocals from another song last a pathetic amount of time" (8 and 16 bars live, then "ACAPELLA over: the vocal
+goes" and its song off the deck): the acapella script's two-to-four-phrases-and-gone was the DJ's rule for
+its own idea, applied to the user's choice. A vocal YOU chose (a pair, or an idea taken with "do it") now
+holds the lane under the vocal hold's rules - until it has sung its last, or you take it out; the moment ends
+a bar after the vocal is in and the hold carries it. The smoke measures the hold for six phrases.
+
 **Not yet.** UP NEXT and TAKEOVER / BRIDGE as full scores (they refuse at once for what is known, wait for a
 deck, and show a row; their landing is still the arm's decision when the song is ready). The census is run by
 hand, not by the pairings pass. The bass pair (TAKEOVER at the other song's drop) keeps its own placement.

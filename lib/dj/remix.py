@@ -3354,7 +3354,11 @@ class RemixConductor(RecordPlay):
                         "who": "the DJ" if auto else "you"}
         if kind == "acapella":
             ev = getattr(self, "_event", None) or {}
-            self._moment["bars"] = int(ev.get("bars") or int(tune.get("phrases", 4)) * self.change_bars)
+            # A VOCAL YOU CHOSE (a pair, an idea you took) is yours: it holds the lane like a vocal you bring by hand, until
+            # its song has sung its last or you take it out - not two to four phrases and gone (that is the DJ's own idea)
+            yours = bool(ev.get("order") or ev.get("yours"))
+            self._moment["yours_vocal"] = yours
+            self._moment["bars"] = int((ev.get("stretch_bars") if yours else None) or ev.get("bars") or int(tune.get("phrases", 4)) * self.change_bars)
         if kind == "again":
             self._moment["again_start"] = again_start
         self._moment["script"] = self._moment_script(kind)
@@ -3571,8 +3575,32 @@ class RemixConductor(RecordPlay):
                            + (f"; {self.songs[B].track.title[:22]} sings on" if to == B else ""))
                 mm["end_clock"] = at + self._bar_clock()
 
-            script = [(0, vocal_in), (n_bars, vocal_out)]
-            marks = [(0, n_bars, ["vocals"], "ACAPELLA: another record's vocal over this groove")]
+            def vocal_in_yours(at):
+                # YOURS: in, and the lane is held (bring's rule): it rests where it pauses, comes back when it sings, and
+                # the record's vocal returns only when it has sung its last or you take it out (READY: vocal ▸ back)
+                mm = M()
+                V, B = mm["V"], mm["B"]
+                if V not in self.songs or self.songs[V].leaving:
+                    mm["end_clock"] = at
+                    return
+                frm = self.lanes.get("vocals")
+                self._cross("vocals", V, at, beats=2.0, shape=False)
+                s = self.songs[V]
+                s.user_k, s.user_vocal = self.bar_n, True
+                self._vocal_hold = V
+                if s.voice_since is None:
+                    s.voice_since = self.bar_n
+                self._hygiene(at + int(self._beat_s() * RATE))
+                self._move("moment", "vocals", self._song_id(frm), s.track.id,
+                           f"ACAPELLA: the vocal of {s.track.title} over {self.songs[B].track.title[:24] if B in self.songs else '?'} - yours: it stays until it has sung its last (about {n_bars} bars), or you take it out")
+                mm["end_clock"] = at + self._bar_clock()  # (the moment is over; the hold carries the vocal from here)
+
+            if (self._moment or {}).get("yours_vocal"):
+                script = [(0, vocal_in_yours)]
+                marks = [(0, n_bars, ["vocals"], "ACAPELLA: your vocal over this record, held until it has sung its last")]
+            else:
+                script = [(0, vocal_in), (n_bars, vocal_out)]
+                marks = [(0, n_bars, ["vocals"], "ACAPELLA: another record's vocal over this groove")]
         elif kind == "break":
             take = int(tune.get("take_bars", 8))
             build_low = float(tune.get("build_low", LOW_CARVE))

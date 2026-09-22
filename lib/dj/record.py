@@ -323,7 +323,7 @@ class RecordPlay:
                     if not ok:
                         last_why = f"{c['title'][:20]}: {msg}"
                         continue
-                    self._event_pending = {"kind": "acapella", "track_id": int(c["id"]), "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": want_t,
+                    self._event_pending = {"kind": "acapella", "track_id": int(c["id"]), "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": want_t, "stretch_bars": int(stretch),
                                            "record": sa.track.id, "why": f"the vocal of {c['title'][:24]} over this groove (fit {c['fit']})" + (" - your pair" if planted else ""),
                                            "accepted": rate >= 2 or planted is not None}      # MOMENTS lots: the DJ takes its own ideas; some: it proposes; your pair is taken
                 else:
@@ -436,8 +436,14 @@ class RecordPlay:
         if room < cb - 1:
             self._order_end(o, "failed", f"{sa.track.title[:22]}'s groove is past: {room} bars of it left at the earliest bar the vocal could come")
             return
-        bars = max(cb, min(int(o["bars"] or cb), room // cb * cb))
+        # the vocal is YOURS: it holds the lane until its song has sung its last (or you take it out) - not a count of
+        # bars inside the groove ("the vocals from another song last a pathetic amount of time", 2026-09-21). `bars` is the
+        # sung stretch, for the words and the picture; the groove only decides where it BEGINS
         S_id = int(o["track_id"])
+        stretch = None
+        if o.get("s_start") is not None and o.get("s_end") is not None:
+            stretch = int(max(cb, (float(o["s_end"]) - float(o["s_start"])) / max(bar_a, 1e-6)))
+        bars = int(stretch or max(cb, min(int(o["bars"] or cb), room // cb * cb)))
         cue = float(o["cue_t"]) if o.get("cue_t") is not None else None
         d_s = self.deck_of(S_id)
         if d_s is not None and d_s in self.songs and self.songs[d_s].staged_at is not None:
@@ -456,14 +462,14 @@ class RecordPlay:
                 self._move("order", None, sa.track.id, S_id, f"your pair waits: {self._track_title(S_id)[:22]} {msg}")
             return
         self._event_pending = {"kind": "acapella", "track_id": S_id, "bar": int(K), "bars": int(bars), "t": time.time(), "want_t": cue,
-                               "record": sa.track.id, "accepted": True, "order": o["id"],
+                               "record": sa.track.id, "accepted": True, "order": o["id"], "yours": True, "stretch_bars": int(bars),
                                "why": f"the vocal of {self._track_title(S_id)[:24]} over this groove - your pair"}
         # the seam out of this record comes after the pair: an order outranks the DJ's placement - moved ONCE, now that
         # the event is placed (moved every bar while the pair's song decoded, it walked - the on-record case)
         if sm is not None and sm["state"] == "planned" and sm["bar"] < K + bars + 1:
             self._seam_move(self._phrase_bar_after(K + bars + 1), "your pair comes first")
         o["state"], o["event_bar"] = "running", int(K)
-        o["why"] = f"the vocal in {int(K) - bar} bars, for {bars} bars{late}"
+        o["why"] = f"the vocal in {int(K) - bar} bars; it stays until it has sung its last (about {bars} bars) or you take it out{late}"
         sa.events_done = int(getattr(sa, "events_done", 0)) + 1
         used = getattr(sa, "events_used", None)
         if used is None:
@@ -643,7 +649,7 @@ class RecordPlay:
             return False, "no idea pending"
         if pend.get("accepted"):
             return True, "already taken"
-        pend["accepted"] = True
+        pend["accepted"], pend["yours"] = True, True  # (taken by you: a vocal you chose holds its lane - see the acapella script)
         self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"you: the idea is taken - {pend['why'][:70]}")
         if pend.get("kind") == "takeover":
             self._idea_exit_taken()

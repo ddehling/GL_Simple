@@ -158,6 +158,26 @@ def main():
         n_moves = len(rc.move_log)
         if d.last_error or rc.last_error:
             seen["fail"] = f"error: {d.last_error or rc.last_error}"
+    # THE VOCAL IS YOURS (2026-09-21, "the vocals from another song last a pathetic amount of time"): after it comes in it
+    # holds the lane until its song has sung its last - measured here for up to six phrases: the hold must still stand,
+    # or have ended only because the song sang its last / ran out
+    held = {"bars": 0, "end": None}
+    if seen["vocal_in"] is not None and seen["fail"] is None:
+        d_s = rc.deck_of(p["s"].id)
+        n_moves = len(rc.move_log)
+        for _k in range(48):
+            pump(bar_blocks())
+            if getattr(rc, "_vocal_hold", None) != d_s or d_s is None or d_s not in rc.songs:
+                for m in rc.move_log[n_moves:]:
+                    if "sung its last" in m["text"] or "has run out" in m["text"] or "took" in m["text"]:
+                        held["end"] = m["text"][:100]
+                held["end"] = held["end"] or "the hold ended (no word why)"
+                break
+            held["bars"] += 1
+        stretch_bars = int((float(p.get("s_end") or 0) - float(p.get("s_start") or 0)) / max(rc._bar_s(p["s"].track if hasattr(p["s"], "track") else p["s"]), 1e-6)) if p.get("s_end") else 48
+        print(f"the vocal held its lane {held['bars']} bars" + (f", then: {held['end']}" if held["end"] else " and still holds (the run ended)"))
+        if held["end"] is not None and held["bars"] < min(24, stretch_bars) and "sung its last" not in held["end"] and "run out" not in held["end"]:
+            seen["fail"] = f"your vocal was let go after {held['bars']} bars: {held['end']}"
     d.stop(0.1)
     mono = np.concatenate(audio[t0:]).mean(axis=1) if len(audio) > t0 + 10 else np.zeros(1)
     nb = int(bar_blocks() * BLOCK)

@@ -228,8 +228,11 @@ song is staged at once. The moment the record's stems are on a deck the pair is 
 stems: where the record enters (drums first five phrases before the groove; or whole, a cut, at the latest
 place before the groove where its drums carry; or on the groove itself with the vocal four bars in), and how
 many bars the vocal gets. A pair that does not fit is REFUSED then, by name, and its record leaves UP NEXT.
-From then on the seam into the record, the event and the arm read that score; nothing is searched again. THE
-PLAN carries a PAIR row from the moment you take it (planning → planned with its times → the EVENT row when it
+From then on the seam into the record, the event and the arm read that score; nothing is searched again. The
+vocal is YOURS once it is in: like a vocal you bring by hand it holds the lane - resting where it pauses, back
+when it sings - until its song has sung its last, or you take it out (READY: its vocal button, or the lane
+back to the bed). It is not "two to four phrases and gone"; that is the DJ's own idea, not taken. The same
+holds for an IDEA you take with "do it". THE PLAN carries a PAIR row from the moment you take it (planning → planned with its times → the EVENT row when it
 is armed → done, refused or failed with the reason, kept a minute), and the picture a dashed vocals mark at
 its bar with the other song's dashed clip once it is on a deck. Where the pair census has run
 (`tools/tests/_dj_pair_census.py`), the list already says the entry the planner decided and hides what it
