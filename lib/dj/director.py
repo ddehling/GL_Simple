@@ -166,15 +166,18 @@ ENERGY_LEAN = {"cool": -0.25, "hold": 0.0, "amp": 0.25}
 PACE_X = {"short": 0.6, "normal": 1.0, "long": 1.5}
 PACE_BARS = {"short": 4, "normal": 8, "long": 16}
 PLAY_MIN_S = {"short": 150.0, "normal": 210.0, "long": 300.0}       # the record plays at least this long (quick-mix / club / long blends)
+NIGHT_HOURS = 8.0                 # "played tonight" reaches back this far - across restarts (the night log's 'played' rows)
 LOOP_LEVEL = {"off": 0, "some": 1, "lots": 2}
 LAYER_BLEND = {"two": 0.3, "three": 0.85}
 HANDOVER_BEATS = 1.0
 
 
 class Director:
-    def __init__(self, music_root, engine=None, theme="groove", attach=None):
+    def __init__(self, music_root, engine=None, theme="groove", attach=None, played_log_dir=None):
         """`attach(key, submix)` mounts a submix on the audio engine (the tab passes engine.attach_track;
-        the gate passes its own). Library and DB are opened here once and shared with both engines."""
+        the gate passes its own). Library and DB are opened here once and shared with both engines.
+        `played_log_dir`: where the night's 'played' rows are read from (a test's own folder; the night log by
+        default, never in a headless run)."""
         from lib.dj.db import LibraryDB
         from lib.dj import brain as B
         self.music_root = music_root
@@ -220,6 +223,11 @@ class Director:
         # reusing songs" - every handover built a fresh brain that knew nothing of the other's plays)
         self.played = []                 # (track_id, when)
         self._noted = set()
+        try:
+            n_night = self._seed_night(log_dir=played_log_dir, force=played_log_dir is not None)
+        except Exception:
+            n_night = 0
+        self._night_seeded = n_night
         self.last_verdict = None         # what the last GOOD / BAD did (the tab shows it)
         self.last_dropout = None         # the last silence on the bus over a bar: when, what was happening
         self.flags = []                  # the FLAGS raised tonight: {t, kind, label, text} (the snapshots are in logs/dj_flags.jsonl)
@@ -313,6 +321,9 @@ class Director:
         except Exception:
             pass
         self._event(f"started: {self.describe_dials()}")
+        if getattr(self, "_night_seeded", 0):
+            first_t = min(w for _t, w in self.played) if self.played else time.time()
+            self._event(f"tonight so far: {len(self._played_ids())} songs played since {time.strftime('%H:%M', time.localtime(first_t))} (earlier sessions) - none of them again")
         if threaded:
             self._thread = threading.Thread(target=self._run, daemon=True, name="director")
             self._thread.start()
@@ -2330,9 +2341,67 @@ class Director:
             return
         self._noted.add(tid)
         self.played.append((int(tid), time.time()))
+        try:
+            from lib.dj.session import log_row
+            log_row({"event": "played", "track_id": int(tid), "title": self.title(int(tid))[:60]})   # (the night's memory: see _seed_night)
+        except Exception:
+            pass
 
-    def _played_ids(self, hours=3.0):
-        cutoff = time.time() - hours * 3600.0
+    def _seed_night(self, log_dir=None, force=False):
+        """ONE NIGHT'S MEMORY SURVIVES A RESTART (user 2026-09-21: "you need to not play the same songs repeatedly
+        after a restart"): every song that became the record in the last NIGHT_HOURS, by any session of this
+        machine, is played tonight - from the night log's 'played' rows (the DB's play history counts staged
+        songs never heard). Headless runs neither write nor read it unless `force`. Returns how many."""
+        import json
+        from lib.dj.session import LOG_DIR, headless
+        if headless() and not force:
+            return 0
+        d = log_dir or LOG_DIR
+        since = time.time() - NIGHT_HOURS * 3600.0
+        n = 0
+        by_title = None                               # (the rows before 2026-09-21 carry titles only: "X takes the clock")
+
+        def ids_of_title(title):
+            nonlocal by_title
+            if by_title is None:
+                by_title = {}
+                for t in self.library:
+                    by_title.setdefault((t.title or "").strip(), []).append(t.id)
+            return by_title.get(title.strip(), [])
+        for day in (time.strftime("%Y%m%d", time.localtime(since)), time.strftime("%Y%m%d")):
+            p = os.path.join(d, f"dj_{day}.jsonl")
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if '"played"' not in line and "takes the clock" not in line and "opens on every lane" not in line:
+                            continue
+                        try:
+                            r = json.loads(line)
+                        except ValueError:
+                            continue
+                        if float(r.get("t") or 0) < since:
+                            continue
+                        tids = []
+                        if r.get("event") == "played":
+                            tids = [int(r.get("track_id") or 0)]
+                        elif r.get("event") == "remix_move" and r.get("kind") in ("clock", "open"):
+                            txt = str(r.get("text") or "")
+                            for marker in (" takes the clock", " opens on every lane"):
+                                if marker in txt:
+                                    tids = ids_of_title(txt.split(marker)[0])
+                                    break
+                        for tid in tids:
+                            if tid and tid not in self._noted:
+                                self._noted.add(tid)
+                                self.played.append((tid, float(r["t"])))
+                                n += 1
+            except OSError:
+                continue
+        self.played.sort(key=lambda x: x[1])
+        return n
+
+    def _played_ids(self, hours=None):
+        cutoff = time.time() - (NIGHT_HOURS if hours is None else float(hours)) * 3600.0
         return {tid for tid, when in self.played if when >= cutoff}
 
     def _seed_brain(self, brain):

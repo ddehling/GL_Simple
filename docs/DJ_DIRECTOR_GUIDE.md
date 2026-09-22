@@ -7,6 +7,11 @@
 ## Start
 
 Pick a **theme** (what kind of songs, the shape of the night) and, if you want, a **playlist** as the pool.
+**One night's memory survives a restart.** Every song that became the record in the last eight hours, in any
+session on this machine, counts as played tonight: the opener, THE SET's chain, SONGS ("played N min ago",
+grey), PAIRS and the DJ's own picks all avoid it. The story row says "tonight so far: N songs played since
+HH:MM" at START. (Headless gates neither write nor read this memory.)
+
 Press **START**. The first note comes within a bar: while the window sat open the tab already built the
 Director, warmed the decode helper and decoded the opener onto its deck (a theme, pool or mood changed before
 START picks afresh, which costs the decode again). The autoDJ plays one record at a time exactly as it always

@@ -1549,7 +1549,12 @@ four-bar pause with a one-beat fade back on the first detected beat (eight rests
 of every phrase lost): a chosen vocal is now brought to the library's vocal level and its lane stays through
 its pauses. "bad transition / seam" - the score's drums-first door tried one place (five phrases before the
 groove) and fell to the cut; it tries five, four, six, three, seven, eight (PLAN_VERSION 3). Verified: both
-named pairs (the vocal held 48 bars, 0 rests, lane gain 1.6), remix gate, census 60/60.
+named pairs (the vocal held 48 bars, 0 rests, lane gain 1.6), remix gate, census 60/60. "you need to not play
+the same songs repeatedly after a restart" - the night's memory (`Director.played`) lived in the process: the
+opener, the chain and the lists forgot the evening at every START. Now every song that becomes the record is
+a 'played' row in the night log and `_seed_night` reads the last eight hours at construction (older rows by
+their "takes the clock" / "opens on every lane" titles); headless runs neither write nor read it. The real log
+gave twelve songs for tonight at once. Test: `_dj_night_memory.py`.
 
 ## Rules carried over (they were earned)
 
