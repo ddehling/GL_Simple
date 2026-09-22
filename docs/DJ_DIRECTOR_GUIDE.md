@@ -202,6 +202,16 @@ bassline under, rose = a vocal over; plain = the cut. Like PAIRS, it lists only 
 played tonight, on the decks or already queued as the next record, no vocal over a groove under ten bars
 or in the song's last minute.
 
+**Every record gets a score (docs/DJ_THE_COMPOSER.md).** When a record is staged as the next one, the DJ
+composes its events from its own pairing lists and section map: a guest vocal over a groove (held until it
+has sung its last), a GUEST BASS - another record's bassline and melody under its drums for two phrases,
+then its own back - a BUILD into its own drop, and, when the next record is in its lists, the exit as a
+TAKEOVER at that record's drop. THE PLAN shows them as SCORE rows the moment the record is staged; the
+story row says "the score of X: …"; each fires on its bar or ends with a reason, never silently. MOMENTS
+is the density: rare = one event per record, some = two, lots = four (what the lists allow: about a quarter
+of the library carries two today). A record with two or more events moves on at seven tenths of the
+minimum play. Your own pair on a record outranks the score and decides where the record starts.
+
 **Nothing is offered that would be refused.** The same rule runs through every list and menu: a song
 without stems is not offered UP NEXT (only "make it playable"); TAKEOVER and BRIDGE refuse at once for what
 can be known before staging (the record itself, no stems, the wall); a queued song whose deck is not free

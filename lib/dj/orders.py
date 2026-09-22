@@ -26,7 +26,7 @@ FLOOR_BARS = 2               # ...and never from before this (a cue needs two ba
 def new_order(kind, record_tid, other_tid, want_t=None, want_end=None, s_start=None, s_end=None, words="", **extra):
     """A fresh order. `kind`: "acapella" (the other song's vocal over the record's groove at `want_t`..`want_end`;
     its sung stretch `s_start`..`s_end`) or "takeover" (its bassline under the record's drums at its drop)."""
-    o = {"id": int(time.time() * 1000) % 10_000_000, "kind": kind, "record_tid": int(record_tid), "track_id": int(other_tid),
+    o = {"id": int(time.time() * 1000) % 10_000_000 + len(_IDS) % 1000, "kind": kind, "record_tid": int(record_tid), "track_id": (int(other_tid) if other_tid is not None else None),
          "want_t": (float(want_t) if want_t is not None else None), "want_end": (float(want_end) if want_end is not None else None),
          "s_start": (float(s_start) if s_start is not None else None), "s_end": (float(s_end) if s_end is not None else None),
          "words": words, "t": time.time(), "state": "staging", "why": "planning: its record's stems",
@@ -34,7 +34,11 @@ def new_order(kind, record_tid, other_tid, want_t=None, want_end=None, s_start=N
          "entry": None, "start_t": None, "entry_t": None, "event_t": None, "bars": None, "cue_t": None, "cut": False,
          "event_bar": None, "t_fixed": None, "t_end": None}
     o.update(extra)
+    _IDS.append(o["id"])
     return o
+
+
+_IDS = []                    # (ids handed out this process: two orders placed in the same millisecond stay distinct)
 
 
 def _first_body(track):
@@ -149,9 +153,14 @@ def geometry_ok(want_t, want_end, bar_s, change_bars=8):
 
 def order_words(o, title_of):
     """One line for THE PLAN: what the order is, in words."""
-    R, S = title_of(o["record_tid"])[:22], title_of(o["track_id"])[:22]
+    R = title_of(o["record_tid"])[:22]
+    S = title_of(o["track_id"])[:22] if o.get("track_id") is not None else ""
     if o["kind"] == "acapella":
         return f"the vocal of {S} over {R}" + (f" from {_mm(o['want_t'])}" if o.get("want_t") is not None else "")
+    if o["kind"] == "guest":
+        return f"{S}'s bassline under {R}'s drums" + (f" at {_mm(o['want_t'])}" if o.get("want_t") is not None else "") + f" for {int(o.get('bars') or 16)} bars, then its own back"
+    if o["kind"] == "build":
+        return f"a BUILD into {R}'s own drop" + (f" at {_mm(o['want_end'])}" if o.get("want_end") is not None else "")
     return f"{S}'s bassline takes over {R} at its drop - then it is the record"
 
 

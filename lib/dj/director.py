@@ -153,6 +153,7 @@ FLAG_GOOD = {
 FLAG_KINDS = {**FLAG_BAD, **FLAG_GOOD}
 MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
 MOMENT_GAP_S = {"rare": 1e9, "some": 480.0, "lots": 240.0}           # ...and never closer than this to the last moment (peaks are spaced)
+COMPOSE_N = {"rare": 1, "some": 2, "lots": 4}                        # THE COMPOSER: events in a record's score (docs/DJ_THE_COMPOSER.md)
 FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
 TEMPO_LEAN_BPM = {"slower": -6.0, "hold": 0.0, "faster": 6.0}       # the autoDJ's planned journey
 TEMPO_LEAN_X = {"slower": -0.03, "hold": 0.0, "faster": 0.03}        # the conductor's clock
@@ -451,6 +452,7 @@ class Director:
         rc.set_seam(d["mixing"], SEAM_SPEED[d["seams"]])
         rc.set_event_rate({"rare": 0, "some": 1, "lots": 2}[d["moments"]])   # the EVENTS per record, from the pairing lists (docs/DJ_PAIRINGS.md)
         rc.set_event_pref(vocals=d["vocals"], energy=d["energy"])           # VOCALS: which kind of event; ENERGY: which song
+        rc.compose_n = COMPOSE_N[d["moments"]]                              # THE COMPOSER: events per record (docs/DJ_THE_COMPOSER.md)
         try:
             rc.brain.set_require_tags(self.tags)
         except Exception:
@@ -1373,18 +1375,22 @@ class Director:
         says it; a refused pair's record leaves UP NEXT when the pair put it there."""
         st = o.get("state")
         R = self.title(o["record_tid"])[:24]
-        S = self.title(o["track_id"])[:24]
+        S = self.title(o["track_id"])[:24] if o.get("track_id") is not None else ""
+        tag = "SCORE" if o.get("composed") else "PAIR"
+        from lib.dj.orders import order_words
+        what = order_words(o, self.title)
         if st == "fixed":
-            self._event(f"PAIR planned: {o.get('why', '')[:150]}")
+            if not o.get("composed"):
+                self._event(f"{tag} planned: {o.get('why', '')[:150]}")
         elif st == "done":
-            self._event(f"PAIR: the vocal of {S} comes over {R} - {o.get('why', '')[:80]}")
+            self._event(f"{tag}: {what[:90]} - {o.get('why', '')[:70]}")
         elif st == "refused":
-            self._event(f"PAIR REFUSED: {o.get('why', '')[:150]}")
+            self._event(f"{tag} REFUSED: {o.get('why', '')[:150]}")
             if o.get("queued") and o["record_tid"] in self.up_next:
                 self.unqueue(o["record_tid"])
                 self._event(f"{R} leaves UP NEXT (it was there for the pair)")
         elif st == "failed":
-            self._event(f"PAIR FAILED: {o.get('why', '')[:150]}")
+            self._event(f"{tag} FAILED: {what[:60]} - {o.get('why', '')[:120]}")
 
     def idea_take(self):
         """"Do it" on the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns a sentence."""
@@ -3163,12 +3169,13 @@ class Director:
             from lib.dj.orders import order_words, order_state_words
             for o in (rc.orders_status() if hasattr(rc, "orders_status") else []):
                 try:
-                    rid, S_id = int(o["record_tid"]), int(o["track_id"])
+                    rid, S_id = int(o["record_tid"]), (int(o["track_id"]) if o.get("track_id") is not None else None)
                     R = self.track(rid)
                     what = order_words(o, self.title)
                     st = o["state"]
+                    kind_row = "SCORE" if o.get("composed") else "PAIR"   # (the composer's events vs your pair)
                     if st in ("refused", "failed"):
-                        row(None, "PAIR", what, order_state_words(o)[:110], key=("pair", o["id"], st), tid=S_id)
+                        row(None, kind_row, what, order_state_words(o)[:110], key=("pair", o["id"], st), tid=S_id)
                         continue
                     if st == "running":
                         continue                      # (the EVENT row above is this order now)
@@ -3189,7 +3196,8 @@ class Director:
                         where = f"when {self.title(rid)[:18]} is the record"
                     else:
                         where = ("UP NEXT" if rid in self.up_next else ("on a deck" if d_r is not None else "its record is not queued"))
-                    row(t_p, "PAIR", what, f"your pair · {where} · {order_state_words(o)[:80]} · {s_state}", key=("pair", o["id"], st), tid=S_id)
+                    row(t_p, kind_row, what, f"{'the score' if o.get('composed') else 'your pair'} · {where} · {order_state_words(o)[:80]}" + (f" · {s_state}" if S_id is not None else ""),
+                        key=("pair", o["id"], st), tid=S_id)
                 except Exception as e:  # noqa: BLE001
                     row(None, "PAIR", f"a pair on {self.title(int(o.get('record_tid') or 0))[:24]}", f"({type(e).__name__}: {e})"[:80], key=("pair", o.get("id"), 0))
             # TAKEOVER / BRIDGE with a song, staging: said in the plan too (it had no row until it armed)

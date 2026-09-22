@@ -1585,8 +1585,28 @@ page and the build the same night: a seam is 32 bars (64 as a blend), every cros
 leaving over the cross, B's leading stems entering only from a groove of its own that carries, the placement
 ladder 32 → 16 → 8 → the cut; the rehearsal models the real crosses, renders every rehearsed seam as AUDIO
 (logs/seams/), a 'seam' flag keeps the sound beside it, and HEAR THE SEAM plays the render on the cue output
-from the PLAN's SEAM row - the headphone cue promised on 09-13, delivered. Not yet: the campaign's before /
-after numbers and six renders for the ear.
+from the PLAN's SEAM row - the headphone cue promised on 09-13, delivered. The campaign after: the level
+step across a seam median -0.3 dB (was -3.3), double bass 0 % (was 7.7), lurch 25 % (2 of 8, the drums'
+cross), minutes per record 4.4 (was 3.0), one song alone 354 s (was 192).
+
+**"We are not making a system that really does anything interesting. It slowly and ponderously plays songs
+with slight overlap. This is not a good system" → docs/DJ_THE_COMPOSER.md → "Yes" (2026-09-22).** The honest
+answer: two rules I wrote to end the clashes and the churn - "the record plays whole" and "one idea per
+record, only if you say do it" - ended the play; the blend made the seams smooth and the campaign showed the
+DJ's own events at zero. Built the same night: THE COMPOSER (`lib/dj/composer.py`, pure) - every record gets
+a score of MOMENTS-many events from its own pairing lists and section map when it is staged as the next
+record (or when it is the record already): a guest vocal on a groove (held), a GUEST BASS (a new moment: the
+other record's bassline and melody under its drums for two phrases, then its own back), a BUILD into its
+own drop, and the exit as a TAKEOVER when the next record is in its lists; each is an ORDER (a record now
+holds several; `_planted[rid]` is the current one), shown as SCORE rows the moment the record is staged,
+fired on its bar or ended with a reason; records with two or more events move on at seven tenths of the
+minimum play; only YOUR pair drives where a record starts. The composer census over the library: at MOMENTS
+some 27 % of records get two events, 45 % one, 28 % none - the pairing lists are the limit (260 vocal
+candidates), not the composer. The compose smoke (twelve rendered minutes, MOMENTS some): five scores, a
+guest vocal, two guest basslines and a build sounded, one build let go with its reason, no dead bars; remix
+gate and the Resurrection pair green; control gate seed 12 clean but for one dead bar in the old
+moment-abandons-seam → "the room had nobody" handoff (eight seconds at gain zero before the staged record
+was put on whole - not the composer's, still open).
 
 ## Rules carried over (they were earned)
 

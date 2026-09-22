@@ -69,6 +69,32 @@ for anything the user asked; nothing is synthesized.
   three minutes per record, no stretch alone over two minutes.
 - **The ear**: the rendered seams (HEAR THE SEAM, the flag wavs) and the user's hour.
 
+## Status (2026-09-22, night)
+
+**Built.** `lib/dj/composer.py` (pure: `compose(track, lists, entry_t, …)` → the events, in time order, with
+variety by `last_lead` and no song used twice a night). The conductor composes a record's score once - when
+it is the seam's next record (heard from the seam's landmark) or when it is the record already (the opener,
+a DROP) - and places each event as an ORDER (`place_order(..., composed=True)`): a record may now hold
+several orders; `_planted[rid]` is its CURRENT one and advances as each ends. Two new event kinds: **GUEST
+BASS** (a moment: the other song's bass and melody cross in under the record's drums over the harmony cross,
+stay two phrases, cross back out; the low end handed over under the shelf both ways; the record stays the
+record) and **BUILD** (the record's own BUILD armed seventeen bars before its drop). The exit as a payoff:
+when the seam's next record is in the record's bass-under list, a TAKEOVER order is placed for the exit.
+Only YOUR pair drives where a record starts (`drives_entry`); the composer's events are placed from where
+the record is heard. Records with two or more events move on at seven tenths of the minimum play. THE PLAN
+shows the score as SCORE rows the moment the record is staged (the story row: "the score of X: …").
+MOMENTS is the density: rare 1, some 2, lots 4 (`COMPOSE_N`); a composed record gets no IDEA rows of the
+old kind.
+
+**The census** (`tools/tests/_dj_compose_census.py`, 1073 records with lists, geometry only): at MOMENTS
+some, 27 % of records get two events, 45 % one, 28 % none; at lots, 8 % get three or four. The lists are the
+limit (260 vocal candidates over the library; a guest needs a groove of three phrases). Kinds: guest 655,
+vocal 260, build 150. So "two per record" is what a quarter of the library can do today; one per record is
+what most can. The next lever is the pairing pass (more vocal candidates), not the composer.
+
+**Not yet.** The buttons as scores; the campaign's new columns (events per record, seconds alone, exit
+kinds); the census by the pairings pass.
+
 ## Cost, in order
 
 1. The composer (the score per record from lists + structure, the plan rows, the executor hooks for the

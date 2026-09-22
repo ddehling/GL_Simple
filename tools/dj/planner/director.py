@@ -2785,6 +2785,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                     it.setForeground(Qt.GlobalColor.yellow)
                 elif r["kind"] == "PAIR":
                     it.setForeground(LANE_COLORS.get("vocals") or Qt.GlobalColor.magenta)
+                elif r["kind"] == "SCORE":
+                    it.setForeground(LANE_COLORS.get("bass") or Qt.GlobalColor.cyan)   # the composer's events: the record's own score
                 elif r["kind"] in ("THEN", "CLOCK"):
                     it.setForeground(Qt.GlobalColor.gray)
                 elif r["kind"] == "IDEA":

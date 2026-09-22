@@ -123,6 +123,7 @@ MOMENTS = {
     "bridge": ("BRIDGE", 8, "the bed fades out under this song's vocal; the other song's drums come in under it; a beat of nothing; "
                             "its bass, melody and drums slam on the one, the vocal carries over"),
     "acapella": ("ACAPELLA", 1, "another record's vocal over this groove for two to four phrases, from a pairing that fits, then gone"),
+    "guest": ("GUEST BASS", 1, "another record's bassline and melody under these drums for two phrases, crossing in and back out over a phrase - the record's own return"),
     # EDITS OF THE RECORD ITSELF (docs/DJ_MORE_THAN_A_MIXER.md 4)
     "build": ("BUILD", 16, "the eight bars before the record's drop once more, the bass pulled on the second pass; release into the drop on the one - "
                            "the drop lands eight bars later than written, earned"),
@@ -3257,6 +3258,18 @@ class RemixConductor(RecordPlay):
                 else:
                     return False, f"{self.songs[B].track.title[:24]} is singing here (never two singers)"
             T, what = V, "its sung stretch"
+        if kind == "guest":
+            # THE COMPOSER's guest bassline: the other song staged and ready; its bass must be allowed on the lane (a key
+            # clash is a refusal for the DJ's own event - said, the score moves on)
+            V = other if (other in self.songs and other != B and not self.songs[other].leaving and self.songs[other].staged_at is not None) else None
+            if V is None:
+                return False, "that song is not ready on a deck" if other in self.songs else "no song for the guest bassline"
+            if self.lanes.get("bass") == V:
+                return False, f"{self.songs[V].track.title[:24]}'s bassline is in already"
+            why = self.why_not("bass", V)
+            if why:
+                return False, f"{self.songs[V].track.title[:24]}: {why}"
+            T, what = V, "its drop"
         if kind in ("takeover", "bridge"):
             V = other if (other in self.songs and other != B and not self.songs[other].leaving and self.songs[other].staged_at is not None) else None
             if V is None and other is not None:
@@ -3301,7 +3314,7 @@ class RemixConductor(RecordPlay):
         elif kind == "acapella":
             ev = getattr(self, "_event", None) or {}
             L = int(ev["bar"]) if ev.get("bar") is not None and int(ev["bar"]) >= self.bar_n + 2 else self.bar_n + 1 + self._phrase_ahead(B, at, 1)
-        elif kind == "takeover" and (getattr(self, "_event", None) or {}).get("bar") is not None and int(self._event["bar"]) >= self.bar_n + 2:
+        elif kind in ("takeover", "guest") and (getattr(self, "_event", None) or {}).get("bar") is not None and int(self._event["bar"]) >= self.bar_n + 2:
             # the DJ's BASS UNDER event: the other song was staged with its landmark ON the event's bar, at the
             # end of the record's minimum play (landed at the next drop ahead instead, the takeover came 6 bars
             # after arming and the records lasted a minute - campaign v7)
@@ -3387,6 +3400,9 @@ class RemixConductor(RecordPlay):
             yours = bool(ev.get("order") or ev.get("yours"))
             self._moment["yours_vocal"] = yours
             self._moment["bars"] = int((ev.get("stretch_bars") if yours else None) or ev.get("bars") or int(tune.get("phrases", 4)) * self.change_bars)
+        if kind == "guest":
+            ev = getattr(self, "_event", None) or {}
+            self._moment["bars"] = int(ev.get("bars") or 2 * self.change_bars)
         if kind == "again":
             self._moment["again_start"] = again_start
         self._moment["script"] = self._moment_script(kind)
@@ -3683,6 +3699,54 @@ class RemixConductor(RecordPlay):
             if hb > 0:
                 marks.append((-1, 0, list(STEMS), "hole"))
             marks.append((0, None, list(STEMS), "on the one, loud"))
+        elif kind == "guest":
+            # THE COMPOSER's guest bassline (docs/DJ_THE_COMPOSER.md): the other song's bass and melody cross in under the
+            # record's drums over the harmony cross, stay `bars`, and cross back out to the record's own - no roles change,
+            # the record stays the record; the low end handed over under the shelf both ways
+            n_bars = int((self._moment or {}).get("bars") or 2 * self.change_bars)
+
+            def guest_in(at):
+                mm = M()
+                V, B = mm["V"], mm["B"]
+                if V not in self.songs or self.songs[V].leaving:
+                    mm["end_clock"] = at
+                    return
+                beats = float(min(16.0, self._step_beats("harmony"))) if hasattr(self, "_step_beats") else 8.0
+                beat = self._beat_s()
+                self._cross("bass", V, at, beats=beats, shape=False)
+                if self._other_free_for(V, B):
+                    self._cross("other", V, at, beats=beats, shape=False)
+                from lib.dj.remix import LOW_CARVE as _lc
+                self.submix.post({"at": at, "cmd": "eq", "deck": B, "low": _lc, "ramp_s": beats * beat})
+                self.submix.post({"at": at, "cmd": "eq", "deck": V, "low": 1.0, "ramp_s": beats * beat})
+                s = self.songs[V]
+                if s.voice_since is None:
+                    s.voice_since = self.bar_n
+                self._hygiene(at + int(beats * beat * RATE))
+                self._move("moment", "bass", self._song_id(B), s.track.id, f"GUEST BASS: the bassline and melody of {s.track.title} under {self.songs[B].track.title[:24] if B in self.songs else '?'}'s drums for {n_bars} bars")
+
+            def guest_out(at):
+                mm = M()
+                V, B = mm["V"], mm["B"]
+                beats = float(min(16.0, self._step_beats("harmony"))) if hasattr(self, "_step_beats") else 8.0
+                beat = self._beat_s()
+                if B in self.songs and not self.songs[B].leaving:
+                    if self.lanes.get("bass") == V:
+                        self._cross("bass", B, at, beats=beats, shape=False)
+                    if self.lanes.get("other") == V:
+                        self._cross("other", B, at, beats=beats, shape=False)
+                    from lib.dj.remix import LOW_CARVE as _lc
+                    self.submix.post({"at": at, "cmd": "eq", "deck": B, "low": 1.0, "ramp_s": beats * beat})
+                    if V in self.songs:
+                        self.submix.post({"at": at, "cmd": "eq", "deck": V, "low": _lc, "ramp_s": beats * beat})
+                self._hygiene(at + int(beats * beat * RATE))
+                if V in self.songs and not self.songs[V].leaving and not getattr(self.songs[V], "user_pick", False) and not self.songs[V].held(self.lanes):
+                    self._leave_song(V, at + int(beats * beat * RATE) + 2 * self._bar_clock())
+                self._move("moment", "bass", self._song_id(V), self._song_id(B), f"GUEST BASS over: {self.songs[B].track.title[:24] if B in self.songs else 'the record'}'s own bassline back")
+                mm["end_clock"] = at + int(beats * beat * RATE) + self._bar_clock()
+
+            script = [(0, guest_in), (n_bars, guest_out)]
+            marks = [(0, n_bars, ["bass", "other"], "GUEST BASS: another record's bassline under these drums")]
         elif kind == "takeover":
             def hole_bass(at):
                 mm = M()
