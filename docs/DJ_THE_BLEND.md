@@ -78,8 +78,25 @@ HEAR THE SEAM: right-click the PLAN's SEAM row - the rehearsal's wav on the cue 
 Level continuity through the cross = equal power + the rehearsed step correction at the swap (built earlier
 the same day); the continuous scaling of item 3 is not separate code.
 
-**Not yet.** The campaign's before/after numbers and the six renders for the ear; a bus-level-range measure per
-cross in the campaign.
+**The campaign, before and after** (eight twelve-minute nights each, `logs/record_campaign_v11` vs
+`logs/record_campaign_v12_blend`):
+
+| measure | before (13 seams) | after (8 seams) |
+|---|---|---|
+| lurch inside the seam | 15.4 % | 25.0 % (2 of 8; the interval 7-59 %) |
+| dead air inside the seam | 0 % | 0 % |
+| double bass | 7.7 % | 0 % |
+| level step after vs before | median -3.3 dB, worst 11.6 | median -0.3 dB, worst 8.0 |
+| landmark on the completion bar | - | 10 of 11 within a bar |
+| minutes per record | 3.0 | 4.4 |
+| longest stretch of one song alone | 192 s | 354 s |
+
+The level is continuous now (the median step is a third of a decibel) and the bass never doubles; the two
+lurches are the drums' cross over the outgoing record's own drums (counted as "two drums", 2 of 8) - the
+blend's price, to be heard. And the numbers say what the user said the same night: 4.4 minutes per record,
+six minutes of one song alone at the worst - "it slowly and ponderously plays songs with slight overlap. This
+is not a good system." The blend made the seams smooth; it did not make the play interesting. The next page
+is docs/DJ_THE_COMPOSER.md.
 
 ## Cost, in order
 
