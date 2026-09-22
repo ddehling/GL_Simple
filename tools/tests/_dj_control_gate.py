@@ -331,7 +331,8 @@ def run(music, seed, presses, seconds, verbose):
         dl = d.dials
         on_way = frozenset([t.id for t in rc._decoding.values()] + [p[0].id for p in rc._pending.values()])
         return (rc.songs[rc.record_deck].track.id if rc.record_deck in rc.songs else None, tuple(d._chain_pinned()),
-                frozenset(s.track.id for s in rc.songs.values()) | on_way, dl["arc"], dl["energy"], dl["tempo"], dl["pace"], len(d.set_skips), tuple(d.up_next))
+                frozenset(s.track.id for s in rc.songs.values()) | on_way, dl["arc"], dl["energy"], dl["tempo"], dl["pace"], len(d.set_skips), tuple(d.up_next),
+                frozenset(getattr(rc, "unfit_ids", ()) or ()))   # (a song found unfit at its seam is a trigger: it leaves the plan, said)
 
     def set_check(t_now):
         sig = set_sig()

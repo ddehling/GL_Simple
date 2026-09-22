@@ -464,10 +464,15 @@ class RecordPlay:
         if n <= 0:
             return 0
         rec = self.pairings_for(s.track.id) or {}
+        # only songs the conductor can stage (in its stem library): the lists name songs it does not know ("#208: no such
+        # song" - the compose smoke)
+        rec = {k: ([x for x in v if self._track(int(x["id"])) is not None] if k in ("vocal_over", "bass_under") else v) for k, v in rec.items()}
         from lib.dj.composer import compose
         busy = {x.track.id for x in self.songs.values() if x.entered and x is not s}
         used = set(getattr(self, "_composed_used", set()))
-        avoid = set(getattr(self, "avoid_ids", ()) or ()) | busy | set(getattr(self, "unfit_ids", ()) or ())
+        # THE SET's records (UP NEXT and the chain) are not spent as guests: the chain's head taken as a vocal guest
+        # changed the plan under the user (the control gate, seed 13)
+        avoid = set(getattr(self, "avoid_ids", ()) or ()) | busy | set(getattr(self, "unfit_ids", ()) or ()) | set(getattr(self, "reserve_ids", ()) or ())
         bar_r = 4.0 * float(s.track.period_s)
         try:
             events = compose(s.track, rec, float(entry_t), self.change_bars, bar_r, n, used_ids=used, avoid_ids=avoid,
@@ -630,6 +635,13 @@ class RecordPlay:
                 self.last_error = f"compose: {type(e).__name__}: {e}"
         orders = getattr(self, "orders", None) or []
         for o in list(orders):
+            if o["state"] == "running":
+                # its event is placed and waiting to arm: an event dropped elsewhere (a deck given up, a DROP, the room
+                # changed) must end the order, said - never a 'running' order whose event is gone (the gate: silent death)
+                pend = self._event_pending
+                if pend is None or pend.get("order") != o["id"]:
+                    self._order_end(o, "failed", "its event was dropped before it armed")
+                continue
             if o["state"] not in ("staging", "fixed"):
                 continue
             R = self._track(o["record_tid"])

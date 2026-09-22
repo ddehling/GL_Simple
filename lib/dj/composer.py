@@ -122,9 +122,12 @@ def compose(track, rec, entry_t, change_bars, bar_s, n_events, used_ids=(), avoi
     tried = set()
     while len(events) < n_events:
         made = None
+        n_guests = sum(1 for e in events if e.get("other_tid") is not None)
         for kind in order:
             if kind in tried and kind != "guest":
                 continue
+            if kind in ("acapella", "guest") and n_guests >= 2:
+                continue                              # two guest songs a record at most: the decks are four (the compose smoke at lots: "no free deck")
             made = {"acapella": take_vocal, "guest": take_guest, "build": take_build}[kind](t_min)
             if made is not None:
                 tried.add(kind)
@@ -138,7 +141,9 @@ def compose(track, rec, entry_t, change_bars, bar_s, n_events, used_ids=(), avoi
             vo[:] = [x for x in vo if int(x["id"]) != int(made["other_tid"])]
             bu[:] = [x for x in bu if int(x["id"]) != int(made["other_tid"])]
         end_of = float(made["want_end"] or made["want_t"]) if made["kind"] != "acapella" else float(made["want_t"]) + made["bars"] * bar
-        t_min = end_of + GAP_PHRASES * phrase
+        # a phrase of the record alone between events - two after a guest bassline (its cross back out takes half a
+        # phrase, and a BUILD needs the record's own bass back to pull: "the bed does not hold its bass", the compose smoke)
+        t_min = end_of + (2 if made["kind"] == "guest" else GAP_PHRASES) * phrase
         if len(tried) >= 3 and made["kind"] == "build":
             break
     # the exit as a payoff: the next record's bassline takes over at its drop when it is in this record's lists

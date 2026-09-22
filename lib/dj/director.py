@@ -1970,6 +1970,7 @@ class Director:
                 if s.staged_at is not None:
                     self._note_played(s.track.id)
             self.rc.avoid_ids = self._played_ids()
+            self.rc.reserve_ids = set(self.up_next) | {h["id"] for h in self.horizon}   # THE SET's records: never spent as a score's guests
             if self._hold_until is not None and self.rc.bar_n >= self._hold_until:
                 self.rc.set_hold(False)
                 self._hold_until = None
