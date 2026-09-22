@@ -1068,6 +1068,18 @@ class Director:
         expected = (now - st["wall"]) * float(s.rate or 1.0)
         ratio = (t_s - st["t_s"]) / max(expected, 1e-6)
         st.update({"wall": now, "t_s": t_s, "ratio": round(ratio, 3)})
+        if ratio < 0.5:
+            # a STALL inside one window (the music stood still for seconds): said and logged at once - a 14.7 s silence
+            # on 2026-09-21 fell inside one window and the two-window rule never spoke
+            try:
+                from lib.dj.session import log_row
+                log_row({"event": "stall", "ratio": round(ratio, 3), "layers": self.dials.get("layers"), "decks": len(rc.songs),
+                         "decoding": [t.title[:20] for t in rc._decoding.values()], "pending": len(rc._pending)})
+            except Exception:
+                pass
+            if now - st["said"] > 30.0:
+                st["said"] = now
+                self._event(f"⚠ the engine stalled: the music advanced {100 * ratio:.0f} % of ten seconds (a load, a decode, or the machine)")
         if ratio < 0.92:
             st["low"] += 1
             if st["low"] >= 2 and now - st["said"] > 60.0:
@@ -1621,6 +1633,32 @@ class Director:
                    "moment": (f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']}), the one in {mo['in_bars']} bars" if mo else None),
                    "events": [e[1] for e in self.events[-3:]],
                    "moves": ([m for _, m in self.rc.moves[-3:]] if self.rc is not None else [])}
+            # the machine's state with it: a 14.7 s silence on 2026-09-21 with every deck at gain and no slip row left
+            # nothing to read - memory, the decks, the decodes in flight and the decks' cursors are in the row now
+            try:
+                rc = self.rc
+                if rc is not None:
+                    tel = (rc.submix.telemetry or {}).get("decks") or {}
+                    ctx["decks"] = {dk: {"title": s.track.title[:20], "t": round(float((tel.get(dk) or {}).get("time_s") or 0.0), 1),
+                                         "playing": bool((tel.get(dk) or {}).get("playing")), "gain": round(float((tel.get(dk) or {}).get("gain") or 0.0), 2),
+                                         "entered": s.entered, "leaving": s.leaving} for dk, s in rc.songs.items()}
+                    ctx["decoding"] = [t.title[:20] for t in rc._decoding.values()]
+                    ctx["pending"] = [p[0].title[:20] for p in rc._pending.values()]
+                import ctypes
+                from ctypes import wintypes
+
+                class PMC(ctypes.Structure):
+                    _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), ("PeakWorkingSetSize", ctypes.c_size_t),
+                                ("WorkingSetSize", ctypes.c_size_t), ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                                ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
+                pmc = PMC()
+                pmc.cb = ctypes.sizeof(PMC)
+                if ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(pmc), pmc.cb):
+                    ctx["rss_mb"] = int(pmc.WorkingSetSize / 1048576)
+                    ctx["page_faults"] = int(pmc.PageFaultCount)
+            except Exception:
+                pass
             self.last_dropout = ctx
             self._event(f"DROPOUT: the bus has been silent for {now - self._quiet_since:.1f} s" + (f" during {ctx['moment']}" if ctx["moment"] else "")
                         + (f" while switching to {ctx['switching']}" if ctx["switching"] else ""))

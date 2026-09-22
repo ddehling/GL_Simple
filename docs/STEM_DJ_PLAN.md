@@ -1554,7 +1554,18 @@ the same songs repeatedly after a restart" - the night's memory (`Director.playe
 opener, the chain and the lists forgot the evening at every START. Now every song that becomes the record is
 a 'played' row in the night log and `_seed_night` reads the last eight hours at construction (older rows by
 their "takes the clock" / "opens on every lane" titles); headless runs neither write nor read it. The real log
-gave twelve songs for tonight at once. Test: `_dj_night_memory.py`.
+gave twelve songs for tonight at once. Test: `_dj_night_memory.py`. **The evening's second flags:** "dead air"
+- a 14.7 s silence on the bus at 19:54 with every deck at gain, no slip row, two decodes in flight for a pair
+(cause unproven: the dropout row now carries memory, the decks' cursors and the decodes in flight, and a stall
+inside one ten-second window is said and logged at once). "bad transition / seam" + "there was basically no
+fade between songs, just a bland switch" - a 16-bar morph rehearsed a 10 dB step at its harmony swap, moved
+twice and fell back to the cut: A LEVEL STEP IS A LEVEL, NOT A SHAPE - the judge now reports the step's sign,
+the arriving stems are trimmed by that much at the cross and ease back over a phrase (`step_trim`, read by
+`_lane_gain` so no re-post lands back on the step), and the morph stays a morph; the cut fallback is for holes
+only. The gate then found (seed 9) two dead bars in a NEXT-forced cut's strip: the record's vocal "sang" by
+its own measure but was near silent in the room; the seam's strip now applies the BREAK's absolute rule
+(what stays must reach BREAK_LEFT_MIN of the library's drum level) - seed 9 clean after. Verified: remix gate,
+Resurrection, control gate seed 9.
 
 ## Rules carried over (they were earned)
 

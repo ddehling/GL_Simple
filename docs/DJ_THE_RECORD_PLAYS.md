@@ -80,6 +80,12 @@ rules:
   says so ("the seam into X is dropped: the takeover with Y at its drop is this record's exit") and the log
   carries a `plan / exit` row. And a rehearsal that fails no longer turns a morph into a bass swap: the seam
   moves a phrase when the record has the body, else it becomes the cut; the shape you set is kept.
+- **A level step is a level, not a shape (2026-09-21: "no fade between songs, just a bland switch").** When
+  the rehearsal hears a step at the swap (the incoming harmony louder or quieter than the outgoing by more
+  than the records' own steps), the judge says its sign, and the arriving stems come in trimmed by that much
+  and ease back to their own level over the phrase after the cross (`step_trim`; `_lane_gain` reads it, so a
+  re-post in between lands on the eased value). The morph stays a morph. Only a HOLE still moves the seam or
+  falls back to the cut.
 
 ## Removed
 

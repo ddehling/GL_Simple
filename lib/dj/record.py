@@ -930,6 +930,25 @@ class RecordPlay:
                 self._seam_cue_b()
                 self._move("plan", None, None, self._song_id(sm["b"]), f"rehearsed {why}: the swap lands on its drop instead")
                 return
+            # A LEVEL STEP IS A LEVEL, NOT A SHAPE (user 2026-09-21: "there was basically no fade between songs, just a
+            # bland switch" - a 16-bar morph rehearsed a 10 dB step at its harmony swap, moved twice and fell back to
+            # the cut): the step's size and sign are known, so the arriving stems are trimmed by that much at the
+            # swap and eased back to their own level over a phrase. The morph stays a morph.
+            if "dB step at bar" in why and sb is not None and not sb.entered:
+                try:
+                    signed = float(why.split(" dB step")[0].split("a ")[-1])
+                    step_bar = int(why.split("dB step at bar")[1].split()[0])
+                except (ValueError, IndexError):
+                    signed, step_bar = 0.0, last
+                db_ = max(-6.0, min(6.0, -signed))
+                lanes_ = ["bass", "other"] if (step_bar >= last - 2 or sm["order"] == "cut") else ["drums"]
+                if sm["order"] == "bass" and step_bar < 6:
+                    lanes_ = ["bass", "other"]
+                if abs(db_) >= 1.0:
+                    sb.step_trim = {"db": db_, "lanes": lanes_, "k0": None, "k1": None}
+                    sm["rehearsed"] = f"a {signed:+.0f} dB step at the {'swap' if 'bass' in lanes_ else 'drums'}: {' and '.join(lanes_)} of {sb.track.title[:20]} trimmed {db_:+.0f} dB there, easing back over a phrase"
+                    self._move("plan", None, None, self._song_id(sm["b"]), f"rehearsed {why}: {' and '.join(lanes_)} of {sb.track.title[:22]} come in {db_:+.0f} dB and ease back over a phrase (the shape stays)")
+                    return
             tries = int(sm.get("rehearsal_tries", 0)) + 1
             sm["rehearsal_tries"] = tries
             # THE SEAM STAYS WHERE IT IS: a failed rehearsal changes the seam's shape at its bar first (the other
@@ -1603,7 +1622,9 @@ class RecordPlay:
         beats = self._step_beats("drums")
         if not first:
             beats = min(beats, 8.0)                   # drums FOLLOWING a harmony that is already in: two bars at most
+        self._step_trim_arm(b, ("drums",), at, beats)
         tag = self._cross("drums", b, at, beats=beats, shape=False)
+        self._step_trim_ease(b, ("drums",), at, beats)
         if sb.voice_since is None:
             sb.voice_since = self.bar_n
         self._hygiene(at + int(beats * self._beat_s() * RATE))
@@ -1635,9 +1656,11 @@ class RecordPlay:
         # "transitions seem pretty abrupt", 2026-09-19); loud is for the TAKEOVER you press yourself
         beats = self._step_beats("harmony")
         beat = self._beat_s()
+        self._step_trim_arm(b, ("bass", "other"), at, beats)
         tag = self._cross("bass", b, at, beats=beats, shape=False)
         if self._other_free_for(b, a):
             self._cross("other", b, at, beats=beats, shape=False)
+        self._step_trim_ease(b, ("bass", "other"), at, beats)
         gone = self._vocal_goes_with(b, a, at) if a in self.songs else ""
         if a in self.songs:
             self.submix.post({"at": at, "cmd": "eq", "deck": a, "high": 1.0, "ramp_s": beat})
@@ -1656,6 +1679,33 @@ class RecordPlay:
         else:
             self._move("bed_to", "bass", self._song_id(a), sb.track.id, f"the bed passes to {sb.track.title}: its bassline and melody {how}{gone}", shape=tag)
             self._seam_roles(at)
+
+    # -- the rehearsal's level correction (a step at the swap is a level, not a shape) ------------------------------
+    def _step_trim_arm(self, b, lanes, at, beats):
+        """Before the cross of `lanes` into B: the rehearsed step's correction starts at the cross's end and eases
+        back over a phrase (RemixConductor._lane_gain reads it, so any re-post in between lands on the eased value)."""
+        sb = self.songs.get(b)
+        st = getattr(sb, "step_trim", None) if sb is not None else None
+        if not st or not any(ln in st["lanes"] for ln in lanes) or st.get("k0") is not None:
+            return
+        k0 = self.bar_n + 1 + int(math.ceil(beats / 4.0))
+        st["k0"], st["k1"] = k0, k0 + self.change_bars
+
+    def _step_trim_ease(self, b, lanes, at, beats):
+        """After the cross: one ramp from the trimmed level back to the lane's own over the phrase after the cross."""
+        sb = self.songs.get(b)
+        st = getattr(sb, "step_trim", None) if sb is not None else None
+        if not st or st.get("k0") is None:
+            return
+        mine = [ln for ln in lanes if ln in st["lanes"]]
+        if not mine:
+            return
+        end = at + int(beats * self._beat_s() * RATE)
+        ph = self.change_bars * self._bar_clock()
+        f = 10.0 ** (float(st["db"]) / 20.0)
+        # the cross lands on the trimmed level (the later post for the same instant replaces the targets), then eases
+        self.submix.post({"at": at, "cmd": "stem_gains", "deck": b, "gains": {ln: self._lane_gain_plain(b, ln, at) * f for ln in mine}, "ramp_s": beats * self._beat_s()})
+        self.submix.post({"at": end, "cmd": "stem_gains", "deck": b, "gains": {ln: self._lane_gain_plain(b, ln, end) for ln in mine}, "ramp_s": ph / RATE})
 
     def _st_strip(self, at):
         a, b, sa, sb = self._ab()
@@ -1680,6 +1730,24 @@ class RecordPlay:
         own = {ln for ln in ("bass", "other", "vocals") if self.lanes.get(ln) == a}
         stays = [ln for ln in ("other", "vocals") if ln in own
                  and ((self._sings_through(a, at, 4) is True) if ln == "vocals" else ((self._stem_level_span(a, ln, at, at + span) or 0.0) >= 0.2))]
+        # ...and audible IN THE ROOM, not only by its own measure: a vocal "singing" at a tenth of its loud level, or a
+        # melody at a fifth of its, left two bars at -48 dB under a NEXT-forced cut (the control gate, seed 9,
+        # 2026-09-21) - the BREAK's absolute rule (BREAK_LEFT_MIN of the library's drum level) applies here too
+        try:
+            from lib.dj.remix import BREAK_LEFT_MIN
+            ref_d = float((self.ref_rms or {}).get("drums") or 0.2)
+            loud = []
+            for ln in stays:
+                e = self._stem_level_span(a, ln, at, at + span)
+                if e is None:
+                    loud.append(ln)                   # (unmeasured: believed)
+                    continue
+                lv = 2.0 * float((sa.stem_rms or {}).get(ln) or 0.0) * e * min(self._lane_gain(a, ln, at), 1.0)
+                if lv >= BREAK_LEFT_MIN * ref_d:
+                    loud.append(ln)
+            stays = loud
+        except Exception:
+            pass
         # the strip takes only what the RECORD holds: when another song's bassline sits under these drums (a
         # TAKEOVER's), taking that bass takes its melody with it (harmony travels together) and the song leaves -
         # the room was one silent vocal for four bars (the gate, seed 39, 2026-09-19); its bassline carries instead

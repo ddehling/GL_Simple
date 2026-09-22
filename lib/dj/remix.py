@@ -994,6 +994,22 @@ class RemixConductor(RecordPlay):
         return f
 
     def _lane_gain(self, deck, lane, at=None):
+        g = self._lane_gain_plain(deck, lane, at)
+        # the rehearsal's level correction (lib/dj/record.py _step_trim_*): a step measured at the seam's swap is
+        # trimmed away at the cross and eases back to the lane's own level over a phrase - any re-post in between
+        # (hygiene, a re-duck) lands on the eased value, never back on the step
+        s = self.songs.get(deck)
+        st = getattr(s, "step_trim", None) if s is not None else None
+        if st and lane in st.get("lanes", ()) and st.get("k0") is not None:
+            k0, k1 = int(st["k0"]), int(st["k1"])
+            if self.bar_n >= k1:
+                s.step_trim = None
+            else:
+                frac = 0.0 if self.bar_n <= k0 else (self.bar_n - k0) / max(1, k1 - k0)
+                g *= 10.0 ** (float(st["db"]) * (1.0 - frac) / 20.0)
+        return g
+
+    def _lane_gain_plain(self, deck, lane, at=None):
         g = self._trim(deck, lane)
         bed = self.lanes.get("drums")
         if bed is not None and deck != bed and self.lanes.get("bass") != deck:

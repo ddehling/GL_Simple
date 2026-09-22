@@ -149,11 +149,12 @@ def judge(rms, marks, rms_a=None):
     line = max(LURCH_DB, solo + LURCH_MARGIN_DB)
     if lurch > line:
         k = int(np.argmax(ins)) + max(0, i0 - 1)
+        signed = float(20 * np.log10(act[k + 1] / act[k])) if k + 1 < len(act) else lurch   # + = louder after the step
         if lurch <= line + 1.0:
             # within a decibel of the line: the instrument's own noise, not a lurch - a seam re-shaped or moved on
             # a 9 dB step against the records' own 8 changed what arrived for nothing (the remix gate, 2026-09-19)
             return True, f"clean within a decibel of the line (a {lurch:.0f} dB step at bar {k // win_per_bar - marks['first']} against the records' own {solo:.0f} dB)"
-        return False, f"a {lurch:.0f} dB step at bar {k // win_per_bar - marks['first']} (the records' own steps: {solo:.0f} dB)"
+        return False, f"a {signed:+.0f} dB step at bar {k // win_per_bar - marks['first']} (the records' own steps: {solo:.0f} dB)"
     return True, f"clean (steps inside {lurch:.0f} dB, the records' own {solo:.0f} dB, floor {ratio:.2f} of the median)"
 
 
