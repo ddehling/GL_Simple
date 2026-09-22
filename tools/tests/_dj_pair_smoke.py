@@ -126,6 +126,13 @@ def main():
                 seen["clip"] = clk_now
             if seen["row"] is None and any(r.get("kind") in ("PAIR", "EVENT") for r in (d.status().get("plan_rows") or [])):
                 seen["row"] = clk_now
+            # the NEXT ghost on the timeline is the seam's own next record, never another staged song (2026-09-21)
+            if rc.seam is not None and rc.seam.get("b") in rc.songs and seen["fail"] is None:
+                nslot = (getattr(d, "_ghost_slots", {}) or {}).get("next", (None, []))
+                ghost_tids = {c.track_id for c in d.tl.clips if c.id in nslot[1]}
+                b_tid = rc.songs[rc.seam["b"]].track.id
+                if ghost_tids and b_tid not in ghost_tids:
+                    seen["fail"] = f"the timeline's next ghost is {sorted(ghost_tids)} but the seam's next record is {b_tid} ({rc.songs[rc.seam['b']].track.title[:24]})"
         except Exception as e:  # noqa: BLE001
             seen["fail"] = f"picture check: {type(e).__name__}: {e}"
         for m in rc.move_log[n_moves:]:

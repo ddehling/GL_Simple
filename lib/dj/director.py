@@ -2595,7 +2595,10 @@ class Director:
                 ghost(("event", s_e.track.id, E), s_e.track.id, ["bass", "other"], E,
                       rc._song_time_at(d_e, rc._next_bar_clock()) + max(1, E - b - 1) * self._bar_len(s_e.track.id))
             elif staged:
-                d, s = staged[0]
+                # THE SEAM'S OWN next record, when there is a seam - not the first staged song on the decks (two staged
+                # songs, the DJ's pick and a pair's record: the ghost drew the DJ's pick at the seam into the other -
+                # "the plan does not match the timeline", 2026-09-21)
+                d, s = next(((dd, ss) for dd, ss in staged if rc.seam is not None and dd == rc.seam.get("b")), staged[0])
                 if seam_S is not None:
                     at = seam_S                                   # the ghost sits where the seam's bracket starts, and stays there
                 else:

@@ -2779,7 +2779,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         except Exception as e:  # noqa: BLE001
             self.err_lbl.setText(f"decks: {type(e).__name__}: {e}")
             return
-        sig = tuple((tid, text.split("   ")[0], text.split("·")[-1][:6] if "·" not in text else "") for _o, tid, text in rows)
+        # the row's STATE word is part of the signature (the record row's ticking "in" time is not): "next record" stayed
+        # on the DJ's pick after the seam moved to your pair's record ("the plan does not match the timeline", 2026-09-21)
+        sig = tuple((tid, text.split("   ")[0], "" if "·" in text else text.split("   ")[-1][:16]) for _o, tid, text in rows)
         rec_id = rows[0][1] if rows and rows[0][0] == 0 else None
         if sig != getattr(self, "_decks_sig", None):
             self._decks_sig = sig

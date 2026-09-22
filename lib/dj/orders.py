@@ -86,18 +86,22 @@ def plan_pair_entry(track, env, want_t, want_end, change_bars, bar_s, stem_carri
             tt = nd(tt - 4 * bar)
             if tt <= 0:
                 break
-        if found is not None:
-            out.update(ok=True, entry="cut", start_t=float(max(floor_t, found - 4 * bar)), entry_t=float(found), event_t=float(nd(want)),
+        # (a cut plays the record silently for four bars - the strip - before it is heard: it cannot be heard earlier
+        # than four bars past the floor; a groove labelled at 0:00 is entered at 0:12, and said so)
+        cut_min = floor_t + 4 * bar
+        if found is not None and found >= cut_min:
+            out.update(ok=True, entry="cut", start_t=float(found - 4 * bar), entry_t=float(found), event_t=float(nd(want)),
                        why=f"{title} enters whole at {_mm(found)} (a cut), its groove {int(round((want - found) / bar))} bars on")
         else:
             # (3) on the groove itself: the vocal four bars in
-            ev_t = nd(want + 4 * bar)
+            entry_t = max(float(nd(want)), cut_min)
+            ev_t = nd(entry_t + 4 * bar)
             if (end - ev_t) / bar < cb - 0.5:
                 out["why"] = (f"{title}'s drums carry nowhere before its groove at {_mm(want)} and the groove is {groove_bars:.0f} bars: "
                               f"entering on it, the vocal would have {max(0.0, (end - ev_t) / bar):.0f} bars")
                 return out
-            out.update(ok=True, entry="cut", start_t=float(max(floor_t, want - 4 * bar)), entry_t=float(nd(want)), event_t=float(ev_t),
-                       why=f"{title} enters whole on its groove at {_mm(want)} (nothing of it carries before); the vocal four bars in")
+            out.update(ok=True, entry="cut", start_t=float(entry_t - 4 * bar), entry_t=float(entry_t), event_t=float(ev_t),
+                       why=f"{title} enters whole on its groove at {_mm(entry_t)} (nothing of it carries before); the vocal four bars in")
     # the vocal's length: whole phrases inside the groove from the event, at most four, at least one - and no
     # longer than the other song's sung stretch
     room = int(math.floor((end - out["event_t"]) / bar + 0.5))
