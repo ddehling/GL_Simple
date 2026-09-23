@@ -113,21 +113,26 @@ def compose(track, rec, entry_t, change_bars, bar_s, n_events, used_ids=(), avoi
                 return {"kind": "build", "other_tid": None, "want_t": d - BUILD_LEAD_BARS * bar, "want_end": d, "s_start": None, "s_end": None,
                         "bars": 2 * cb, "fit": None, "why": f"a BUILD into its own drop at {_mm(d)}"}
         return None
-    # the lead: variety - not the kind the previous record led with, when there is a choice
-    order = ["acapella", "guest", "build"]
+    # the lead: variety - not the kind the previous record led with, when there is a choice. The GUEST BASS is a bass
+    # swap - the shape your verdicts like least (31 % of 64, 2026-09-22): it comes LAST, once a record at most, and only
+    # when neither a vocal nor a build fits
+    order = ["acapella", "build"]
     if last_lead in order and len(order) > 1:
         order.remove(last_lead)
         order.append(last_lead)
+    order.append("guest")
     t_min = t_free
     tried = set()
     while len(events) < n_events:
         made = None
         n_guests = sum(1 for e in events if e.get("other_tid") is not None)
         for kind in order:
-            if kind in tried and kind != "guest":
-                continue
+            if kind in tried and kind not in ("guest", "build"):
+                continue                              # (a build may come again on the record's next drop)
             if kind in ("acapella", "guest") and n_guests >= 2:
                 continue                              # two guest songs a record at most: the decks are four (the compose smoke at lots: "no free deck")
+            if kind == "guest" and (events or any(e["kind"] == "guest" for e in events)):
+                continue                              # (the guest bass only as a record's ONE event, when nothing else fits)
             made = {"acapella": take_vocal, "guest": take_guest, "build": take_build}[kind](t_min)
             if made is not None:
                 tried.add(kind)
@@ -144,8 +149,6 @@ def compose(track, rec, entry_t, change_bars, bar_s, n_events, used_ids=(), avoi
         # a phrase of the record alone between events - two after a guest bassline (its cross back out takes half a
         # phrase, and a BUILD needs the record's own bass back to pull: "the bed does not hold its bass", the compose smoke)
         t_min = end_of + (2 if made["kind"] == "guest" else GAP_PHRASES) * phrase
-        if len(tried) >= 3 and made["kind"] == "build":
-            break
     # the exit as a payoff: the next record's bassline takes over at its drop when it is in this record's lists
     if next_tid is not None and len(events) < n_events + 1:
         x = next((z for z in (rec.get("bass_under") or []) if int(z["id"]) == int(next_tid)), None)

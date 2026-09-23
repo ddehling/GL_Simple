@@ -92,6 +92,17 @@ limit (260 vocal candidates over the library; a guest needs a groove of three ph
 vocal 260, build 150. So "two per record" is what a quarter of the library can do today; one per record is
 what most can. The next lever is the pairing pass (more vocal candidates), not the composer.
 
+**2026-09-22, your verdicts as the judge.** 554 seam ratings (295 good) and 126 flags, read against each
+seam's features: the SHAPE of a transition predicts your call; the pair does not (key fit, tempo gap,
+energy step, genre, vocals all within a few points of the 53 % base). Liked: stem morph 88 % (16), breakdown
+then swap 85 % (27), long blend 80 % (60). Disliked: stem bass swap 31 % (64), drum bridge 18 % (11), a cut on
+the phrase 0 % (26). Applied: the composer leads with a vocal or a build (a build may come on each of a
+record's drops), the GUEST BASS only as a record's one event when nothing else fits (655 → 121 across the
+library); the takeover exit is OFF (`EXIT_TAKEOVER`) - the drums-first morph is the exit; the seam no longer
+picks the bass swap for variety; NEXT brings the seam forward as an eight-bar drums-first morph, the cut only
+where no such entry exists. Census after: at some, 17 % of records get two events, 56 % one. The judge is
+retrained as the new engine's moves are rated.
+
 **Not yet.** The buttons as scores; the campaign's new columns (events per record, seconds alone, exit
 kinds); the census by the pairings pass.
 

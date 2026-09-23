@@ -23,6 +23,8 @@ DARKEN_HIGH = 0.7                      # the departing harmony's high shelf over
                                        # a 10 dB hole under the new drums and a 13 dB lurch at the swap - the campaign)
 DARKEN_BARS = 4
 VOCAL_LEAD_BARS = 16                   # an acapella lead-in: B's vocal this long before its drums
+EXIT_TAKEOVER = False                  # the composer's takeover exit - OFF: it is a bass swap, the shape your verdicts like least
+                                       # (31 % of 64, 2026-09-22); the seam's drums-first morph is the exit (88 %)
 ORDER_WORDS = {"drums": "morph, drums first", "bass": "bass swap", "vocal": "acapella lead-in", "cut": "breakdown and cut"}
 
 
@@ -1342,7 +1344,9 @@ class RecordPlay:
             vocal_ok = False
         if vocal_ok and self._seam_last_order != "vocal":
             return "vocal"
-        return "bass" if self._seam_last_order == "drums" and self.rng.random() < 0.5 else "drums"
+        # (the bass swap is no longer chosen for variety: your verdicts, 2026-09-22 - a stem bass swap 31 % liked of 64,
+        # a stem morph 88 % of 16; it stays only where the drums-first placement cannot be found)
+        return "drums"
 
     def _seam_a_bar(self, a, L, order):
         """A's OUT bar: at or after its minimum play, at a section boundary of A where its drums still carry
@@ -1560,7 +1564,7 @@ class RecordPlay:
         # THE EXIT AS A PAYOFF (docs/DJ_THE_COMPOSER.md 3): when the next record is in this record's bass-under list, the
         # record's exit is a TAKEOVER at the next record's drop - the takeover order the pairs use, placed by the composer
         try:
-            if int(getattr(self, "compose_n", 0) or 0) >= 2 and order != "cut":
+            if EXIT_TAKEOVER and int(getattr(self, "compose_n", 0) or 0) >= 2 and order != "cut":
                 rec_a = self.pairings_for(sa.track.id) or {}
                 x = next((z for z in (rec_a.get("bass_under") or []) if int(z["id"]) == sb.track.id), None)
                 have = any(o["record_tid"] == sa.track.id and o.get("track_id") == sb.track.id and o["kind"] == "takeover" and o["state"] in ("staging", "fixed", "running")
@@ -1697,6 +1701,21 @@ class RecordPlay:
         # gate, seed 24) - it becomes the CUT there, the next record whole at its landmark
         sa, sb = self.songs.get(self.record_deck), self.songs.get(sm["b"])
         if sa is not None and sb is not None and not sb.entered and sm["order"] != "cut":
+            # NEXT IS A SHORT MORPH, NOT A CUT (your verdicts, 2026-09-22: a cut on the phrase 0 % liked of 26, a stem
+            # morph 88 % of 16): the seam comes forward as an eight-bar drums-first morph; the cut only where no such
+            # entry exists
+            try:
+                r = self._seam_b_start(sb, 8, lanes=("drums",), lm_off=self._seam_lm_off("drums", 8))
+            except Exception:
+                r = None
+            if r is not None:
+                tb, lm, on_lm, L = r
+                sm["order"], sm["len"], sm["kind"] = "drums", int(L), "morph"
+                sm["steps"] = self._seam_steps("drums", int(L))
+                sm["tb"], sm["lm"], sm["on_lm"] = float(tb), float(lm), bool(on_lm)
+                sm["drums_bar"] = sm["bar"]
+                self._seam_move(K, f"NEXT: an {int(L)}-bar morph, drums first")
+                return None
             at = self._next_bar_clock()
             t_k = self._song_time_at(self.record_deck, at) + (K - bar - 1) * self._bar_s(sa.track)
             if self._track_steady(sa.track, t_k, int(sm["len"]), bad=("build", "breakdown", "outro")) is False:
