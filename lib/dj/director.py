@@ -1739,7 +1739,18 @@ class Director:
             return
         if time.time() - p["t"] > 90.0:
             self._pending_stem = None
-            self._event("the staged song never became ready: the stem move is dropped")
+            # WHY, by name (the control gate read "never became ready" as no reason at all, seed 15)
+            rc = self.rc
+            tid = p["track_id"]
+            if any(t.id == tid for t in rc._decoding.values()):
+                why = "still decoding after 90 s (the machine is loaded)"
+            elif any(pp[0].id == tid for pp in rc._pending.values()):
+                why = "still staging after 90 s"
+            elif rc.deck_of(tid) is None:
+                why = "not on a deck any more (its deck went to another song)"
+            else:
+                why = "still staging after 90 s"
+            self._event(f"{self.title(tid)[:24]}: the stem move is dropped - {why}")
             return
         deck = next((d for d, s in self.rc.songs.items() if s.track.id == p["track_id"] and s.staged_at is not None and not s.leaving), None)
         if deck is None:
@@ -2756,7 +2767,7 @@ class Director:
             else:
                 no_ghost("voice")
             if evp and evp.get("kind") == "takeover" and not evp.get("accepted") and evp.get("bar") is not None:
-                Et = self._anchor(("event", int(evp["track_id"]), int(evp["bar"])), b + int(evp["in_bars"]))
+                Et = self._anchor(("event", evp.get("track_id"), int(evp["bar"])), b + int(evp["in_bars"]))
                 self.plan_marks.append({"bar": Et, "end_bar": None, "lanes": ["bass", "other"], "ghost": True, "kind": "event",
                                         "text": "IDEA: " + str(evp.get("why", ""))[:44]})
             d_e = rc.deck_of(evp["track_id"]) if (evp and evp.get("kind") == "takeover" and evp.get("accepted") and evp.get("track_id") is not None) else None
@@ -2766,7 +2777,7 @@ class Director:
                 # song's ghost, placed at "now plus a phrase" every bar, crept along for eighty bars ("pushing back
                 # the start of songs note by note", user 2026-09-19)
                 s_e = rc.songs[d_e]
-                E = self._anchor(("event", int(evp["track_id"]), int(evp["bar"])), b + int(evp["in_bars"]))
+                E = self._anchor(("event", evp.get("track_id"), int(evp["bar"])), b + int(evp["in_bars"]))
                 ghost(("event", s_e.track.id, E), s_e.track.id, ["bass", "other"], E,
                       rc._song_time_at(d_e, rc._next_bar_clock()) + max(1, E - b - 1) * self._bar_len(s_e.track.id))
             elif staged and rc.seam is not None and not any(dd == rc.seam.get("b") for dd, _s in staged):

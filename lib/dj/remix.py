@@ -3224,7 +3224,9 @@ class RemixConductor(RecordPlay):
             # and have a DROP eight bars away at least within four phrases; the one lands eight bars after that drop
             if held.get("bass") != B:
                 return False, "the bed does not hold its bass (nothing to pull for the build)"
-            dp = self._drop_in_bars(B, at, MOMENT_LOOK_PHRASES * self.change_bars)
+            # (thirty-two bars at least whatever PACE makes a phrase: at short pace four phrases were sixteen bars and every
+            # composed build - armed seventeen bars before its drop - read "no drop within 4 phrases", 2026-09-22)
+            dp = self._drop_in_bars(B, at, max(MOMENT_LOOK_PHRASES * self.change_bars, 32))
             if dp is None:
                 return False, f"no drop of {self.songs[B].track.title[:24]} within {MOMENT_LOOK_PHRASES} phrases"
             if dp < 8:

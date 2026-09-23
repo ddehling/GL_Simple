@@ -177,7 +177,7 @@ class RecordPlay:
                 why = ("its song left the decks" if gone else "the room changed" if (pend.get("record") != sa.track.id or d == self.record_deck)
                        else ("it came too late three times" if pend.get("late", 0) >= 3
                              else ("its seam is too close" if seam_close else "its song never became ready in time")))
-                self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"the event is dropped: {why}")
+                self._move("event", None, self._song_id(self.record_deck), pend.get("track_id"), f"the event is dropped: {why}")
                 o = self._order_of(pend)
                 if o is not None:
                     self._order_end(o, "failed", why)
@@ -190,7 +190,7 @@ class RecordPlay:
                 # by the bar it would have armed on, it passes - said
                 if bar >= pend["bar"] - 2 * cb:
                     self._event_pending = None
-                    self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"the idea passed, not taken: {pend['why'][:70]}")
+                    self._move("event", None, self._song_id(self.record_deck), pend.get("track_id"), f"the idea passed, not taken: {pend['why'][:70]}")
                 return
             if self._moment is not None or (self.seam is not None and self.seam["state"] == "running"):
                 return
@@ -537,8 +537,24 @@ class RecordPlay:
             if K > bar + 4 and bar < int(o.get("event_bar") or K):
                 o["event_bar"] = int(K)
             if tK > float(o["want_t"]) + 4 * bar_a:
-                self._order_end(o, "failed", f"the build's bar is past ({sa.track.title[:22]} is at {int(t_now) // 60}:{int(t_now) % 60:02d})")
-                return
+                # the record arrived later than the score assumed (the seam moved): the build moves to the record's NEXT
+                # drop that leaves room for its lead and comes before the seam out - failed only when there is none
+                from lib.dj.composer import _drops, BUILD_LEAD_BARS
+                seam_t = None
+                if sm is not None:
+                    seam_t = t_now + (sm["bar"] - bar - 1) * bar_a
+                nxt = [dd for dd in _drops(sa.track, tK + BUILD_LEAD_BARS * bar_a)
+                       if (seam_t is None or dd < seam_t - 2 * cb * bar_a) and dd < float(sa.track.duration_s) - 2 * cb * bar_a]
+                if not nxt:
+                    self._order_end(o, "failed", f"the build's drop is past and no later drop fits before the seam ({sa.track.title[:22]} is at {int(t_now) // 60}:{int(t_now) % 60:02d})")
+                    return
+                d_new = float(nxt[0])
+                o["want_t"], o["want_end"], o["event_t"] = d_new - BUILD_LEAD_BARS * bar_a, d_new, d_new - BUILD_LEAD_BARS * bar_a
+                K = bar + 1 + int(math.ceil((float(o["want_t"]) - t_now) / max(bar_a, 1e-6) - 1e-6))
+                if K < bar + 4:
+                    K = bar + 4
+                tK = t_now + (K - bar - 1) * bar_a
+                self._move("order", None, sa.track.id, None, f"the score's build moves to {sa.track.title[:22]}'s next drop at {int(d_new) // 60}:{int(d_new) % 60:02d} (the record came later than the score)")
             self._event_pending = {"kind": "build", "track_id": None, "bar": int(K), "bars": int(o.get("bars") or 2 * cb), "t": time.time(), "want_t": None,
                                    "record": sa.track.id, "accepted": True, "order": o["id"], "yours": True,
                                    "why": f"a BUILD into this record's own drop at {int(float(o['want_end'])) // 60}:{int(float(o['want_end'])) % 60:02d} - {whose}"}
@@ -802,7 +818,7 @@ class RecordPlay:
         if pend.get("accepted"):
             return True, "already taken"
         pend["accepted"], pend["yours"] = True, True  # (taken by you: a vocal you chose holds its lane - see the acapella script)
-        self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"you: the idea is taken - {pend['why'][:70]}")
+        self._move("event", None, self._song_id(self.record_deck), pend.get("track_id"), f"you: the idea is taken - {pend['why'][:70]}")
         if pend.get("kind") == "takeover":
             self._idea_exit_taken()
         return True, f"taken: {pend['why'][:60]}"
@@ -816,10 +832,13 @@ class RecordPlay:
         sa = self.songs.get(self.record_deck)
         if sa is not None:
             used = getattr(sa, "events_used", None)
-            if used is not None:
+            if used is not None and pend.get("track_id") is not None:
                 used.add(int(pend["track_id"]))
             sa.events_done = max(0, int(getattr(sa, "events_done", 1)) - 1)    # the DJ may propose another
-        self._move("event", None, self._song_id(self.record_deck), int(pend["track_id"]), f"you: the idea is skipped - {pend['why'][:70]}")
+        o = self._order_of(pend)
+        if o is not None:
+            self._order_end(o, "failed", "you skipped it")          # (a score's event you skip ends, said; the next one comes)
+        self._move("event", None, self._song_id(self.record_deck), pend.get("track_id"), f"you: the idea is skipped - {pend['why'][:70]}")
         return True, f"skipped: {pend['why'][:60]}"
 
     def _exit_event_coming(self):

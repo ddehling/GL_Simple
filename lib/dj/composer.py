@@ -34,11 +34,12 @@ def _grooves(track, from_t):
 
 
 def _drops(track, from_t):
-    """The record's drops after `from_t`: a groove that follows a build or a breakdown (its own payoff)."""
+    """The record's drops after `from_t`: a groove that follows a build, a breakdown or the intro - the SAME rule the
+    BUILD's arm uses (RemixConductor._drop_in_bars), so a placed build is one the arm accepts."""
     secs = track.sections or []
     out = []
     for i in range(1, len(secs)):
-        if secs[i].get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown"):
+        if secs[i].get("kind") == "groove" and secs[i - 1].get("kind") in ("build", "breakdown", "intro"):
             t = float(secs[i].get("start_s") or 0.0)
             if t > from_t:
                 out.append(t)
