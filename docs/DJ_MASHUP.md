@@ -41,3 +41,21 @@ lows), the clock (the first song's), the moment buttons. THE RECORD PLAYS is the
 The mashup smoke (`tools/tests/_dj_mashup_smoke.py`): left alone for ten rendered minutes - three songs on,
 a scene change every 16 bars as planned, every scene with at least two parts sounding, never two vocals, a
 rotation, the pads acting on the next bar, no dead bars. The control gate and the remix gate unchanged.
+
+## Status (2026-10-16)
+
+**Built.** `lib/dj/mashup.py` (a RemixConductor mixin beside RecordPlay; `policy = "mashup"`), LAYERS = mashup in
+the Director, THE PLAN's scene rows, the MASHUP tab with twelve pads (keys 1-4 / Q-R / A-F with the tab focused;
+the nanoKONTROL2's S / M / R buttons on channels 1-4), NEXT = the next scene in two bars, HOLD freezes the scene,
+LAYERS back to two hands the room to the record whole. Level continuity: at a plain scene change the arriving
+parts are trimmed to the room's level (from each stem's measured level where its song will be) and ease back
+over the scene; the mashup's vocal is at the library's vocal level. When the mode starts, the record mode's live
+scores and pairs end "the MASHUP took over".
+
+**Measured.** Mashup smoke over seven seeds (six to ten rendered minutes each, MOMENTS some and lots): 15-38 scenes,
+every scene with two lanes or more, 3-5 songs heard, one or two rotations in ten minutes, every pad press acted on
+the next bar, 0 dead bars; the level step at plain scene changes worst 7.1 dB (one outlier), typically within
+2 dB. The control gate presses LAYERS mashup, back, and random pads in every state (80 presses, ALL OK).
+
+**Not measured.** Whether the combinations sound good together - only the ear. `logs/mashup_listen.wav` is a
+five-minute render (`_dj_mashup_smoke.py --wav`).

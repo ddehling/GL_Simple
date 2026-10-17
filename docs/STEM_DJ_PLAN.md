@@ -1608,6 +1608,16 @@ gate and the Resurrection pair green; control gate seed 12 clean but for one dea
 moment-abandons-seam → "the room had nobody" handoff (eight seconds at gain zero before the staged record
 was put on whole - not the composer's, still open).
 
+
+**"look, I want to be able to do this" (a short: "3 of my own TRACKS in one mix") → "the engine is boring and only
+does slow things" → "yes" → "make it work, do not stop" (2026-10-16): MASHUP (docs/DJ_MASHUP.md).** A second mode
+beside THE RECORD PLAYS: three songs whose tempos and keys lock, taken apart and played as one - a scene every
+16 bars (MOMENTS 32 / 16 / 8) says who holds the drums, the harmony (bass + melody together) and the vocal, chosen
+from the pairing lists, a DROP every four scenes, a BREAKDOWN every seven, songs cued to where their part sounds,
+hot cues when running out, a rotation every twelve scenes; pads on the screen, the keyboard and the nanoKONTROL2.
+Built, gated (mashup smoke over seven seeds, the control gate with mashup presses, the remix gate) and given level
+continuity at scene changes after the smoke's new rendered-audio measure caught 10.9 dB steps. The ear has not
+heard it.
 ## Rules carried over (they were earned)
 
 - One change at a time, measured on a library-wide sample, never one track; keep only
