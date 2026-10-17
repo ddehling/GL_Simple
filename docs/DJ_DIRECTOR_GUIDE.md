@@ -202,6 +202,18 @@ bassline under, rose = a vocal over; plain = the cut. Like PAIRS, it lists only 
 played tonight, on the decks or already queued as the next record, no vocal over a groove under ten bars
 or in the song's last minute.
 
+**MASHUP (docs/DJ_MASHUP.md): LAYERS = mashup.** Three songs whose tempos and keys lock, taken apart and played
+as one: a SCENE every 16 bars (MOMENTS: rare 32, some 16, lots 8) says who holds the drums, who holds the
+harmony (bass and melody together) and who holds the vocal; each scene changes one or two of them, every few
+scenes a DROP (two beats of only the vocal, then the scene slams in) or a BREAKDOWN (a scene without drums,
+then the drop). A song coming in is cued to where its part sounds; a song running out is hot-cued back to a
+groove on the scene's bar; after a dozen scenes the song used least gives way to one that fits the two that
+stay - your UP NEXT first. THE PLAN shows the scene now, the next one and its bar, the three songs and what
+each holds. The **MASHUP** tab has the pads: three rows (the songs) × drums / bass / melody / vocal, lit where
+the song holds the part; a press moves the part to that song on the next bar (bass or melody moves the
+harmony), a lit pad takes it out; keys 1-4, Q-R, A-F once you click into the tab. The routine carries on from
+your move.
+
 **Every record gets a score (docs/DJ_THE_COMPOSER.md).** When a record is staged as the next one, the DJ
 composes its events from its own pairing lists and section map: a guest vocal over a groove (held until it
 has sung its last), a GUEST BASS - another record's bassline and melody under its drums for two phrases,

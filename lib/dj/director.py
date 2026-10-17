@@ -35,7 +35,7 @@ def _mmss(x):
 
 DIALS = {
     "mixing": ("auto", "blend", "cut", "morph"),
-    "layers": ("one", "two", "three"),
+    "layers": ("one", "two", "three", "mashup"),
     "energy": ("cool", "hold", "amp"),
     "tempo": ("slower", "hold", "faster"),
     "pace": ("short", "normal", "long"),
@@ -153,7 +153,8 @@ FLAG_GOOD = {
 FLAG_KINDS = {**FLAG_BAD, **FLAG_GOOD}
 MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
 MOMENT_GAP_S = {"rare": 1e9, "some": 480.0, "lots": 240.0}           # ...and never closer than this to the last moment (peaks are spaced)
-COMPOSE_N = {"rare": 1, "some": 2, "lots": 4}                        # THE COMPOSER: events in a record's score (docs/DJ_THE_COMPOSER.md)
+COMPOSE_N = {"rare": 1, "some": 2, "lots": 4}
+MASH_BARS = {"rare": 32, "some": 16, "lots": 8}                     # MASHUP: bars per scene (docs/DJ_MASHUP.md)                        # THE COMPOSER: events in a record's score (docs/DJ_THE_COMPOSER.md)
 FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
 TEMPO_LEAN_BPM = {"slower": -6.0, "hold": 0.0, "faster": 6.0}       # the autoDJ's planned journey
 TEMPO_LEAN_X = {"slower": -0.03, "hold": 0.0, "faster": 0.03}        # the conductor's clock
@@ -445,7 +446,8 @@ class Director:
         if not getattr(rc, "_seeded", False):
             self._seed_brain(rc.brain)
             rc._seeded = True
-        rc.policy = "record"                          # THE RECORD PLAYS: one song whole, one seam per record (docs/DJ_THE_RECORD_PLAYS.md)
+        rc.policy = "mashup" if d["layers"] == "mashup" else "record"   # THE RECORD PLAYS (docs/DJ_THE_RECORD_PLAYS.md) | MASHUP (docs/DJ_MASHUP.md)
+        rc.mash_bars = MASH_BARS[d["moments"]]       # MASHUP: a scene every this many bars
         rc.follow_clock = True                        # THE SET: the clock travels to each record's own tempo (docs/DJ_THE_SET.md rule 3)
         rc.pick_hook = self._horizon_pick             # the DJ's spare pick is the chain's head
         rc.set_play_min(PLAY_MIN_S[d["pace"]])
@@ -1392,6 +1394,14 @@ class Director:
         elif st == "failed":
             self._event(f"{tag} FAILED: {what[:60]} - {o.get('why', '')[:120]}")
 
+    def mash_pad(self, slot, lane):
+        """A MASHUP pad (docs/DJ_MASHUP.md): `lane` to the song in `slot` on the next bar; a lit pad takes it out."""
+        if self.rc is None or self.rc.master is None:
+            return "layer first: LAYERS mashup"
+        ok, msg = self.rc.mash_pad(int(slot), lane)
+        self._event(("pad: " if ok else "pad refused: ") + msg)
+        return msg
+
     def idea_take(self):
         """"Do it" on the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns a sentence."""
         if self.rc is None or self.rc.master is None:
@@ -2051,6 +2061,13 @@ class Director:
             if self._fed != (cur, head):
                 self.system.request_next(head)
                 self._fed = (cur, head)
+        elif self.rc is not None and self.rc.master is not None and getattr(self.rc, "policy", "record") == "mashup":
+            # MASHUP: your UP NEXT head is the next song to come into a slot when one rotates; it leaves the list once on a deck
+            self.rc.mash_wish = head
+            if self.rc.deck_of(head) is not None:
+                self.up_next.pop(0)
+                self.rc.mash_wish = None
+                self._event(f"up next {self.title(head)[:30]} is in the MASHUP")
         elif self.rc is not None and self.rc.master is not None:
             d = self.rc.deck_of(head)
             if d is not None:
@@ -2384,6 +2401,8 @@ class Director:
                     self.system.moment("nextdrop")
                     self._last_moment_t = time.time()
                     self._event("moment: double-drop into the next song")
+        elif self.rc is not None and self.rc.master is not None and getattr(self.rc, "policy", "record") == "mashup":
+            pass                                      # MASHUP: the routine's DROPs and BREAKDOWNs are its moments
         elif self.rc is not None and self.rc.master is not None:
             rc = self.rc
             rc.auto_break_scale = rate / 0.5 if spaced else 0.0
@@ -3091,6 +3110,26 @@ class Director:
             else:
                 row(None, "REQUEST", f"{r['title'][:30]}: {r.get('stage', '')}" + (f" ({float(r['pct']):.0f} %)" if r.get("pct") is not None else ""),
                     "one job at a time: analysis, stems, pairings", key=("req", k, r.get("stage")), tid=r.get("id"))
+        if rc is not None and rc.master is not None and getattr(rc, "policy", "record") == "mashup":
+            # MASHUP (docs/DJ_MASHUP.md): the three songs, the scene now, the next scene with its bar, the rotation
+            bar_s = rc._bar_clock() / RATE
+            ms = rc.mash_status()
+            if ms is None:
+                row(None, "MASHUP", "starting: two songs that fit the record are being staged", "", key=("mash-start",))
+                return rows
+            row(0.0, "SCENE", f"{ms['scene']}", f"scene {ms['n']} · a scene every {ms['bars']} bars", key=("mash-scene", ms["n"]))
+            if ms.get("next"):
+                row(ms["next_in_bars"] * bar_s, "NEXT", ms["next"], "the next combination of the three songs' parts", key=("mash-next", ms["n"]))
+            else:
+                row(ms["next_in_bars"] * bar_s, "NEXT", "the next scene is chosen a bar or two ahead", "", key=("mash-next-wait", ms["n"]))
+            for sl in ms["slots"]:
+                words = {"drums": "drums", "bass": "bass", "other": "melody", "vocals": "vocal"}
+                held = ", ".join(words[x] for x in sl["held"]) or ("silent" if sl["ready"] else "staging")
+                row(None, f"SONG {sl['slot'] + 1}", (sl["title"] or "(picking)")[:34] + ("  - leaves after this scene" if sl["leaving"] else ""),
+                    f"{held}" + ("" if sl["sings"] else " · instrumental"), key=("mash-slot", sl["slot"], sl["tid"]), tid=sl["tid"])
+            if ms.get("rotate_in") is not None:
+                row(ms["rotate_in"] * ms["bars"] * bar_s, "ROTATE", f"one song changes in {ms['rotate_in']} scenes", "the one used least; your UP NEXT first when it fits", key=("mash-rot", ms["rotations"]))
+            return rows
         if rc is not None and rc.master is not None:
             bar_s = rc._bar_clock() / RATE
             arr = rc._arrangement_status()
@@ -3415,6 +3454,10 @@ class Director:
             out["why"], out["in_effect"] = self._explain()
         except Exception as e:  # noqa: BLE001
             out["why"], out["in_effect"] = [f"(explain: {type(e).__name__}: {e})"], []
+        try:
+            out["mash"] = self.rc.mash_status() if (self.rc is not None and getattr(self.rc, "policy", "record") == "mashup") else None
+        except Exception:
+            out["mash"] = None
         try:
             out["plan_rows"] = self._plan_rows()
         except Exception as e:  # noqa: BLE001

@@ -21,8 +21,8 @@ from tools.dj.planner.stemlanes import LANE_COLORS
 DIAL_LABELS = {
     "mixing": ("MIXING", {"auto": "auto", "blend": "blend", "cut": "cut", "morph": "morph"},
                "how songs join: the dice · long blends · hard cuts · stem morphs (pins through the same gates; a refused cut becomes a phrase cut)"),
-    "layers": ("LAYERS", {"one": "one", "two": "two", "three": "three"},
-               "one song at a time (the autoDJ as it is) · parts of two songs together · parts of three; the playing song is carried across"),
+    "layers": ("LAYERS", {"one": "one", "two": "two", "three": "three", "mashup": "mashup"},
+               "one song at a time (the autoDJ as it is) · parts of two songs together · parts of three · MASHUP: three songs taken apart, a new combination every few bars (the MASHUP tab has the pads); the playing song is carried across"),
     "energy": ("ENERGY", {"cool": "cool", "hold": "hold", "amp": "amp"},
                "a lean on the night's arc; amped, the clock may also travel with it when layered"),
     "tempo": ("TEMPO", {"slower": "slower", "hold": "hold", "faster": "faster"},
@@ -1072,6 +1072,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.right_tabs.addTab(self.viewer, "PARTS")
         self.right_tabs.addTab(self.plan_tab, "PLAN")
         self.right_tabs.addTab(self.pairs_tab, "PAIRS")
+        self.right_tabs.addTab(self._build_mash_tab(), "MASHUP")
         self.right_tabs.setToolTip("DIALS: how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves; "
                                    "PLAN: what will happen next, in order, with the time from now")
         self.right_tabs.currentChanged.connect(self._right_tab_changed)
@@ -1915,6 +1916,89 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if self._cue is not None:
             self._cue.stop()
         self.pairs_lbl.setText("preview stopped")
+
+    # -- MASHUP: three songs, four pads each (docs/DJ_MASHUP.md) ----------------------------------------------------
+    MASH_KEYS = (("1", "2", "3", "4"), ("Q", "W", "E", "R"), ("A", "S", "D", "F"))
+    MASH_LANES = (("drums", "drums"), ("bass", "bass"), ("other", "melody"), ("vocals", "vocal"))
+
+    def _build_mash_tab(self):
+        """THE MASHUP tab: the scene now and next, and three rows of four pads - a pad moves that part to that song on
+        the next bar (bass or melody moves the harmony, both); a lit pad takes it out. Keys 1-4 / Q-R / A-F while the
+        tab has the focus (click into it)."""
+        from PyQt6.QtGui import QShortcut, QKeySequence
+        from PyQt6.QtWidgets import QGridLayout as _QGL
+        w = QWidget()
+        v = QVBoxLayout(w)
+        self.mash_scene_lbl = QLabel("LAYERS: mashup - three songs taken apart, a new combination every few bars")
+        self.mash_scene_lbl.setWordWrap(True)
+        self.mash_next_lbl = QLabel("")
+        self.mash_next_lbl.setWordWrap(True)
+        self.mash_next_lbl.setProperty("dim", "true")
+        v.addWidget(self.mash_scene_lbl)
+        v.addWidget(self.mash_next_lbl)
+        g = _QGL()
+        g.setHorizontalSpacing(6)
+        g.setVerticalSpacing(10)
+        self.mash_names, self.mash_pads = [], []
+        for i in range(3):
+            name = QLabel(f"song {i + 1}")
+            name.setMinimumWidth(170)
+            g.addWidget(name, i, 0)
+            self.mash_names.append(name)
+            row = []
+            for j, (lane, word) in enumerate(self.MASH_LANES):
+                b = QPushButton(f"{word}\n[{self.MASH_KEYS[i][j]}]")
+                b.setCheckable(True)
+                b.setMinimumHeight(54)
+                b.setMinimumWidth(78)
+                b.clicked.connect(lambda _c, s=i, ln=lane: self._mash_pad(s, ln))
+                g.addWidget(b, i, 1 + j)
+                row.append(b)
+                QShortcut(QKeySequence(self.MASH_KEYS[i][j]), w, activated=lambda s=i, ln=lane: self._mash_pad(s, ln),
+                          context=Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            self.mash_pads.append(row)
+        v.addLayout(g)
+        self.mash_msg = QLabel("")
+        self.mash_msg.setWordWrap(True)
+        v.addWidget(self.mash_msg)
+        v.addStretch(1)
+        w.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        return w
+
+    def _mash_pad(self, slot, lane):
+        d = self.director
+        if d is None:
+            self.mash_msg.setText("press START first")
+            return
+        if d.dials.get("layers") != "mashup":
+            self.mash_msg.setText("LAYERS is not mashup: turn LAYERS to mashup on the DIALS tab first")
+            return
+        self.mash_msg.setText(d.mash_pad(slot, lane) or "")
+
+    def _fill_mash(self, ms):
+        """The pads follow the room: lit where the song holds the part (both bass and melody for the harmony)."""
+        if ms is None:
+            self.mash_scene_lbl.setText("LAYERS: mashup - three songs taken apart, a new combination every few bars")
+            self.mash_next_lbl.setText("turn LAYERS to mashup on the DIALS tab; MOMENTS sets how often the scene changes (rare 32 bars, some 16, lots 8)")
+            for i in range(3):
+                self.mash_names[i].setText(f"song {i + 1}")
+                for b in self.mash_pads[i]:
+                    b.setChecked(False)
+            return
+        self.mash_scene_lbl.setText(f"SCENE {ms['n']}: {ms['scene']}")
+        self.mash_next_lbl.setText((f"next in {ms['next_in_bars']} bars: {ms['next']}" if ms.get("next") else f"next scene in {ms['next_in_bars']} bars")
+                                   + (f"   ·   a song changes in {ms['rotate_in']} scenes" if ms.get("rotate_in") is not None else ""))
+        for sl in ms["slots"]:
+            i = sl["slot"]
+            name = (sl["title"] or "(picking)")[:26] + ("" if sl["ready"] else "  …") + ("  ↘" if sl["leaving"] else "")
+            if self.mash_names[i].text() != name:
+                self.mash_names[i].setText(name)
+            for j, (lane, _w) in enumerate(self.MASH_LANES):
+                b = self.mash_pads[i][j]
+                on = lane in sl["held"]
+                if b.isChecked() != on:
+                    b.setChecked(on)
+                b.setEnabled(bool(sl["ready"]))
 
     def _hear_seam(self):
         """HEAR THE SEAM: the rehearsal's wav when it has rendered this seam, else a render now on a worker; played on
@@ -2932,6 +3016,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             return
         self._midi_poll()
         st = d.status()
+        try:
+            self._fill_mash(st.get("mash"))
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"mashup tab: {type(e).__name__}: {e}")
         now, nxt = st.get("now"), st.get("next")
         mode = "one song at a time" if st.get("mode") == "one" else ("songs layered" if st.get("mode") else "-")
         last = (st.get("events") or [("", "")])[-1][1]

@@ -63,6 +63,7 @@ import numpy as np
 
 from lib.dj.submix import DJSubmix, RATE
 from lib.dj.record import RecordPlay
+from lib.dj.mashup import MashupPlay
 
 STEMS = ("drums", "bass", "other", "vocals")
 TONAL = ("bass", "other", "vocals")
@@ -201,7 +202,7 @@ class Song:
         return _shift(self.track.camelot, self.shift) if self.track.camelot else ""
 
 
-class RemixConductor(RecordPlay):
+class RemixConductor(RecordPlay, MashupPlay):
     def __init__(self, db, music_root, library, theme=None, seed=None):
         from lib.dj.brain import Brain
         from lib.dj.themes import get_theme
@@ -255,6 +256,7 @@ class RemixConductor(RecordPlay):
         self.policy = "record"           # "record" (THE RECORD PLAYS: one song whole, one seam per record - lib/dj/record.py) |
                                          # "arrangement" (a bed and voices, one change at a time; superseded 2026-09-13) | "free" (any lane)
         self._record_init()
+        self._mash_init_state()          # MASHUP (lib/dj/mashup.py): three songs taken apart, when policy == "mashup"
         self.fx_level = 1.0              # the Director's FX dial: the chance a move gets a shape (0 = plain crossfades)
         self._cands_cache = (0.0, None, [])
         self._cue_req = {}               # deck -> song time to open / stage at (the timeline player's exact starts)
@@ -1439,7 +1441,7 @@ class RemixConductor(RecordPlay):
         # silent), so a NEXT or a dial turn is heard on the next bar, not after a decode. The cap governs
         # how many are HEARD at once (the entry in _one_move), not how many are ready.
         staged_waiting = [s for s in live if not s.entered] + list(self._decoding.values()) + list(self._pending.values())
-        if self.auto > 0.0 and free and not staged_waiting and not self.reserve_pick:
+        if self.auto > 0.0 and free and not staged_waiting and not self.reserve_pick and getattr(self, "policy", "record") != "mashup":   # (MASHUP fills its own slots)
             nxt = self._pick_next()
             if nxt is not None:
                 self._decode(nxt, free[0])
@@ -1483,6 +1485,20 @@ class RemixConductor(RecordPlay):
         if self._recall is not None:
             return                                    # a recall in progress owns the lanes
         policy = getattr(self, "policy", "record")
+        if policy == "mashup":
+            # MASHUP (docs/DJ_MASHUP.md): three songs, a scene every mash_bars; the clock never left with nobody
+            if self.master is None and self.songs:
+                cands = [dk for dk, s in self.songs.items() if not s.leaving and s.staged_at is not None]
+                if cands:
+                    self._pass_clock(cands[0], self._next_bar_clock())
+            if not self.hold:
+                try:
+                    self._mashup_step()
+                except Exception as e:  # noqa: BLE001
+                    self.last_error = f"mashup: {type(e).__name__}: {e}"
+            return
+        if getattr(self, "_mash", None) is not None:
+            self.mash_reset()                         # (LAYERS back from mashup: the record is the song holding the drums)
         if policy in ("arrangement", "record") and not self.hold:
             self._vocal_tick()
             try:
@@ -1574,9 +1590,12 @@ class RemixConductor(RecordPlay):
     def _keep_runway(self, k):
         """A song whose body is running out loops its last bars; one that has looped for two phrases
         gives its lanes away; one with no lanes leaves a bar later."""
+        mash_tids = set((getattr(self, "_mash", None) or {}).get("tids") or []) if getattr(self, "policy", "record") == "mashup" else set()
         for deck, song in list(self.songs.items()):
             if song.leaving:
                 continue
+            if song.track.id in mash_tids:
+                continue                              # MASHUP: its slots are the routine's - silent between scenes, hot-cued when running out
             d = self._tel_deck(deck)
             if not d.get("playing"):
                 continue
