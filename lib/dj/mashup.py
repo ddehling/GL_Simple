@@ -370,6 +370,28 @@ class MashupPlay:
             else:
                 tgt_c = tgt - bar_b
             self._post_cue(d, max(0.0, tgt_c), at_cue)
+            m.setdefault("cue_t", {})[d] = float(tgt)          # (where it will be on the scene's bar: the level estimate reads there)
+
+    def _mash_level(self, assign, at, cue_t):
+        """The room's level for a lane map: each stem's loud level (twice its body rms) times its envelope where its
+        song will be at `at` (its cue target when cued) times its lane gain - summed as power."""
+        import numpy as np
+        tot = 0.0
+        for ln, dd in assign.items():
+            s = self.songs.get(dd)
+            if s is None:
+                continue
+            t = float(cue_t.get(dd)) if dd in cue_t else self._song_time_at(dd, at)
+            env = (s.env or {}).get(ln)
+            e = 0.5
+            if env is not None and len(env) > 4:
+                i0 = max(0, int(t * 2))
+                seg = np.asarray(env[i0:i0 + 8], dtype=np.float32)
+                if len(seg):
+                    e = float(np.mean(seg))
+            lv = 2.0 * float((s.stem_rms or {}).get(ln) or 0.0) * e * float(self._lane_gain_plain(dd, ln, at))
+            tot += lv * lv
+        return float(np.sqrt(tot))
 
     def _mash_lanes_of(self, scene):
         return {"drums": scene.get("drums"), "bass": scene.get("harm"), "other": scene.get("harm"), "vocals": scene.get("vocal")}
@@ -405,6 +427,25 @@ class MashupPlay:
                 if c is not None:
                     self._post_cue(d, c, at)
                     self._move("mashup", None, s.track.id, None, f"{s.track.title[:24]} is running out: hot cue back to {int(c) // 60}:{int(c) % 60:02d} on the scene's bar")
+        # LEVEL CONTINUITY (the mashup smoke: a scene change stepped 10.9 dB): the room's level after the scene against
+        # before, from each stem's measured level where its song will be; the arriving parts are trimmed by the
+        # difference (within 6 dB) and ease back to their own level over the scene (step_trim, read by _lane_gain)
+        try:
+            lv_before = self._mash_level({ln: dd for ln, dd in self.lanes.items() if dd is not None}, at, {})
+            new_map = {ln: (self._mash_deck(sl) if sl is not None else None) for ln, sl in want.items()}
+            lv_after = self._mash_level({ln: dd for ln, dd in new_map.items() if dd is not None}, at, m.get("cue_t") or {})
+            if lv_before > 1e-6 and lv_after > 1e-6 and scene.get("shape") is None:
+                import math
+                db = max(-6.0, min(6.0, 20.0 * math.log10(lv_before / lv_after)))
+                if abs(db) >= 1.5:
+                    for dd in set(x for x in new_map.values() if x is not None):
+                        arriving = [ln for ln, x in new_map.items() if x == dd and self.lanes.get(ln) != dd]
+                        if arriving:
+                            k0 = nb
+                            self.songs[dd].step_trim = {"db": db, "lanes": arriving, "k0": k0, "k1": k0 + max(4, int(self.mash_bars))}
+        except Exception as e:  # noqa: BLE001
+            self.last_error = f"mashup level: {type(e).__name__}: {e}"
+        m["cue_t"] = {}
         beats = 0.5 if scene.get("shape") == "drop" else 1.0
         changed = []
         for ln in ("drums", "bass", "other", "vocals"):
@@ -420,7 +461,19 @@ class MashupPlay:
                 if ln == "vocals":
                     s.user_vocal = True               # the mashup's lead: at the library's vocal level, as a vocal you chose (never left faint)
         self._hygiene(at + int(beats * beat_c))
-        self._move("mashup", None, None, None, f"SCENE {int(m.get('n', 0)) + 1}: {scene_words(scene, titles)}" + (f" - {', '.join(changed)} move" if changed else ""))
+        # the trimmed parts ease back to their own level over the scene (one ramp, after the hygiene's re-post)
+        trims = []
+        for dd, s_ in self.songs.items():
+            st = getattr(s_, "step_trim", None)
+            if st and st.get("k0") == nb and not s_.leaving:
+                lanes_t = [ln for ln in st["lanes"] if self.lanes.get(ln) == dd]
+                if lanes_t:
+                    self.submix.post({"at": at + 2 * beat_c, "cmd": "stem_gains", "deck": dd,
+                                      "gains": {ln: self._lane_gain_plain(dd, ln, at) for ln in lanes_t},
+                                      "ramp_s": max(4, int(self.mash_bars)) * self._bar_clock() / RATE})
+                    trims.append(f"{s_.track.title[:16]} {st['db']:+.0f} dB")
+        self._move("mashup", None, None, None, f"SCENE {int(m.get('n', 0)) + 1}: {scene_words(scene, titles)}" + (f" - {', '.join(changed)} move" if changed else "")
+                   + (f" (level held: {', '.join(trims)}, easing back)" if trims else ""))
 
     # -- the set moves on ----------------------------------------------------------------------------------------
     def _mash_rotate_step(self):

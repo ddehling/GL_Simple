@@ -122,6 +122,13 @@ def main():
         back_ok = rc.policy == "record" and rc._mash is None and rec is not None and rc.lanes.get("drums") is not None
         print(f"  BACK to two: policy {rc.policy}, record {rec.track.title[:24] if rec else None}, lanes {rc.lanes} -> {'ok' if back_ok else 'NOT OK'}")
     d.stop(0.1)
+    wav = arg("--wav", "", str)
+    if wav:
+        # the rendered mashup for the ear (from LAYERS mashup on), 16-bit stereo
+        from lib.dj.rehearse import write_wav
+        x = np.concatenate(audio[t0:]) if len(audio) > t0 else np.zeros((1, 2), dtype=np.float32)
+        write_wav(wav, x[: int(arg("--wav-seconds", 300.0, float) * RATE)], RATE)
+        print(f"  wrote {wav} ({min(len(x) / RATE, arg('--wav-seconds', 300.0, float)):.0f} s)")
     mono = np.concatenate(audio[t0:]).mean(axis=1) if len(audio) > t0 + 10 else np.zeros(1)
     nb = int(bar_blocks() * BLOCK)
     rms = [20 * np.log10(np.sqrt(np.mean(mono[i:i + nb] ** 2)) + 1e-9) for i in range(0, len(mono) - nb, nb)]
