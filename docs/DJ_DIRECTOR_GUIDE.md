@@ -211,7 +211,8 @@ groove on the scene's bar; after a dozen scenes the song used least gives way to
 stay - your UP NEXT first. THE PLAN shows the scene now, the next one and its bar, the three songs and what
 each holds. The **MASHUP** tab has the pads: three rows (the songs) × drums / bass / melody / vocal, lit where
 the song holds the part; a press moves the part to that song on the next bar (bass or melody moves the
-harmony), a lit pad takes it out; keys 1-4, Q-R, A-F once you click into the tab. The routine carries on from
+harmony), a lit pad takes it out; keys 1-4, Q-R, A-F once you click into the tab, or on the nanoKONTROL2 the S / M / R
+buttons of channels 1-4 (S = song 1, M = song 2, R = song 3; drums, bass, melody, vocal). The routine carries on from
 your move.
 
 **Every record gets a score (docs/DJ_THE_COMPOSER.md).** When a record is staged as the next one, the DJ

@@ -2147,6 +2147,14 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 i = int(name.split("_")[1])
                 if 1 <= i <= len(self.MIDI_KNOBS):
                     pick(self.MIDI_KNOBS[i - 1], val)
+            elif val is True and name[:2] in ("s_", "m_", "r_") and "_button_" in name:
+                # MASHUP pads on the controller (docs/DJ_MASHUP.md): channels 1-4 = drums, bass, melody, vocal; the S row is
+                # song 1, M song 2, R song 3 - a press moves the part on the next bar (LAYERS mashup only)
+                i = int(name.rsplit("_", 1)[1])
+                if 1 <= i <= 4 and d.dials.get("layers") == "mashup":
+                    slot = {"s_": 0, "m_": 1, "r_": 2}[name[:2]]
+                    lane = ("drums", "bass", "other", "vocals")[i - 1]
+                    self.mash_msg.setText(d.mash_pad(slot, lane) or "")
             elif val is True:                                   # transport buttons act on press
                 if name == "play":
                     d.next()

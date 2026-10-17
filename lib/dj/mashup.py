@@ -51,13 +51,24 @@ class MashupPlay:
         self._mash = None
         if m is None:
             return
-        d = self.lanes.get("drums") or self.master
+        d = self.lanes.get("drums") or self.lanes.get("bass") or self.master
         if d in self.songs:
             self.record_deck = d
             s = self.songs[d]
             s.play_from_k = self.bar_n
             for x in self.songs.values():
                 x.part_only = x is not s and x.entered
+            # the record plays WHOLE: its harmony and vocal come back to it over a bar (the room was left split three ways -
+            # drums one song, harmony another, vocal a third - the mashup smoke's way back); the others leave once silent
+            at = self._next_bar_clock()
+            moved = []
+            for ln in ("drums", "bass", "other", "vocals"):
+                if self.lanes.get(ln) != d:
+                    self._cross(ln, d, at, beats=4.0, shape=False)
+                    moved.append(ln)
+            if moved:
+                self._hygiene(at + int(4 * self._beat_s() * RATE))
+                self._move("mashup", None, s.track.id, None, f"MASHUP over: {s.track.title[:26]} is the record, whole ({', '.join(moved)} back to it)")
 
     # -- the helpers ---------------------------------------------------------------------------------------------
     def _mash_deck(self, i):

@@ -128,6 +128,27 @@ def main():
     dead = [i for i, r in enumerate(rms) if r < -45.0]
     ms = rc.mash_status() or {}
     thin = [l for l in scene_lanes if len(l) < 2]
+    # THE SOUND AT A SCENE CHANGE: the level of the two bars after against the two bars before (plain scenes only - a
+    # DROP and a BREAKDOWN are steps by design); the room's level within scenes for the line
+    allmono = np.concatenate(audio).mean(axis=1)
+    bar_n = int(rc._bar_clock())
+    steps = []
+    for mv in rc.move_log:
+        if mv["kind"] != "mashup" or not mv["text"].startswith("SCENE") or "(drop)" in mv["text"] or "(breakdown)" in mv["text"]:
+            continue
+        c = mv.get("clock_s")
+        if c is None:
+            continue
+        # the scene lands on the bar after the move was logged (planned a bar early)
+        k = int((float(c) + rc._bar_clock() / RATE) * RATE)
+        a0, a1, b1 = k - 2 * bar_n, k, k + 2 * bar_n
+        if a0 < 0 or b1 > len(allmono):
+            continue
+        ra = np.sqrt(np.mean(allmono[a0:a1] ** 2)) + 1e-9
+        rb = np.sqrt(np.mean(allmono[a1 + bar_n // 4:b1] ** 2)) + 1e-9
+        steps.append(round(float(20 * np.log10(rb / ra)), 1))
+    worst = max((abs(x) for x in steps), default=0.0)
+    print(f"level step at plain scene changes (dB, after vs before): {steps}  worst {worst}")
     expect = int(seconds / (rc.mash_bars * rc._bar_clock() / RATE)) // 2
     print(f"\nscenes {len(scene_lanes)} (expected at least {expect}), thin scenes {len(thin)}, songs heard {len(entered_titles)}, "
           f"rotations {ms.get('rotations')}, pads {[(s + 1, ln, ok) for s, ln, ok, _ in pad_results]}, dead bars {len(dead)} of {len(rms)}")
@@ -144,6 +165,8 @@ def main():
         fails.append(f"pads: {pad_results}")
     if dead:
         fails.append(f"{len(dead)} dead bars")
+    if worst > 8.0:
+        fails.append(f"a scene change stepped {worst} dB")
     if back_ok is False:
         fails.append("LAYERS back to two did not hand the room to the record policy")
     if d.last_error or rc.last_error:
