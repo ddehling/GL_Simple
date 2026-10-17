@@ -190,6 +190,15 @@ class MashupPlay:
                 self._seam_drop("MASHUP: three songs, not a seam")
             except Exception:
                 self.seam = None
+        # the record mode's scores and pairs end here, said (the mashup does not run them: they sat 'fixed' with their
+        # record gone - the control gate)
+        for o in list(getattr(self, "orders", None) or []):
+            if o.get("state") in ("staging", "fixed", "running"):
+                try:
+                    self._order_end(o, "failed", "the MASHUP took over")
+                except Exception:
+                    o["state"] = "failed"
+        self._event_pending = None
         a = self.songs[anchor]
         self._mash = {"tids": [a.track.id, None, None], "scene": {"drums": 0, "harm": 0, "vocal": 0 if self.lanes.get("vocals") == anchor else None},
                       "next": None, "next_bar": self.bar_n + max(8, int(self.mash_bars)), "n": 0, "used": [1, 0, 0], "history": [],
@@ -408,6 +417,8 @@ class MashupPlay:
                 s = self.songs[d]
                 if not s.entered:
                     s.entered, s.entered_k = True, self.bar_n
+                if ln == "vocals":
+                    s.user_vocal = True               # the mashup's lead: at the library's vocal level, as a vocal you chose (never left faint)
         self._hygiene(at + int(beats * beat_c))
         self._move("mashup", None, None, None, f"SCENE {int(m.get('n', 0)) + 1}: {scene_words(scene, titles)}" + (f" - {', '.join(changed)} move" if changed else ""))
 

@@ -1491,6 +1491,18 @@ class RemixConductor(RecordPlay, MashupPlay):
                 cands = [dk for dk, s in self.songs.items() if not s.leaving and s.staged_at is not None]
                 if cands:
                     self._pass_clock(cands[0], self._next_bar_clock())
+            m_ = getattr(self, "_mash", None)
+            if self._force_move:
+                # NEXT in a mashup: the next scene comes on the bar after next (HOLD freezes the scene)
+                self._force_move = False
+                if m_ is not None and int(m_.get("next_bar", 0)) > self.bar_n + 2:
+                    m_["next_bar"] = self.bar_n + 2
+                    m_["cued"] = False
+                    self._move("mashup_plan", None, None, None, "NEXT: the next scene comes in two bars")
+                elif m_ is not None:
+                    self._move("mashup_plan", None, None, None, f"NEXT: the next scene is already due in {max(0, int(m_.get('next_bar', 0)) - self.bar_n)} bars")
+                else:
+                    self._move("mashup_plan", None, None, None, "NEXT: the mashup is starting - its first scene comes as soon as two songs are ready")
             if not self.hold:
                 try:
                     self._mashup_step()

@@ -37,7 +37,8 @@ ALLOWED = ("not on a deck", "no such song", "still decoding", "still staging", "
            "not layered", "layer first", "only TAKEOVER and BRIDGE", "already", "nothing to", "no drop or hook",
            "would take nothing away", "too quiet", "the vocal you brought", "is the one playing", "nothing to take away",
            "vocal is not on the lane", "is not singing here", "no hook of", "the record playing", "already leaving",
-           "no chain of records reaches it", "has no stems", "waits for a deck", "no drop of", "REFUSED", "refused:")
+           "no chain of records reaches it", "has no stems", "waits for a deck", "no drop of", "REFUSED", "refused:",
+           "has no song ready yet", "not in MASHUP")
 
 
 def arg(name, default, cast=str):
@@ -151,7 +152,29 @@ def run(music, seed, presses, seconds, verbose):
 
     def make_press():
         kind = rng.choice(["stem_in", "stem_in", "stem_in", "vocal_late", "queue", "next", "next", "hold", "drop", "break", "moment", "moment", "moment_with",
-                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea", "queue_nostems", "pair"])
+                           "stem_out", "save_recall", "dial", "eject", "queue_far", "set_skip", "idea", "queue_nostems", "pair", "mash", "mash"])
+        if kind == "mash":
+            # MASHUP (docs/DJ_MASHUP.md): LAYERS into mashup, a random pad, or back to two - each must act within a bar or two,
+            # or say why from the allowed list
+            if d.dials.get("layers") != "mashup":
+                def verify_in(_b):
+                    return rc.policy == "mashup"
+                return Press("LAYERS mashup", lambda: d.set_dial("layers", "mashup"), verify_in, settle_bars=0.5)
+            if rng.random() < 0.2:
+                def verify_out(_b):
+                    return rc.policy == "record" and getattr(rc, "_mash", None) is None
+                return Press("LAYERS two (from mashup)", lambda: d.set_dial("layers", "two"), verify_out, settle_bars=1.5)
+            slot, lane = rng.randrange(3), rng.choice(("drums", "bass", "other", "vocals"))
+            ms0 = rc.mash_status()
+            want_deck = ms0["slots"][slot]["deck"] if ms0 else None
+            before = rc.lanes.get(lane)
+
+            def verify_pad(_b):
+                if want_deck is None:
+                    return False                      # (no song ready in that slot: the reply says so)
+                after = rc.lanes.get(lane)
+                return after == (None if before == want_deck else want_deck)
+            return Press(f"PAD song {slot + 1} {lane}", lambda: d.mash_pad(slot, lane), verify_pad, settle_bars=2.5)
         if kind == "pair":
             # PLAY THIS PAIR (docs/DJ_ORDERS.md): an ORDER exists within a bar (staging or planned), with a PAIR row in THE
             # PLAN - or it is refused at once, said. Its fate is checked at the end of the run (orders_check)
