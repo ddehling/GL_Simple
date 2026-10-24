@@ -2,11 +2,15 @@
 
 LR4 = squared 2nd-order Butterworth, so the three bands sum back to (almost)
 flat when all gains are 1.0 - killing the low band during a bass swap leaves
-mids/highs untouched. Stateful (scipy sosfilt zi per channel), block-based,
+mids/highs untouched. Stateful (sosfilt zi per channel), block-based,
 with per-block linear gain ramps so automation never zipper-clicks.
+Filtering runs through lib/dj/sosfast.py: scipy's exact recurrence without
+scipy's per-call wrapper (bit-identical output, GIL released).
 """
 import numpy as np
-from scipy.signal import butter, sosfilt
+from scipy.signal import butter
+
+from lib.dj.sosfast import sosfilt
 
 RATE = 44100
 LOW_HZ = 200.0
@@ -58,8 +62,7 @@ class ThreeBandEQ:
                 and np.all(np.abs(self._targets - 1.0) < 1e-3))
 
     def _run(self, key, x):
-        y, self._zi[key] = sosfilt(self._sos[key], x, axis=0,
-                                   zi=self._zi[key])
+        y, self._zi[key] = sosfilt(self._sos[key], x, self._zi[key])
         return y
 
     def process(self, block):

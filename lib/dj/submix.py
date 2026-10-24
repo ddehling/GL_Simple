@@ -28,7 +28,17 @@ import numpy as np
 from lib.dj.deck import Deck
 
 RATE = 44100
+# The AUTOMATION GRID: events land on the first 256-frame boundary at or
+# after their `at`, exactly as they always have.
 SUB_BLOCK = 256
+# A render pass spans several grid steps when no event comes due inside
+# it (2026-10-23): every pass pays a fixed Python cost per deck (rate and
+# ramp bookkeeping, EQ/filter dispatch, the PLL), which at 256 frames was
+# about half of a two-deck blend and all of it held the GIL. Capped at
+# 1024 because EchoDelay is block-exact only while its delay (>= 1024
+# frames) is at least the block. Decks drop back to 256-frame steps on
+# their own while anything that moves in steps is moving (Deck.read).
+MAX_SUB_BLOCK = 1024
 TEL_HIST_FRAMES = RATE * 2       # 2s of telemetry history for the visuals
 # Loop: position error e, rate trim u, de/dt = -u + bias. With u = Kp*e +
 # Ki*int(e): e'' = -Kp e' - Ki e, damping zeta = Kp / (2 sqrt(Ki)). These
@@ -449,23 +459,24 @@ class DJSubmix:
                             and (all(h > 0 for h in hist)
                                  or all(h < 0 for h in hist)))
 
-    def _run_pll(self):
+    def _run_pll(self, frames=SUB_BLOCK):
         """Every synced slave gets its turn: its state swapped in, the one-slave PLL below run
         unchanged, its state saved back. self._sync is left on the primary (first) slave for the
-        telemetry."""
+        telemetry. `frames` is the length of the pass about to render (the per-call smoothing
+        scales by it, so the loop's time constants do not depend on the pass length)."""
         if not self._syncs:
             return
         for name, st in list(self._syncs.items()):
             self._sync = {"slave": name, "master": st["master"], "audio": st["audio"]}
             self._load_sync_state(st)
-            self._run_pll_one()
+            self._run_pll_one(frames)
             self._save_sync_state(st)
         first = next(iter(self._syncs))
         self._sync = {"slave": first, "master": self._syncs[first]["master"],
                       "audio": self._syncs[first]["audio"]}
         self._load_sync_state(self._syncs[first])
 
-    def _run_pll_one(self):
+    def _run_pll_one(self, frames=SUB_BLOCK):
         """Continuously trim the slave deck's rate to keep its ACTUAL kicks
         on the master's - audio phase first (the grids sit differently vs
         each track's real kicks, so grid phase alone leaves ~30ms flam),
@@ -620,13 +631,22 @@ class DJSubmix:
         err_s = -grid_err * beat_s
         if audio_ok:
             err_s = 0.7 * err_s + 0.3 * (self._apll_err * beat_s)
+        # Per-call constants below were tuned at one call per 256 frames;
+        # a longer pass applies them as many times over (r = passes' worth),
+        # so the decay and the smoothing keep the same time constants.
+        # r == 1 keeps the literal constants (1 - 0.8 is not 0.2 in floats).
+        r = frames / SUB_BLOCK
         if abs(err_s) < PLL_DEADBAND * beat_s and not audio_ok:
-            slave.rate_trim *= 0.9
+            slave.rate_trim *= 0.9 if r == 1 else 0.9 ** r
             return
         want = self._apll_i + err_s / PLL_TC
         trim = float(np.clip(want, -PLL_MAX_TRIM, PLL_MAX_TRIM))
         # One-pole smoothing keeps the correction from breathing audibly.
-        slave.rate_trim = 0.8 * slave.rate_trim + 0.2 * trim
+        if r == 1:
+            slave.rate_trim = 0.8 * slave.rate_trim + 0.2 * trim
+        else:
+            keep = 0.8 ** r
+            slave.rate_trim = keep * slave.rate_trim + (1.0 - keep) * trim
 
     def read(self, n):
         """Called by AudioEngine._mixer on the audio thread."""
@@ -649,7 +669,16 @@ class DJSubmix:
             m = min(SUB_BLOCK, n - pos)
             while self._auto and self._auto[0]["at"] <= self.clock:
                 self._apply(self._auto.pop(0))
-            self._run_pll()
+            # Grow the pass over further grid steps while no automation
+            # event would fire at their start - so every event still
+            # lands on the same grid boundary it always did.
+            while pos + m < n:
+                step = min(SUB_BLOCK, n - pos - m)
+                if m + step > MAX_SUB_BLOCK or (
+                        self._auto and self._auto[0]["at"] <= self.clock + m):
+                    break
+                m += step
+            self._run_pll(m)
             for name, d in self.decks.items():
                 if not (d.playing or d.echo.ringing):
                     continue

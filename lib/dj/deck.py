@@ -497,8 +497,39 @@ class Deck:
         self._rs_pos = nxt - k
         return out
 
+    # Longest pass the chain renders while something that moves in STEPS
+    # is moving. Stem gains, the rate ramp, the EQ gain ramp, the sweep
+    # filter's coefficients and the brake each update once per pass and
+    # hold for its length - at 256 frames (5.8 ms) the steps are inaudible
+    # and that is how every one of them was tuned. The submix renders
+    # steady passes of up to 1024 frames (submix.MAX_SUB_BLOCK); while any
+    # of these moves, the deck splits the pass back into 256-frame steps
+    # so it sounds exactly as it did.
+    FINE_BLOCK = 256
+
+    def _moving_in_steps(self):
+        if self._stem_ramp is not None or self._rate_ramp is not None \
+                or self._brake is not None:
+            return True
+        eq = self.eq
+        if eq._ramp_left_s > 0.0 or not np.array_equal(eq._targets, eq.gains):
+            return True
+        f = self.filter
+        return f.mode != "off" and (f._ramp_left_s > 0.0 or f._fc != f._target)
+
     def read(self, n):
         """n output frames through the whole chain. Zeros when idle."""
+        if n > self.FINE_BLOCK and self._moving_in_steps():
+            parts, done = [], 0
+            while done < n:
+                k = min(self.FINE_BLOCK, n - done)
+                parts.append(self._read_pass(k))
+                done += k
+            return np.concatenate(parts)
+        return self._read_pass(n)
+
+    def _read_pass(self, n):
+        """One pass of n frames through the chain (see read)."""
         if not (self.playing and self.ready and self.samples is not None):
             if self.echo.ringing:                # echo tail outlives the deck
                 tail = self.echo.process(np.zeros((n, 2), dtype=np.float32))

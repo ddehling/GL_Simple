@@ -3,12 +3,14 @@ one-shots (riser / impact).
 
 SweepFilter and EchoDelay are STREAMING (per-block, state carried across
 calls, coefficients ramped block-wise) and cheap enough for the audio
-callback: everything is scipy sosfilt / numpy slices, no per-sample Python.
-The one-shots are synthesized OFFLINE on the control thread at plan time
-and shipped to the submix as ready buffers.
+callback: everything is sosfilt (lib/dj/sosfast.py - scipy's exact
+recurrence without scipy's per-call wrapper) / numpy slices, no per-sample
+Python. The one-shots are synthesized OFFLINE on the control thread at
+plan time and shipped to the submix as ready buffers.
 """
 import numpy as np
-from scipy.signal import sosfilt
+
+from lib.dj.sosfast import sosfilt
 
 RATE = 44100
 
@@ -79,10 +81,10 @@ class SweepFilter:
         sos = _rbj_sos(self.mode, self._fc, self.q)
         if self._zi is None:
             self._zi = np.zeros((1, 2, self.channels))
-        # Both channels in ONE sosfilt call (axis=0): scipy's per-call
-        # Python overhead dominated the 1-section filter at 256-frame
-        # sub-blocks (perf audit 2026-07-31).
-        out, self._zi = sosfilt(sos, block, axis=0, zi=self._zi)
+        # Both channels in ONE sosfilt call (axis=0): per-call overhead
+        # dominated the 1-section filter at 256-frame sub-blocks (perf
+        # audits 2026-07-31, 2026-10-23).
+        out, self._zi = sosfilt(sos, block, self._zi)
         return out.astype(block.dtype)
 
 
