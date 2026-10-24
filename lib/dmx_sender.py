@@ -26,7 +26,7 @@ import traceback
 
 from core.strip import StripBinding, addressing_array_from_strips
 try:
-    from lib.pixel_extract import extract_and_pack_pixels_unchecked, process_all_universes
+    from lib.pixel_extract import gather_pixels, process_all_universes
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
@@ -211,7 +211,32 @@ class SACNPixelSender:
                     'byte_count': int(addr.shape[0]) * 3,
                 })
             self._strip_plans.append(plans)
-        
+
+        # Hot-path form of the strip plans: every strip of one receiver that
+        # reads the same group canvas, concatenated into a single gather
+        # (canvas coords + destination pixel index in the receiver buffer).
+        # One extraction call per (receiver, group) instead of one per
+        # strip — Fan is 4 calls a frame instead of 128. Destinations are
+        # explicit so strips of one group needn't be adjacent in the buffer
+        # (WoL interleaves Sky and Ground strips on a box).
+        self._group_plans: list[list[tuple]] = []
+        for plans in self._strip_plans:
+            by_group: dict = {}
+            for plan in plans:
+                xs, ys, dst = by_group.setdefault(plan['group_id'], ([], [], []))
+                n = plan['byte_count'] // 3
+                xs.append(plan['x_coords'])
+                ys.append(plan['y_coords'])
+                dst.append(np.arange(plan['byte_offset'] // 3,
+                                     plan['byte_offset'] // 3 + n, dtype=np.int32))
+            self._group_plans.append([
+                (gid,
+                 np.ascontiguousarray(np.concatenate(xs), dtype=np.int32),
+                 np.ascontiguousarray(np.concatenate(ys), dtype=np.int32),
+                 np.ascontiguousarray(np.concatenate(dst), dtype=np.int32))
+                for gid, (xs, ys, dst) in by_group.items()
+            ])
+
         # Pre-allocate buffers for data extraction (avoids allocations during send)
         self._receiver_buffers = []
         self._universe_buffers = []
@@ -242,9 +267,9 @@ class SACNPixelSender:
         # Async sending support. Queue size 4 absorbs short scheduling
         # hiccups (Windows timer jitter, browser keystroke contention)
         # without snowballing into stale lag — at 40 FPS that's 100ms
-        # of buffering before frames get dropped. Smaller numbers (the
-        # original 2) caused visible LED flicker any time the worker
-        # paused for a single frame.
+        # of buffering before the oldest frames get dropped (see send()).
+        # Smaller numbers (the original 2) caused visible LED flicker any
+        # time the worker paused for a single frame.
         self._send_queue = queue.Queue(maxsize=4)
         self._send_thread = None
         self._stop_thread = False
@@ -449,12 +474,22 @@ class SACNPixelSender:
         Otherwise sends immediately.
         """
         if self._async_enabled:
-            # Drop frame if queue is full (prevents lag buildup)
+            # Queue full = the worker is behind. Drop the OLDEST queued
+            # frame and keep this one: the LEDs should catch up to now, not
+            # play out the stalest 100ms after a stall (dropping the new
+            # frame did exactly that). Two tries cover the worker draining
+            # or the render thread refilling between the get and the put.
             # Note: We don't copy arrays — caller must not modify after calling send()
-            try:
-                self._send_queue.put_nowait((frames, verify))
-            except queue.Full:
-                pass  # Skip this frame if queue is full
+            item = (frames, verify)
+            for _ in range(2):
+                try:
+                    self._send_queue.put_nowait(item)
+                    break
+                except queue.Full:
+                    try:
+                        self._send_queue.get_nowait()
+                    except queue.Empty:
+                        pass
         else:
             self._send_immediate((frames, verify))
 
@@ -475,26 +510,21 @@ class SACNPixelSender:
             pixel_buffer = self._receiver_buffers[rx_idx]
             protocol = self.receiver_protocols[rx_idx]
 
-            # ---- per-strip pixel extraction (each strip pulls from its
-            # own group canvas; receiver buffer is the concatenation) ----
-            for plan in self._strip_plans[rx_idx]:
-                source = frames.get(plan['group_id'])
+            # ---- pixel extraction: one gather per (receiver, group); each
+            # strip pulls from its own group canvas into its slot of the
+            # receiver buffer ----
+            for gid, xs, ys, dst in self._group_plans[rx_idx]:
+                source = frames.get(gid)
                 if source is None:
                     # Group not in this frame; leave the prior strip data in
                     # the buffer rather than blanking it.
                     continue
-                buf_slice = pixel_buffer[plan['byte_offset']:
-                                         plan['byte_offset'] + plan['byte_count']]
                 if NUMBA_AVAILABLE:
-                    extract_and_pack_pixels_unchecked(
-                        source, plan['x_coords'], plan['y_coords'], buf_slice,
-                    )
+                    gather_pixels(source, xs, ys, dst, pixel_buffer)
                 else:
                     h, w = source.shape[:2]
-                    x_valid = np.minimum(plan['x_coords'], h - 1)
-                    y_valid = np.minimum(plan['y_coords'], w - 1)
-                    pixels = source[x_valid, y_valid]
-                    buf_slice[:] = pixels.flatten()
+                    pixel_buffer.reshape(-1, 3)[dst] = source[
+                        np.minimum(xs, h - 1), np.minimum(ys, w - 1)]
 
             if self.skip_network:
                 continue

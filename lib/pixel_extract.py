@@ -31,6 +31,32 @@ def extract_and_pack_pixels_unchecked(source, x_coords, y_coords, output_buffer)
         output_buffer[idx + 2] = source[x, y, 2]
 
 
+@njit(nogil=True, cache=True)
+def gather_pixels(source, x_coords, y_coords, dst_pixels, output_buffer):
+    """Gather N pixels into an RGB byte buffer at arbitrary destinations.
+
+    The sender calls this ONCE per (receiver, group) with every strip of
+    that pair concatenated, instead of once per strip. Deliberately serial:
+    a few thousand pixels is ~20 us of work, while a ``parallel=True``
+    call costs ~9 us of thread-pool fork/join on its own. 128 per-strip
+    parallel calls per Fan frame were ~1.4 ms of pure overhead and woke
+    Numba's worker pool 128 times a frame beside the audio threads.
+
+    Args:
+        source: (height, width, 3) uint8 canvas
+        x_coords, y_coords: (N,) int32 canvas row / column, pre-validated
+        dst_pixels: (N,) int32 pixel index into output_buffer (byte = 3x)
+        output_buffer: (M*3,) uint8 receiver buffer, M >= max(dst_pixels)+1
+    """
+    for i in range(x_coords.shape[0]):
+        x = x_coords[i]
+        y = y_coords[i]
+        j = dst_pixels[i] * 3
+        output_buffer[j] = source[x, y, 0]
+        output_buffer[j + 1] = source[x, y, 1]
+        output_buffer[j + 2] = source[x, y, 2]
+
+
 @njit(parallel=True, nogil=True, cache=True)
 def extract_and_pack_pixels(source, x_coords, y_coords, output_buffer, height, width):
     """

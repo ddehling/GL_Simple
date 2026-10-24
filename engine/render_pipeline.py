@@ -10,6 +10,7 @@ references (``soundengine``, ``screens``, ``shader_renderer``) are seeded here
 at init time and read by shader effects each frame.
 """
 
+import threading
 import time
 import numpy as np
 import cv2
@@ -19,6 +20,66 @@ import lib.dmx_sender as imdmx
 from core.correction import apply_correction
 from renderer.shader_renderer import ShaderRenderer
 from lib.event_scheduler import EventScheduler
+
+
+class PreviewEncoder:
+    """PNG-encodes web-preview frames on a background thread.
+
+    The encode used to run inline on the render thread: ~1-2ms per frame
+    on a desktop, 10-20ms on the show box, at 15 Hz whenever a browser had
+    /preview open — a real slice of the 25ms frame budget, spent during
+    shows when the operator is watching. ``cv2.imencode`` releases the GIL,
+    so on a thread it costs the render loop only the hand-off.
+
+    Single slot, latest wins: if the encoder is still busy when a newer
+    frame arrives, the older pending one is replaced, never queued. The
+    result lands in ``state['_frame_png']`` exactly as before (a bytes
+    assignment, atomic under the GIL), so the web emitter is unchanged.
+    """
+
+    def __init__(self, state: dict):
+        self._state = state
+        self._cond = threading.Condition()
+        self._pending = None
+        self._stop = False
+        self.encoded = 0
+        self.last_encode_ms = 0.0
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="preview-encode")
+        self._thread.start()
+
+    def submit(self, composite: np.ndarray) -> None:
+        # Copy: a geometry provider may hand back a canvas it reuses.
+        # 128x300x3 is ~115 KB, a few microseconds.
+        frame = np.array(composite, copy=True)
+        with self._cond:
+            self._pending = frame
+            self._cond.notify()
+
+    def _run(self):
+        while True:
+            with self._cond:
+                while self._pending is None and not self._stop:
+                    self._cond.wait()
+                if self._stop:
+                    return
+                frame, self._pending = self._pending, None
+            try:
+                t0 = time.perf_counter()
+                bgr = np.ascontiguousarray(frame[:, :, ::-1])
+                ok, png_buf = cv2.imencode('.png', bgr)
+                if ok:
+                    self._state['_frame_png'] = png_buf.tobytes()
+                    self.encoded += 1
+                self.last_encode_ms = (time.perf_counter() - t0) * 1000.0
+            except Exception as e:      # a bad frame must not kill the thread
+                print(f"[RenderPipeline] preview encode failed: {e}")
+
+    def close(self):
+        with self._cond:
+            self._stop = True
+            self._cond.notify()
+        self._thread.join(timeout=1.0)
 
 
 class RenderPipeline:
@@ -118,6 +179,7 @@ class RenderPipeline:
         # the emitter never consumes.
         self._preview_encode_interval = 1.0 / 15.0
         self._last_preview_encode = 0.0
+        self._preview_encoder = PreviewEncoder(self._scheduler.state)
 
         total_pixels = sum(w * h for w, h in frame_dimensions)
         print(f"[RenderPipeline] Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
@@ -204,9 +266,12 @@ class RenderPipeline:
 
         # PNG-encode the preview composite, ONLY if a client is subscribed.
         # The geometry provider produces the composite (Fan: just frames[0];
-        # multi-object: per-strip rasterization onto a polyline canvas).
-        # Encoding is ~10-20ms/frame; rate-limited to the emitter rate (15 Hz)
+        # multi-object: per-strip rasterization onto a polyline canvas) on
+        # this thread; the encode itself (~10-20ms on the show box) runs on
+        # the PreviewEncoder thread. Rate-limited to the emitter rate (15 Hz)
         # so we don't burn CPU producing frames the emitter throws away.
+        # 'preview' below is now the render thread's share: composite +
+        # hand-off. The encoder's own time is in state '_preview_encode_ms'.
         if frames and self.state.get('_preview_active'):
             now = time.perf_counter()
             if now - self._last_preview_encode >= self._preview_encode_interval:
@@ -216,11 +281,11 @@ class RenderPipeline:
                 else:
                     # No provider: pick whatever the first canvas produced.
                     composite = next(iter(frames.values()))
-                bgr = np.ascontiguousarray(composite[:, :, ::-1])
-                _, png_buf = cv2.imencode('.png', bgr)
-                self.state['_frame_png'] = png_buf.tobytes()
+                self._preview_encoder.submit(composite)
                 self.state['_perf_pipeline']['preview'] = (
                     time.perf_counter() - now)
+                self.state['_preview_encode_ms'] = (
+                    self._preview_encoder.last_encode_ms)
 
     def _render_shader(self, dt: float) -> dict:
         """Run effects on each canvas; return frames keyed by group_id."""
@@ -374,6 +439,9 @@ class RenderPipeline:
         self._cleaned_up = True
         print("[RenderPipeline] Cleaning up...")
         self._scheduler.cancel_all_events()
+        encoder = getattr(self, '_preview_encoder', None)
+        if encoder is not None:
+            encoder.close()
         self._shader_renderer.cleanup()
         engine = self.state.get('soundengine')
         if hasattr(engine, 'stop'):
