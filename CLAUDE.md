@@ -105,6 +105,7 @@ lib/
   audio_engine.py           # AudioEngine, StreamingPlayer — audio playback
   ambient_audio.py          # AmbientAudioController — cross-fade management
   dmx_sender.py             # SACNPixelSender — sACN/E1.31 DMX output
+  pixelblaze_mirror.py      # Auto-discovers Pixelblazes (UDP 1889 beacons) and streams the live output to them
   midi_controller.py        # KorgNanoKontrol2 MIDI integration
   weather_params.py         # Weather states, presets, environmental params
   weather_state.py          # WeatherStateController — transition interpolation

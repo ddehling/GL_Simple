@@ -28,6 +28,7 @@ flask
 flask-socketio
 pyyaml
 python-osc
+websocket-client  # Pixelblaze mirror (lib/pixelblaze_mirror.py)
 Pillow
 
 # Standalone editor / GUI tools under tools/ (not needed to run the main app):

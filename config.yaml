@@ -81,6 +81,32 @@ osc:
   port: 9001
   bind_ip: "0.0.0.0"   # all interfaces; set to a specific IP to pin
 
+pixelblaze:
+  # Mirror the live output (the same frame the DMX boxes get) onto every
+  # Pixelblaze seen on the network. Each Pixelblaze needs the receiver
+  # pattern once: paste tools/hardware/pixelblaze_mirror.js into its editor
+  # and save it as "GL_Simple Mirror". Devices without it are left alone.
+  # Check what's out there with: python tools/hardware/pixelblaze_probe.py
+  enabled: true
+  discover: true        # listen for Pixelblaze beacons (UDP 1889)
+  hosts: []             # extra IPs/hostnames to mirror even without a beacon
+  pattern: "GL_Simple Mirror"
+  fps: 30               # a ceiling: a slower device sets the pace
+  # A Pixelblaze is limited by parsing and per-LED work, not the network, so
+  # each frame carries at most max_samples values; the pattern fills the
+  # gaps between them, never across a strand end (strands come from the
+  # map). Measured on the 2400-px Tree: nearest ~11.7 fps, blended ~7 fps.
+  max_samples: 600
+  interpolate: false    # true = blend between samples (smoother, slower)
+  segment: 0            # pixels per strand (0 = detect from the map)
+  group: ""             # canvas group to mirror (empty = the first one)
+  gain: 1.0             # scale before sending (the frame is post-limiter, so dim)
+  # Pixelblazes with no 2D map are treated as a strip running across the
+  # canvas: each pixel takes the max (or mean) down one column (or row).
+  strip_axis: columns   # columns | rows
+  strip_reduce: max     # max | mean
+  flip_y: false         # flip mapped Pixelblazes top-to-bottom
+
 dmx:
   bind_ip: ""  # Send DMX from this interface (empty = default route)
   # bind_ip: "192.168.0.236"  # Example: pin to wired network
