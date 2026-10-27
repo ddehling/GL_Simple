@@ -31,8 +31,8 @@ try:
     import soundcard as _soundcard
 except Exception:
     _soundcard = None
-import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
+# matplotlib is imported inside SpectrogramPlotter (a standalone diagnostic): at module level it cost every
+# show boot 0.4 s for a window nobody opens (the boot profile, 2026-10-26)
 
 
 class CircularBuffer:
@@ -1182,8 +1182,11 @@ class MicrophoneAnalyzer:
 
 class SpectrogramPlotter:
     def __init__(self, analyzer):
+        global plt, FuncAnimation
+        import matplotlib.pyplot as plt                      # (lazy: a diagnostic window, never the show)
+        from matplotlib.animation import FuncAnimation
         self.analyzer = analyzer
-        
+
         # Setup the figure with 4 subplots
         plt.style.use('dark_background')
         self.fig = plt.figure(figsize=(16, 12))

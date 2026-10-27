@@ -16,8 +16,25 @@ import numpy as np
 import cv2
 
 import lib.audio_engine as sound
-import lib.dmx_sender as imdmx
-from core.correction import apply_correction
+# lib.dmx_sender (-> lib.pixel_extract -> numba, ~0.7 s) and core.correction
+# (its Numba kernels warm at import, ~0.45 s) load in __init__ AFTER the GL
+# context is built, not here: Stories_OGL imports them on a background thread
+# while glfw creates the context, so by the time __init__ needs them they are
+# usually already in sys.modules (boot overlap, 2026-10-26). Either way the
+# Numba warm-up still lands before the first frame, never inside one.
+imdmx = None
+apply_output_luts = corrected_channel_sums = fused_tables = output_lut = None
+
+
+def _load_output_modules():
+    global imdmx, apply_output_luts, corrected_channel_sums, fused_tables, output_lut
+    if imdmx is not None:
+        return
+    import lib.dmx_sender as _imdmx
+    from core.correction import (apply_output_luts as _a, corrected_channel_sums as _c,
+                                 fused_tables as _f, output_lut as _o)
+    imdmx, apply_output_luts, corrected_channel_sums, fused_tables, output_lut = \
+        _imdmx, _a, _c, _f, _o
 from renderer.shader_renderer import ShaderRenderer
 from lib.event_scheduler import EventScheduler
 
@@ -110,6 +127,10 @@ class RenderPipeline:
         # Optional EmulatorBroadcaster — set by Stories_OGL when the
         # editor passes --emulator-port. None for normal CLI runs.
         self._emulator = emulator
+        # Extra frame sinks fed the same corrected frames as the DMX
+        # senders (e.g. lib.pixelblaze_mirror.PixelblazeMirror). Kept out
+        # of state['screens'] because project swaps rebuild that list.
+        self.mirrors = []
 
         if group_ids is None:
             group_ids = ["main"] + [f"group{i}" for i in range(1, len(frame_dimensions))]
@@ -184,6 +205,7 @@ class RenderPipeline:
         total_pixels = sum(w * h for w, h in frame_dimensions)
         print(f"[RenderPipeline] Brightness limiting: {len(frame_dimensions)} displays, {total_pixels} total pixels")
 
+        _load_output_modules()           # after the GL context: see the note at the imports
         state['screens'] = []
         for frame_receivers in receivers:
             sender = imdmx.SACNPixelSender(
@@ -325,6 +347,8 @@ class RenderPipeline:
         """Apply gamma + brightness per-group, then hand the dict of corrected
         frames to each DMX sender so it can extract per-strip from the right
         group canvas."""
+        if fused_tables is None:         # a pipeline built without __init__ (tools, tests)
+            _load_output_modules()
         gamma = float(self.state.get("web_gamma", 2.0))
         # Per-receiver correction plans (project.yaml ``gamma:`` / ``gain:``
         # on a receiver, resolved to canvas regions at project load; the
@@ -339,14 +363,36 @@ class RenderPipeline:
             if frame is None:
                 continue
             frame_rgb = frame[:, :, :3] if frame.shape[2] == 4 else frame
-            # Gamma + per-box gain, in one pass. Both land BEFORE the
-            # limiter on purpose: the limiter then sees the true total, so
-            # a boosted node takes its extra brightness out of the piece's
-            # shared power budget instead of on top of it.
-            frame_corrected = apply_correction(frame_rgb, gamma,
-                                               plans.get(gid))
-            frame_corrected = self._apply_brightness_limiting(frame_corrected, i)
-            corrected[gid] = frame_corrected
+            # Gamma + per-box gain, then the limiter, then web brightness -
+            # fused into one uint8 lookup (core/correction.py, "Fused
+            # correction"). Gain still lands BEFORE the limiter on purpose:
+            # the limiter sees the true corrected total, so a boosted node
+            # takes its extra brightness out of the piece's shared power
+            # budget instead of on top of it.
+            base, regions = fused_tables(frame_rgb.shape, gamma,
+                                         plans.get(gid))
+            cfg = self.brightness_config
+            s_r, s_g, s_b = corrected_channel_sums(frame_rgb, base, regions)
+            bright = (s_r * cfg['red_factor'] + s_g * cfg['green_factor']
+                      + s_b * cfg['blue_factor'])
+            divisor = self._limiter_step(bright, frame_rgb.shape, i)
+            web = self.state.get("web_brightness", 1.0)
+            # What actually leaves the box, 0..1 per pixel-channel (weighted
+            # like the limiter): the corrected total after the limiter's
+            # divisor and the web dimmer, from numbers already in hand - no
+            # extra pass. Ignores the final 255 clip (only a gain > 1 box can
+            # exceed it), so it can read a hair high there. For boot/fade-in
+            # diagnostics ("[boot] picture"), not for control.
+            lvl = self.brightness_state[i]['bright_factor'] / (divisor or 1.0)
+            if web < 1.0:
+                lvl *= max(web, 0.0)
+            levels = self.state.setdefault("out_levels", {})
+            levels[gid] = float(lvl)
+            if i == 0:
+                self.state["out_level"] = float(lvl)
+            corrected[gid] = apply_output_luts(
+                frame_rgb, output_lut(base, divisor, web),
+                [(r, output_lut(t, divisor, web)) for r, t in regions])
 
         for sender in self.state.get('screens', []):
             if sender is None:
@@ -355,6 +401,9 @@ class RenderPipeline:
                 sender.send(corrected)
             except OSError as e:
                 print(f"[RenderPipeline] Network error sending: {e}")
+
+        for mirror in self.mirrors:
+            mirror.send(corrected)
 
         # Emulator feed — broadcast both the raw shader output and the
         # post-correction wire-bound frames so the editor can show each
@@ -380,7 +429,31 @@ class RenderPipeline:
         a stale value carried across a project swap, a future control
         surface) and over-drawing the supplies is not a recoverable
         mistake. Anything may take the piece DOWN; nothing may raise it.
+
+        The render loop no longer calls this (it uses the fused lookup in
+        _send_to_displays); kept, on the same _limiter_step, for any caller
+        holding a float corrected frame.
         """
+        cfg = self.brightness_config
+        bright_factor = (
+            np.sum(frame_corrected[:, :, 0]) * cfg['red_factor']
+            + np.sum(frame_corrected[:, :, 1]) * cfg['green_factor']
+            + np.sum(frame_corrected[:, :, 2]) * cfg['blue_factor']
+        )
+        divisor = self._limiter_step(bright_factor, frame_corrected.shape,
+                                     frame_index)
+        if divisor is not None:
+            frame_corrected = frame_corrected / divisor
+        web_brightness = self.state.get("web_brightness", 1.0)
+        if web_brightness < 1.0:
+            frame_corrected = frame_corrected * max(web_brightness, 0.0)
+        return np.clip(frame_corrected, 0, 255).astype(np.uint8)
+
+    def _limiter_step(self, bright_factor: float, shape, frame_index: int):
+        """One frame of the limiter: smooth the divisor toward what the
+        corrected total asks for. Returns the divisor to divide by, or None
+        while not limiting (the frame passes undivided). See
+        _apply_brightness_limiting for why the setpoint is clamped here."""
         cfg = self.brightness_config
         state = self.brightness_state[frame_index]
         setpoint = min(
@@ -388,15 +461,10 @@ class RenderPipeline:
             float(self.brightness_setpoint),
         )
 
-        height, width = frame_corrected.shape[:2]
+        height, width = shape[:2]
         sum_of_weights = cfg['red_factor'] + cfg['green_factor'] + cfg['blue_factor']
         max_possible = height * width * 255.0 * sum_of_weights
 
-        bright_factor = (
-            np.sum(frame_corrected[:, :, 0]) * cfg['red_factor']
-            + np.sum(frame_corrected[:, :, 1]) * cfg['green_factor']
-            + np.sum(frame_corrected[:, :, 2]) * cfg['blue_factor']
-        )
         normalized = bright_factor / max_possible
         state['bright_factor'] = normalized
 
@@ -412,8 +480,9 @@ class RenderPipeline:
         state['divisor'] = alpha * target_divisor + (1 - alpha) * state['divisor']
 
         last = state['last_logged_divisor']
+        divisor = None
         if state['divisor'] > 1.001:
-            frame_corrected = frame_corrected / state['divisor']
+            divisor = state['divisor']
             # Log when limiting starts or value shifts by more than 20%
             if last <= 1.001 or abs(state['divisor'] - last) > 0.2:
                 print(f"[RenderPipeline] Brightness limiting active: divisor={state['divisor']:.3f} (display {frame_index})")
@@ -421,13 +490,9 @@ class RenderPipeline:
         elif last > 1.001:
             print(f"[RenderPipeline] Brightness limiting off (display {frame_index})")
             state['last_logged_divisor'] = state['divisor']
-
-        # Apply web brightness modifier (can only dim, never exceed hardware limiter)
-        web_brightness = self.state.get("web_brightness", 1.0)
-        if web_brightness < 1.0:
-            frame_corrected = frame_corrected * max(web_brightness, 0.0)
-
-        return np.clip(frame_corrected, 0, 255).astype(np.uint8)
+        # Web brightness (can only dim, never exceed the hardware limiter)
+        # is applied by the caller after this divisor.
+        return divisor
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -442,6 +507,11 @@ class RenderPipeline:
         encoder = getattr(self, '_preview_encoder', None)
         if encoder is not None:
             encoder.close()
+        for mirror in self.mirrors:
+            try:
+                mirror.close()
+            except Exception as e:
+                print(f"[RenderPipeline] mirror close error (ignoring): {e}")
         self._shader_renderer.cleanup()
         engine = self.state.get('soundengine')
         if hasattr(engine, 'stop'):

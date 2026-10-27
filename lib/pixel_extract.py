@@ -57,6 +57,30 @@ def gather_pixels(source, x_coords, y_coords, dst_pixels, output_buffer):
         output_buffer[j + 2] = source[x, y, 2]
 
 
+@njit(nogil=True, cache=True)
+def table_channel_sums(flat, table, out3):
+    """Per-channel sums of table[v] over a (N, 3) uint8 pixel array - the
+    brightness limiter's total of the gamma-corrected frame, without
+    building that frame (core/correction.py, "Fused correction")."""
+    s0 = 0.0
+    s1 = 0.0
+    s2 = 0.0
+    for i in range(flat.shape[0]):
+        s0 += table[flat[i, 0]]
+        s1 += table[flat[i, 1]]
+        s2 += table[flat[i, 2]]
+    out3[0] = s0
+    out3[1] = s1
+    out3[2] = s2
+
+
+@njit(nogil=True, cache=True)
+def apply_lut_u8(flat_in, lut, flat_out):
+    """flat_out[i] = lut[flat_in[i]] over contiguous uint8 arrays."""
+    for i in range(flat_in.shape[0]):
+        flat_out[i] = lut[flat_in[i]]
+
+
 @njit(parallel=True, nogil=True, cache=True)
 def extract_and_pack_pixels(source, x_coords, y_coords, output_buffer, height, width):
     """
