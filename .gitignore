@@ -130,3 +130,7 @@ _storm_frames/
 
 # model checkpoints fetched by tools (never committed)
 models/
+
+# Soundfonts are installed locally (media/soundfonts/default.sf2, 142 MB) - never committed
+media/soundfonts/
+*.sf2
