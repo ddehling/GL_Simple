@@ -15,6 +15,9 @@ from lib.dj.sosfast import sosfilt
 RATE = 44100
 LOW_HZ = 200.0
 HIGH_HZ = 2500.0
+MODE_XFADE_S = 0.08              # a topology change (bypass / a shortcut / the full split) crossfades over this
+MODE_XFADE = int(MODE_XFADE_S * RATE)
+WARM_FRAMES = int(0.06 * RATE)   # input history a cold cascade is settled on before it joins a crossfade
 
 
 def _lr4(freq, kind):
@@ -58,8 +61,12 @@ class ThreeBandEQ:
 
     @property
     def is_flat(self):
+        """Nothing to process: at unity, and no topology crossfade still running (a caller that skips process()
+        while flat must not cut a fade short)."""
         return (np.all(np.abs(self.gains - 1.0) < 1e-3)
-                and np.all(np.abs(self._targets - 1.0) < 1e-3))
+                and np.all(np.abs(self._targets - 1.0) < 1e-3)
+                and getattr(self, "_xf", None) is None
+                and getattr(self, "_mode", "bypass") == "bypass")
 
     def _run(self, key, x):
         y, self._zi[key] = sosfilt(self._sos[key], x, self._zi[key])
@@ -68,9 +75,13 @@ class ThreeBandEQ:
     def process(self, block):
         """block: (n, channels) float32. Returns the EQ'd block.
 
-        Bit-exact bypass while flat. The LR4 band sum is an ALLPASS (phase
-        rotates near the crossovers), so bypass<->active switches crossfade
-        over one block instead of hard-cutting - a hard cut would click."""
+        Bit-exact bypass while flat. The LR4 band sum is an ALLPASS (phase rotates near the crossovers), so the
+        processed signal and the raw one differ in PHASE even at unity gain - and the one-band shortcuts differ
+        from the full split the same way. Every change of TOPOLOGY (bypass <-> a shortcut <-> the full split)
+        is therefore crossfaded over MODE_XFADE_S across blocks, both paths rendered meanwhile. The old one-block
+        (6-23 ms) crossfade was a thump on every return to flat: at the end of a bass swap the sub-bass of the two
+        versions sits half a cycle apart (measured 2026-10-24: a 0.18 full-scale step where the music's own jumps
+        were 0.03 - "definitely some clicks")."""
         n = len(block)
         if n == 0:
             return block
@@ -84,36 +95,75 @@ class ThreeBandEQ:
             self.gains = g1
             self._ramp_left_s = max(0.0, self._ramp_left_s - dt)
         flat = np.all(g0 == 1.0) and np.all(g1 == 1.0)
-        active = getattr(self, "_active", False)
-        if flat and not active:
-            return block                                  # true bypass
+        # ONE-BAND SHORTCUT: when only the low (or only the high) band moves - the low carve on a layered
+        # voice, the Director's BASS or TONE - the other two bands are the input minus that band, so a
+        # single cascade does it: y = x + (g - 1) * band. Three cascades cost 28 % of the layered mixer
+        # (profile 2026-09-12); this is a third of that.
+        only_low = np.all(g0[1:] == 1.0) and np.all(g1[1:] == 1.0)
+        only_high = np.all(g0[:2] == 1.0) and np.all(g1[:2] == 1.0)
+        want = "bypass" if flat else ("low" if only_low else ("high" if only_high else "full"))
+        mode = getattr(self, "_mode", None)
+        xf = getattr(self, "_xf", None)
+        if mode is None:
+            mode = self._mode = want
+        # the last WARM_FRAMES of input: a cascade the new topology needs that the old one did not run is
+        # settled on them first (output discarded), so the crossfade starts from a warm filter, not a step response
+        hist = getattr(self, "_hist", None)
+        if xf is None and want != mode:
+            needs = {"bypass": (), "low": ("low",), "high": ("high",), "full": ("low", "mid", "high")}
+            cold = [k for k in needs[want] if k not in needs[mode]]
+            if cold and hist is not None and len(hist):
+                for k in cold:
+                    self._zi[k][:] = 0.0
+                    self._run(k, hist.astype(np.float64))
+            xf = self._xf = {"from": mode, "to": want, "done": 0}
+        if xf is None and want == "bypass":
+            self._active = False
+            self._hist = block if n >= WARM_FRAMES else (block if hist is None else np.concatenate([hist, block])[-WARM_FRAMES:])
+            return block                                  # true bypass, bit-exact
+        self._hist = block if n >= WARM_FRAMES else (block if hist is None else np.concatenate([hist, block])[-WARM_FRAMES:])
         x = block.astype(np.float64)
         ramp = np.linspace(0.0, 1.0, n, endpoint=False)[:, None]
         gl = g0[0] + (g1[0] - g0[0]) * ramp
         gm = g0[1] + (g1[1] - g0[1]) * ramp
         gh = g0[2] + (g1[2] - g0[2]) * ramp
-        # ONE-BAND SHORTCUT: when only the low (or only the high) band moves - the low carve on a layered
-        # voice, the Director's BASS or TONE - the other two bands are the input minus that band, so a
-        # single cascade does it: y = x + (g - 1) * band. Three cascades cost 28 % of the layered mixer
-        # (profile 2026-09-12); this is a third of that. The LR4 sum is an allpass, so the shortcut differs
-        # from the full split only by that allpass's phase near the crossover - inaudible at carve depths.
-        only_low = np.all(g0[1:] == 1.0) and np.all(g1[1:] == 1.0)
-        only_high = np.all(g0[:2] == 1.0) and np.all(g1[:2] == 1.0)
-        if only_low:
-            y = x + (gl - 1.0) * self._run("low", x)
-        elif only_high:
-            y = x + (gh - 1.0) * self._run("high", x)
+        rendered, bands = {}, {}
+
+        def band(k):
+            # each cascade runs ONCE per block: two topologies in a crossfade may share one (running it twice
+            # would feed the block through its state twice - garbage, measured 4x jumps)
+            if k not in bands:
+                bands[k] = self._run(k, x)
+            return bands[k]
+
+        def render(m):
+            if m in rendered:
+                return rendered[m]
+            if m == "bypass":
+                y = x
+            elif m == "low":
+                y = x + (gl - 1.0) * band("low")
+            elif m == "high":
+                y = x + (gh - 1.0) * band("high")
+            else:
+                y = band("low") * gl + band("mid") * gm + band("high") * gh
+            rendered[m] = y
+            return y
+        self._active = True
+        if xf is None:
+            y = render(mode)
         else:
-            low = self._run("low", x)
-            mid = self._run("mid", x)
-            high = self._run("high", x)
-            y = low * gl + mid * gm + high * gh
-        if not active:                                    # fade processed in
-            y = x + (y - x) * ramp
-            self._active = True
-        elif flat:                                        # fade back to raw
-            y = y + (x - y) * ramp
-            self._active = False
-            for k in self._zi:                            # cold state is fine:
-                self._zi[k][:] = 0.0                      # next engage fades in
+            # both topologies, crossfaded over MODE_XFADE frames across blocks (the new path's filters start cold:
+            # their settling is hidden under the fade)
+            a, b = render(xf["from"]), render(xf["to"])
+            w = np.clip((xf["done"] + np.arange(n)) / float(MODE_XFADE), 0.0, 1.0)[:, None]
+            y = a * (1.0 - w) + b * w
+            xf["done"] += n
+            if xf["done"] >= MODE_XFADE:
+                self._mode = mode = xf["to"]
+                self._xf = xf = None
+                if mode == "bypass":
+                    self._active = False
+                    for k in self._zi:                    # cold state is fine: the next engage fades in
+                        self._zi[k][:] = 0.0
         return y.astype(np.float32)

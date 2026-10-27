@@ -28,6 +28,7 @@
             color: #ddd; cursor: pointer; padding: 12px; font-size: 1.0em;
         }
         .btn:active { filter: brightness(1.3); }
+        .btn.flash { filter: brightness(1.7); border-color: #fff; transition: filter .4s ease-out, border-color .4s ease-out; }
         .btn.go { border-color: #3a6; background: #123a22; color: #9f9;
                   font-weight: bold; }
         .btn.stop { border-color: #a33; background: #401515; color: #f99; }
@@ -46,6 +47,23 @@
                      flex-wrap: wrap; }
         .transport .btn { flex: 1 1 auto; min-width: 90px; }
         .now-title { font-size: 1.25em; font-weight: bold; }
+        /* RECORD mode's picture: the state chip and the deck meters */
+        .dr-chip { display:inline-block; padding:3px 10px; border-radius:12px; font-size:.78em; font-weight:bold;
+                   letter-spacing:.06em; text-transform:uppercase; background:#333; color:#ddd; }
+        .dr-chip.wait { background:#2e3a2e; color:#9fd89f; }
+        .dr-chip.planned { background:#24324a; color:#9fc0ff; }
+        .dr-chip.blend { background:#2a4a8a; color:#e6f0ff; animation: drpulse 1.2s ease-in-out infinite; }
+        .dr-chip.swap { background:#8a4a1a; color:#ffe9d0; animation: drpulse .8s ease-in-out infinite; }
+        .dr-chip.cut { background:#7a2a2a; color:#ffd9d9; }
+        @keyframes drpulse { 0%,100% { filter:brightness(1); } 50% { filter:brightness(1.35); } }
+        .dr-deck { display:flex; align-items:center; gap:8px; margin:3px 0; font-size:.85em; }
+        .dr-deck .role { width:58px; opacity:.7; text-transform:uppercase; font-size:.75em; letter-spacing:.05em; }
+        .dr-deck .title { width:34%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+        .dr-deck .meter { flex:1; height:10px; background:#222; border-radius:5px; overflow:hidden; }
+        .dr-deck .meter > div { height:100%; background:linear-gradient(90deg,#4a7ad9,#7da2e3); width:0; transition:width .15s linear; }
+        .dr-deck .lamp { width:38px; text-align:center; font-size:.7em; padding:1px 0; border-radius:4px; background:#262626; color:#666; }
+        .dr-deck .lamp.on { background:#f0a05a; color:#1a1a1a; font-weight:bold; }
+        .dr-deck .lamp.half { background:#5a4a30; color:#ddd; }
         .now-sub { font-size: 0.85em; opacity: 0.7; }
         .kv { display: flex; justify-content: space-between; font-size: 0.85em;
               padding: 2px 0; }
@@ -318,9 +336,25 @@
             <div class="now-sub" id="dj-dr-intent" style="margin-top:4px"></div>
             <div class="now-sub" id="dj-dr-lanes"></div>
             <div class="now-sub" id="dj-dr-why" style="opacity:.8;margin-top:4px;line-height:1.35"></div>
+            <!-- RECORD mode: THE PICTURE - the state chip, the countdown to the next event, the bar in the phrase,
+                 the record's timeline with its minimum and the planned blend drawn on it, the two decks as heard -->
+            <div id="dj-dr-pic" class="hidden">
+                <div style="display:flex;align-items:baseline;gap:10px;margin-top:8px;flex-wrap:wrap">
+                    <span id="dj-dr-chip" class="dr-chip wait">PLAYING</span>
+                    <span id="dj-dr-count" style="font-size:1.7em;font-weight:bold;font-variant-numeric:tabular-nums;min-width:64px">—</span>
+                    <span class="now-sub" id="dj-dr-count-lbl" style="flex:1"></span>
+                    <span id="dj-dr-phrase" title="the bar within the phrase (8 bars); the blend's moves land on phrase boundaries"
+                          style="font-size:1.05em;letter-spacing:2px;font-variant-numeric:tabular-nums"></span>
+                </div>
+                <canvas id="dj-dr-timeline" height="176" title="the two decks: each record's energy (blue = low band, orange = mids, pale = highs), its sections (the strip under it: grey intro/outro, green groove, amber build, purple breakdown), phrase ticks every 8 bars from where it opened, the playhead (white), the minimum play (white tick, 'min'), the plan (blue: the next record in, bass out · orange: THE BASS SWAP / THE DROP · dim: the record coming down), the next record's cue (where it starts) and landmark (where its body lands)"
+                        style="width:100%;display:block;border-radius:8px;background:#15151c;margin:6px 0"></canvas>
+                <div id="dj-dr-decks"></div>
+            </div>
+            <!-- RECORD mode: THE PLAN in rows (NOW / BLEND / NEXT / UP NEXT), decided before it plays -->
+            <div class="now-sub" id="dj-dr-plan" style="margin-top:6px;line-height:1.45"></div>
             <div class="transport" style="margin-top:8px">
-                <button class="btn skip" id="dj-dr-next-btn" title="one song: move on at the next phrase · layered: the next lane move">▶▶ NEXT</button>
-                <button class="btn" id="dj-dr-hold" title="stay on this: the next seam or move waits a phrase">STAY</button>
+                <button class="btn skip" id="dj-dr-next-btn" title="record: the short blend to the next record starts at the next bar + 2 (under way: the bass swap comes forward) · one song: move on at the next phrase · layered: the next lane move">▶▶ NEXT</button>
+                <button class="btn" id="dj-dr-hold" title="stay on this: the planned blend / seam / move waits a phrase">STAY</button>
             </div>
             <div class="transport" style="margin-top:6px" id="dj-dr-moments">
                 <button class="btn go" data-moment="slam" title="one song: build and land on the next song's drop · layered: bass and drums out for two bars, a beat of nothing, back louder on the one · press again = go now">SLAM</button>
@@ -339,6 +373,17 @@
             <div id="dj-dr-programs" class="transport" style="margin-top:8px;flex-wrap:wrap"></div>
             <div class="now-sub" id="dj-dr-program"></div>
             <div id="dj-dr-dials" style="margin-top:8px"></div>
+            <!-- RECORD mode: the SONGS pool the records are picked from, and the theme (its brain reads the theme at the next START) -->
+            <div id="dj-dr-songs" class="hidden" style="margin-top:10px">
+                <div class="now-sub">Songs <span style="opacity:.5;font-size:11px">(the pool the next records are picked from)</span></div>
+                <div class="setrow">
+                    <select id="dj-dr-pool" title="only these songs; the DJ picks the order - chosen the moment you pick it"><option value="">(whole library)</option></select>
+                </div>
+                <div class="now-sub" style="margin-top:8px">Theme <span style="opacity:.5;font-size:11px">(the tempo window and the arc; a change is read at the next START)</span></div>
+                <div class="theme-row" id="dj-dr-themes"></div>
+            </div>
+            <!-- RECORD mode: the story - what the player did and why, newest last -->
+            <div class="now-sub" id="dj-dr-recent" style="margin-top:8px;opacity:.85;line-height:1.35"></div>
         </div>
 
         <!-- The night (active) -->
@@ -850,13 +895,14 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             show($("dj-remix"), rx);
             if (rx) renderRemix(dj.remix || {});
             show($("dj-director"), dr);
-            if (dr) renderDirector(dj.director || {});
+            if (dr) renderDirector(dj.director || {}, dj);
 
             // Transport buttons.
-            show($("dj-start"), !on && !rx && !dr);
-            show($("dj-remix-start"), !on && !rx && !dr);
-            show($("dj-director-start"), !on && !rx && !dr);
-            show($("dj-stop"), on || rx || dr);
+            const starting = !!dj.director_starting || !!dj.dj_starting;
+            show($("dj-start"), !on && !rx && !dr && !starting);
+            show($("dj-remix-start"), !on && !rx && !dr && !starting);
+            show($("dj-director-start"), !on && !rx && !dr && !starting);
+            show($("dj-stop"), on || rx || dr || starting);
             show($("dj-skip"), on);
             show($("dj-auto"), on);
             $("dj-auto").classList.toggle("on", !!dj.autopilot);
@@ -873,6 +919,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                     + (dj.setlist ? ` · setlist “${dj.setlist}” · ${dj.setlist_mode === "pool" ? "steer pool" : "in order"} (${dj.setlist_remaining} left)` : " · free play")
                     + (dj.persona && dj.persona !== "neutral"
                        ? ` · tonight: ${dj.persona.replace(/_/g, " ")}` : "");
+            } else if (dj.director_starting || dj.dj_starting) {
+                banner.className = "dj-banner on";
+                banner.textContent = (dj.director_starting ? "THE DIRECTOR" : "The DJ") + " is starting… (the library loads off the render thread; a few seconds)";
             } else {
                 banner.className = "dj-banner";
                 banner.textContent = "DJ idle. Pick a theme/setlist, then START. "
@@ -896,8 +945,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                 (filtered && (pool < 15 || (reach != null && reach < 8)))
                 ? "#f0a05a" : "";
 
-            // Theme highlight + setlist options (work idle and live).
-            document.querySelectorAll(".theme-btn").forEach((b) =>
+            // Theme highlight + setlist options (work idle and live). The STEER panel's theme buttons only: the
+            // Director's dial buttons share the class and were being un-lit here every tick (2026-10-24).
+            document.querySelectorAll("#dj-themes .theme-btn").forEach((b) =>
                 b.classList.toggle("on", b.dataset.theme === dj.theme));
             fillSetlists(dj.setlists, dj.setlist);
             // Which load mode is ACTIVE right now lights up its button.
@@ -1308,7 +1358,14 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
 
         // ---------- THE DIRECTOR ----------
         $("dj-director-start").onclick = () => emit("director_start");
+        // a press answers at once: the button flashes, then the story line says what the Director did
+        const flash = (el) => { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 450); };
+        for (const id of ["dj-dr-next-btn", "dj-dr-hold", "dj-dr-good", "dj-dr-bad"])
+            $(id).addEventListener("click", () => flash($(id)));
         $("dj-dr-next-btn").onclick = () => emit("director_act", "next");
+        // the SONGS pool: picking it IS choosing it (no second button)
+        let drPoolTouched = 0;
+        $("dj-dr-pool").onchange = () => { drPoolTouched = Date.now(); emit("setlist_pool", $("dj-dr-pool").value); };
         $("dj-dr-hold").onclick = () => emit("director_act", "hold");
         document.querySelectorAll("#dj-dr-moments [data-moment]").forEach((b) => { b.onclick = () => emit("director_act", b.dataset.moment); });
         $("dj-dr-good").onclick = () => emit("director_rate", true);
@@ -1318,12 +1375,63 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             emit("director_arc", Math.max(0, Math.min(0.999, (ev.clientX - r.left - 10) / Math.max(1, r.width - 20))));
         };
         let drDialsSig = "", drTouched = 0;
-        function renderDirector(d) {
-            const dials = d.dials || {}, menu = d.dials_menu || {};
+        const RECORD_DIALS = ["layers", "pace", "bass", "tone", "level"];   // the dials that act in RECORD mode (the rest are the layered engines')
+        function mmss(s) { s = Math.max(0, Math.round(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+        function renderDirector(d, dj) {
+            const record = d.mode === "record";
+            const dials = d.dials || {};
+            const menuAll = d.dials_menu || {};
+            const menu = record ? Object.fromEntries(Object.entries(menuAll).filter(([k]) => RECORD_DIALS.includes(k))) : menuAll;
             const doubled = (d.doubled || []).length ? ` · ⚠ DOUBLED: ${d.doubled.join(", ")}` : "";
             const last = (d.events || []).slice(-1)[0];
-            $("dj-dr-state").textContent = `${d.mode === "one" ? "one song at a time" : (d.mode ? "songs layered" : "starting…")} · ${d.theme || ""}`
-                + (d.switching ? ` · switching to ${d.switching}…` : "") + doubled + (last ? ` · ${last[1]}` : "") + (d.error ? ` · ⚠ ${d.error}` : "");
+            $("dj-dr-state").textContent = record
+                ? `record · ${d.theme || ""}${d.pool ? ` · ${d.pool}` : ""}` + (last ? ` · ${String(last[1]).slice(0, 90)}` : "") + (d.error ? ` · ⚠ ${d.error}` : "")
+                : `${d.mode === "one" ? "one song at a time" : (d.mode ? "songs layered" : "starting…")} · ${d.theme || ""}${d.pool ? ` · ${d.pool}` : ""}`
+                  + (d.switching ? ` · switching to ${d.switching}…` : "") + doubled + (last ? ` · ${String(last[1]).slice(0, 90)}` : "") + (d.error ? ` · ⚠ ${d.error}` : "");
+            // EVERY mode is a picture, not a page of text: the decks drawn, the chip and the countdown, the dials that
+            // act, the songs pool, two story lines. The arc, the moments and the programs belong to the layered engines
+            // and show only there; the plan rows, the intent sentence and the why paragraph stay off everywhere.
+            $("dj-dr-arc").style.display = record ? "none" : "block";
+            show($("dj-dr-moments"), !record);
+            show($("dj-dr-moment"), !record);
+            show($("dj-dr-programs"), !record);
+            show($("dj-dr-program"), !record);
+            show($("dj-dr-lanes"), false);
+            show($("dj-dr-songs"), true);
+            show($("dj-dr-pic"), true);
+            show($("dj-dr-plan"), false);
+            show($("dj-dr-intent"), false);
+            show($("dj-dr-why"), false);
+            drPic = {at: Date.now(), rec: d.record || null, plan: d.plan || null, decks: d.decks || {}, next: d.next || null, maps: (dj && dj.deck_maps) || {}, mode: d.mode};
+            drawRecordPicture();
+            $("dj-dr-recent").innerHTML = (d.recent || []).slice(-2).map((x) => `<div>${x.length > 110 ? x.slice(0, 110) + "…" : x}</div>`).join("");
+            if (dj) {
+                // the SONGS pool select (the setlist names) and the theme buttons, rebuilt only when the lists change
+                const sel = $("dj-dr-pool");
+                const key = (dj.setlists || []).join("|");
+                if (sel.dataset.have !== key) {
+                    sel.dataset.have = key;
+                    const keep = sel.value;
+                    sel.innerHTML = '<option value="">(whole library)</option>' + (dj.setlists || []).map((n) => `<option value="${n}">${n}</option>`).join("");
+                    sel.value = dj.setlist || keep || "";
+                } else if (dj.setlist != null && document.activeElement !== sel && Date.now() - drPoolTouched > 2500) {
+                    sel.value = dj.setlist || "";          // (the server's pool, once it has had time to answer a pick)
+                }
+                sel.classList.toggle("on", !!dj.setlist);
+                const tk = (dj.themes || []).join("|");
+                const tr = $("dj-dr-themes");
+                if (tr.dataset.have !== tk) {
+                    tr.dataset.have = tk;
+                    tr.innerHTML = "";
+                    (dj.themes || []).forEach((t) => {
+                        const b = document.createElement("button");
+                        b.className = "theme-btn"; b.dataset.theme = t; b.textContent = t.replace(/_/g, " ");
+                        b.onclick = () => emit("theme", t);
+                        tr.appendChild(b);
+                    });
+                }
+                tr.querySelectorAll(".theme-btn").forEach((b) => b.classList.toggle("on", b.dataset.theme === (d.theme || dj.theme)));
+            }
             const now = d.now || {}, nx = d.next || {};
             $("dj-dr-now").textContent = now.title ? `${now.title}  —  ${now.artist || ""}  ${Math.round(now.bpm || 0)} bpm ${now.camelot || ""}` : "…";
             $("dj-dr-next").textContent = nx.title ? `NEXT ${nx.title} — ${nx.artist || ""}` + (nx.eta_s != null ? ` in about ${Math.round(nx.eta_s)} s` : "") + (nx.how ? ` · ${nx.how}` : "") : "";
@@ -1349,10 +1457,16 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                     `<div style="display:flex;gap:4px;align-items:center;margin:3px 0;flex-wrap:wrap"><span class="now-sub" style="width:64px;text-transform:uppercase">${name}</span>`
                     + opts.map((o) => `<button class="theme-btn" data-dial="${name}" data-opt="${o}">${o}</button>`).join("") + `</div>`).join("");
                 for (const b of document.querySelectorAll("#dj-dr-dials .theme-btn[data-dial]"))
-                    b.onclick = () => { drTouched = Date.now(); emit("director_dial", {name: b.dataset.dial, value: b.dataset.opt}); };
+                    b.onclick = () => {
+                        drTouched = Date.now();
+                        // lit at once (the server's answer follows within a tick)
+                        for (const x of document.querySelectorAll(`#dj-dr-dials .theme-btn[data-dial="${b.dataset.dial}"]`)) x.classList.toggle("on", x === b);
+                        emit("director_dial", {name: b.dataset.dial, value: b.dataset.opt});
+                    };
             }
-            for (const b of document.querySelectorAll("#dj-dr-dials .theme-btn[data-dial]"))
-                b.classList.toggle("on", dials[b.dataset.dial] === b.dataset.opt);
+            if (Date.now() - drTouched > 1200)          // (a fresh press keeps its own light until the server catches up)
+                for (const b of document.querySelectorAll("#dj-dr-dials .theme-btn[data-dial]"))
+                    b.classList.toggle("on", dials[b.dataset.dial] === b.dataset.opt);
             // programs over the next songs
             const progs = d.programs || {};
             const psig = JSON.stringify(Object.keys(progs));
@@ -1374,6 +1488,175 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             drawDirectorArc(d.arc || {});
         }
         let drProgSig = "", drProgN = 3;
+
+        // ---- RECORD mode's picture: redrawn 10x a second from the last status plus the time since it arrived ----
+        let drPic = null;
+        setInterval(() => { if (drPic && !document.hidden && !$("dj-dr-pic").classList.contains("hidden")) drawRecordPicture(); }, 100);
+        function drawRecordPicture() {
+            const P = drPic; if (!P) return;
+            const dt = (Date.now() - P.at) / 1000;
+            const rec = P.rec, plan = P.plan;
+            const kind = plan ? (plan.kind || "blend") : null;
+            const kindWord = {blend: "THE BASS SWAP", breakdown: "THE DROP", cut: "THE ONE", seam: "THE SEAM", moment: "THE ONE"}[kind]
+                || (kind ? kind.replace(/_/g, " ").toUpperCase() : "THE HANDOVER");
+            const nextTitle = (plan && plan.b_title) || (P.next && P.next.title ? P.next.title : "the next record");
+            // the chip and the countdown: the next thing that happens, and when
+            let chip = "wait", chipText = "PLAYING", count = null, lbl = "";
+            if (!rec) { chipText = "WAITING"; }
+            else if (plan && plan.state === "projected") { count = plan.in_s - dt; lbl = P.next && P.next.state === "decoding" ? "next record decoding" : "next record in"; }
+            else if (plan && plan.state === "planned") { chip = kind === "cut" ? "cut" : "planned"; chipText = kind === "cut" ? "CUT" : (kind === "moment" ? "MOMENT ARMED" : "PLANNED"); count = plan.in_s - dt; lbl = kind === "moment" ? `${plan.words || "the moment"} in` : "next record in"; }
+            else if (plan && plan.state === "started") { chip = "blend"; chipText = kind === "moment" ? "MOMENT" : (kind === "seam" ? "SEAM" : "BLENDING"); count = plan.swap_in_s - dt; lbl = `${kindWord.toLowerCase()} in`; }
+            else if (plan && plan.state === "swapped") { chip = "swap"; chipText = kind === "breakdown" ? "DROP" : "SWAPPED"; count = plan.end_in_s - dt; lbl = "old record out in"; }
+            else if (rec.min_left_s > 0) { count = rec.min_left_s - dt; lbl = "minimum play in"; }
+            else { lbl = "waiting for the next record"; }
+            const chipEl = $("dj-dr-chip"); chipEl.className = `dr-chip ${chip}`; chipEl.textContent = chipText;
+            $("dj-dr-count").textContent = count != null ? mmss(Math.max(0, count)) : "—";
+            $("dj-dr-count-lbl").textContent = lbl;
+            // the bar within the phrase (eight bars), ticking on from the last status
+            if (rec && rec.bar_s) {
+                const bar = Math.floor((rec.bar || 0) + dt / rec.bar_s);
+                const pos = ((bar % 8) + 8) % 8;
+                $("dj-dr-phrase").textContent = Array.from({length: 8}, (_, i) => (i === pos ? "●" : "·")).join("") + `  bar ${bar}`;
+            } else $("dj-dr-phrase").textContent = "";
+            // THE DECKS: two strips, each a record drawn from its analysis - the three bands as a silhouette, the
+            // sections under it, phrase ticks from where it opened, the playhead, the plan on both decks
+            const c = $("dj-dr-timeline"), ctx = c.getContext("2d");
+            const maps = P.maps || {}, decks = P.decks || {};
+            const recDeck = Object.keys(decks).find((k) => decks[k] && decks[k].role === "record") || null;
+            const others = Object.keys(decks).filter((k) => k !== recDeck && decks[k] && decks[k].title).sort();
+            const nxtDeck = others[0] || null;
+            const extra = others.slice(1);                       // the conductor's third deck, when it holds a song
+            const nStrips = 2 + extra.length;
+            c.height = 16 + nStrips * 88;
+            const W = c.width = c.clientWidth || 600, H = c.height, pad = 10, meterW = 26;
+            ctx.clearRect(0, 0, W, H);
+            const SEC = {intro: "#8a8a9a", outro: "#8a8a9a", groove: "#22c55e", build: "#f59e0b", breakdown: "#a855f7"};
+            const SEC_TINT = {intro: "rgba(138,138,154,0.10)", outro: "rgba(138,138,154,0.10)", groove: "rgba(34,197,94,0.10)", build: "rgba(245,158,11,0.12)", breakdown: "rgba(168,85,247,0.14)"};
+            const stripW = W - 2 * pad - meterW - 6;
+            function strip(dk, y, sh, isRecord) {
+                const m = maps[dk], dd = decks[dk] || {};
+                const title = (m && m.title) || dd.title || "";
+                ctx.fillStyle = "#1c1c24"; ctx.fillRect(pad, y, stripW, sh);
+                ctx.font = "11px sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#e6e6ea";
+                if (!m) { ctx.fillStyle = "#777"; ctx.fillText(isRecord ? "no record" : "next record: decoding…", pad + 6, y + sh / 2 + 4); return null; }
+                const dur = m.duration_s || 1, x = (t) => pad + Math.max(0, Math.min(1, t / dur)) * stripW;
+                const secH = 8, body = sh - secH - 3;
+                // the sections first: a faint tint over the whole strip height, a bright band under it
+                for (const [kd, s0, s1] of (m.sections || [])) {
+                    ctx.fillStyle = SEC_TINT[kd] || "rgba(255,255,255,0.04)"; ctx.fillRect(x(s0), y, Math.max(1, x(s1) - x(s0)), sh - secH - 1);
+                    ctx.fillStyle = SEC[kd] || "#555"; ctx.fillRect(x(s0), y + sh - secH, Math.max(1, x(s1) - x(s0) - 1), secH);
+                    ctx.font = "bold 8px sans-serif";
+                    if (x(s1) - x(s0) > ctx.measureText(kd.toUpperCase()).width + 6) { ctx.fillStyle = "#111"; ctx.fillText(kd.toUpperCase(), x(s0) + 3, y + sh - 1.5); }
+                }
+                // the bands STACKED (Serato's picture): the column's height is the loudness, its layers are the
+                // spectrum - bass (blue) at the bottom, mids (orange) above, highs (white) on top
+                const n = (m.energy || []).length, nl = (m.low || []).length, nm = (m.mid || []).length, nh = (m.high || []).length;
+                const at = (arr, len, f) => (len ? arr[Math.min(len - 1, Math.floor(f * len))] : 0);
+                for (let px = 0; px < stripW; px++) {
+                    const f = px / stripW, e = Math.min(1, n ? at(m.energy, n, f) : 0.5);
+                    let lo = nl ? at(m.low, nl, f) : e, mi = nm ? at(m.mid, nm, f) : e * 0.6, hi = nh ? at(m.high, nh, f) : e * 0.3;
+                    const sum = Math.max(1e-6, lo + mi + hi);
+                    const total = body * Math.max(0.04, e);
+                    const hL = total * lo / sum, hM = total * mi / sum, hH = total * hi / sum;
+                    const X = pad + px, base = y + 1 + body;
+                    ctx.fillStyle = "#3b7bff"; ctx.fillRect(X, base - hL, 1, hL);
+                    ctx.fillStyle = "#ffb347"; ctx.fillRect(X, base - hL - hM, 1, hM);
+                    ctx.fillStyle = "#eef6ff"; ctx.fillRect(X, base - hL - hM - hH, 1, hH);
+                }
+                // phrase ticks: every 8 bars from where the record opened (its cue)
+                const cue = m.cue_s != null ? m.cue_s : (m.first_down_s || 0), bar = m.bar_s || 2;
+                ctx.fillStyle = "rgba(255,255,255,0.10)";
+                for (let t = cue; t < dur; t += 8 * bar) ctx.fillRect(x(t), y, 1, sh - secH - 1);
+                for (let t = cue - 8 * bar; t > 0; t -= 8 * bar) ctx.fillRect(x(t), y, 1, sh - secH - 1);
+                // its drops
+                ctx.fillStyle = "rgba(255,120,120,0.7)";
+                for (const td of (m.drops || [])) ctx.fillRect(x(td) - 1, y, 2, 6);
+                // the playhead: the record's, or the next record's once it is in
+                let pos = null;
+                if (isRecord && rec) pos = Math.min(dur, (rec.time_s || 0) + dt * (rec.rate || 1));
+                else if (dd.playing) pos = Math.min(dur, (dd.time_s || 0) + dt * (dd.rate || 1));
+                if (pos != null) { ctx.fillStyle = "rgba(0,0,0,0.45)"; ctx.fillRect(x(0), y, x(pos) - x(0), sh - secH - 1); ctx.fillStyle = "#fff"; ctx.fillRect(x(pos) - 1, y - 3, 2, sh + 6); }   // what has played goes dark
+                // the meter at the right: the fader, and the low band as a lamp
+                const mx = pad + stripW + 6;
+                ctx.fillStyle = "#222"; ctx.fillRect(mx, y, meterW, sh);
+                const g = Math.max(0, Math.min(1, (dd.level != null ? dd.level : dd.gain) || 0));     // what the room hears from this deck
+                ctx.fillStyle = dd.playing ? "#7da2e3" : "#444"; ctx.fillRect(mx + 4, y + sh - secH - 2 - (sh - secH - 4) * g, meterW - 8, (sh - secH - 4) * g);
+                ctx.fillStyle = (dd.low || 0) > 0.6 ? "#f0a05a" : "#333"; ctx.fillRect(mx + 2, y + sh - secH, meterW - 4, secH);
+                // the words: role, title, bpm, key; the lanes this deck holds (the layered engines: D B M V lit); the times
+                ctx.fillStyle = "#e6e6ea"; ctx.font = "11px sans-serif"; ctx.textAlign = "left";
+                const role = isRecord ? (P.mode === "layered" ? "MASTER" : (P.mode === "one" ? "PLAYING" : "RECORD"))
+                    : (dd.role === "in" ? "IN" : (dd.role === "leaving" ? "GOING OUT" : (dd.role === "staged" ? "STAGED · synced, silent until a lane enters" : "NEXT")));
+                ctx.fillText(`${role}  ${title.slice(0, 40)}${m.bpm ? `  ${Math.round(m.bpm)} bpm` : ""}${m.camelot ? ` ${m.camelot}` : ""}`, pad, y - 4);
+                let rx = pad + stripW;
+                if (Array.isArray(dd.lanes)) {
+                    const names = [["drums", "D"], ["bass", "B"], ["other", "M"], ["vocals", "V"]];
+                    rx -= 4;
+                    for (let i = names.length - 1; i >= 0; i--) {
+                        const on = dd.lanes.includes(names[i][0]);
+                        ctx.fillStyle = on ? "#f0a05a" : "#2a2a33"; ctx.fillRect(rx - 13, y - 13, 12, 11);
+                        ctx.fillStyle = on ? "#111" : "#666"; ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center"; ctx.fillText(names[i][1], rx - 7, y - 4);
+                        rx -= 15;
+                    }
+                    ctx.textAlign = "left"; ctx.font = "11px sans-serif"; ctx.fillStyle = "#e6e6ea";
+                    rx -= 6;
+                }
+                ctx.textAlign = "right";
+                if (pos != null) ctx.fillText(`${mmss(pos)} / ${mmss(dur)}`, rx, y - 4);
+                else ctx.fillText(m.cue_s != null ? `cued ${mmss(cue)} · landmark ${mmss(m.landmark_s || 0)}` : `${mmss(dur)}`, rx, y - 4);
+                ctx.textAlign = "left";
+                return {x, m, dur};
+            }
+            const yA = 16, yB = 104, sh = 60;
+            const A = strip(recDeck, yA, sh, true);
+            const B = strip(nxtDeck, yB, sh, false);
+            extra.forEach((dk, i) => strip(dk, yB + 88 * (i + 1), sh, false));
+            // THE PLAN on both decks: on the record, the lead (blue), the swap (orange) and the tail (dim); on the next record,
+            // where it starts (its cue) and the same lead and swap in its own time
+            if (plan && plan.in_s != null && rec) {
+                const dim = plan.state === "projected";
+                const t0 = (rec.time_s || 0) + plan.in_s, ts = (rec.time_s || 0) + plan.swap_in_s, te = (rec.time_s || 0) + (plan.end_in_s != null ? plan.end_in_s : plan.swap_in_s);
+                const label = kind === "cut" ? "CUT" : (kind === "breakdown" ? "DROP" : (kind === "blend" ? "BASS SWAP"
+                    : (kind === "seam" ? `SEAM${plan.size ? " · " + String(plan.size).replace(/_/g, " ") : ""}` : (kind === "moment" ? "THE ONE" : kindWord))));
+                // the plan as a box, not a colour wash: a dashed white frame over the lead (the next record in, bass
+                // out), a dotted one over the tail (the record coming down), the swap an orange line through both
+                const box = (X0, X1, Y, dotted) => {
+                    ctx.save(); ctx.setLineDash(dotted ? [2, 3] : [6, 3]); ctx.lineWidth = dim ? 1 : 1.5;
+                    ctx.strokeStyle = dim ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.9)";
+                    ctx.fillStyle = dim ? "rgba(255,255,255,0.04)" : "rgba(255,255,255,0.10)";
+                    ctx.fillRect(X0, Y, Math.max(2, X1 - X0), sh - 10); ctx.strokeRect(X0 + 0.5, Y + 0.5, Math.max(2, X1 - X0) - 1, sh - 11); ctx.restore();
+                };
+                if (A) {
+                    box(A.x(t0), A.x(ts), yA, false);
+                    box(A.x(ts), A.x(te), yA, true);
+                    ctx.fillStyle = "#ff8c1a"; ctx.fillRect(A.x(ts) - 1, yA - 4, 3, sh + 8);
+                    ctx.fillStyle = "#ff8c1a"; ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillText(label, Math.min(pad + stripW - 30, Math.max(pad + 30, A.x(ts))), yA + sh + 12); ctx.textAlign = "left";
+                }
+                if (B && B.m && B.m.cue_s != null) {          // (only the record player knows where the next record starts)
+                    const cue = B.m.cue_s || 0, barB = B.m.bar_s || 2, lead = (plan.lead_bars || 0) * barB, tail = (plan.tail_bars || 0) * barB;
+                    const bs = cue + lead;
+                    box(B.x(cue), B.x(bs), yB, false);
+                    box(B.x(bs), B.x(bs + tail), yB, true);
+                    ctx.fillStyle = "#2ee6d6"; ctx.fillRect(B.x(cue) - 1, yB - 4, 3, sh + 8);                                 // where it starts
+                    ctx.fillStyle = "#ff8c1a"; ctx.fillRect(B.x(bs) - 1, yB - 4, 3, sh + 8);
+                    ctx.font = "bold 10px sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#2ee6d6"; ctx.fillText("IN", B.x(cue) + 4, yB + sh + 12);
+                    ctx.fillStyle = "#ff8c1a"; ctx.textAlign = "center"; ctx.fillText(label, Math.min(pad + stripW - 30, Math.max(pad + 30, B.x(bs))), yB + sh + 12); ctx.textAlign = "left";
+                }
+            }
+            if (A && rec && rec.min_left_s > 0) { const tm = (rec.time_s || 0) + rec.min_left_s; ctx.fillStyle = "#fff"; ctx.fillRect(A.x(tm) - 1, yA - 2, 2, sh + 4); ctx.fillStyle = "#ddd"; ctx.font = "bold 9px sans-serif"; ctx.textAlign = "left"; ctx.fillText("MIN", A.x(tm) + 3, yA + sh + 12); }
+            if (!rec) return;
+            // the decks as heard: role, title, fader, the three bands (BASS lit when the low band is open)
+            const deckKeys = Object.keys(decks).filter((k) => decks[k] && decks[k].title).sort();
+            $("dj-dr-decks").innerHTML = (deckKeys.length ? deckKeys : ["a", "b"]).map((k) => {
+                const dk = decks[k]; if (!dk || !dk.title) return `<div class="dr-deck"><span class="role">deck ${k}</span><span class="title" style="opacity:.4">empty</span><div class="meter"><div style="width:0"></div></div></div>`;
+                const lamp = (v, name) => `<span class="lamp ${v > 0.6 ? "on" : (v > 0.15 ? "half" : "")}">${name}</span>`;
+                const role = dk.role === "record" ? (P.mode === "layered" ? "master" : "record") : (dk.role === "in" ? "coming in" : (dk.role === "leaving" ? "going out" : (dk.role === "staged" ? "staged" : (dk.role || ""))));
+                const lvl = dk.level != null ? dk.level : dk.gain;
+                return `<div class="dr-deck"><span class="role">${role}</span><span class="title" title="${dk.title}">${dk.title}</span>`
+                    + `<div class="meter"><div style="width:${Math.round(Math.min(1, lvl) * 100)}%"></div></div>${lamp(dk.low, "BASS")}${lamp(dk.mid, "MID")}${lamp(dk.high, "HIGH")}`
+                    + (dk.rate && Math.abs(dk.rate - 1) > 0.0005 ? `<span class="now-sub" style="width:48px;text-align:right">${((dk.rate - 1) * 100).toFixed(1)}%</span>` : `<span style="width:48px"></span>`) + `</div>`;
+            }).join("");
+        }
+
         function drawDirectorArc(a) {
             const c = $("dj-dr-arc"), ctx = c.getContext("2d");
             const W = c.width = c.clientWidth || 600, H = c.height, pad = 10;

@@ -21,7 +21,9 @@ from tools.dj.planner.stemlanes import LANE_COLORS
 DIAL_LABELS = {
     "mixing": ("MIXING", {"auto": "auto", "blend": "blend", "cut": "cut", "morph": "morph"},
                "how songs join: the dice · long blends · hard cuts · stem morphs (pins through the same gates; a refused cut becomes a phrase cut)"),
-    "layers": ("LAYERS", {"one": "one", "two": "two", "three": "three", "mashup": "mashup"},
+    "layers": ("LAYERS", {"record": "record", "one": "one", "two": "two", "three": "three", "mashup": "mashup"},
+               "record: the record plays whole, untouched; the next one is MIXED in - a 32-bar beat-matched blend from the minimum play "
+               "(bass out, highs then mids, THE BASS SWAP on the phrase, the record out over a phrase), or the breakdown swap when the record offers one (docs/DJ_MIXING.md) · "
                "one song at a time (the autoDJ as it is) · parts of two songs together · parts of three · MASHUP: three songs taken apart, a new combination every few bars (the MASHUP tab has the pads); the playing song is carried across"),
     "energy": ("ENERGY", {"cool": "cool", "hold": "hold", "amp": "amp"},
                "a lean on the night's arc; amped, the clock may also travel with it when layered"),
@@ -44,8 +46,9 @@ DIAL_LABELS = {
              "the mix bus high band (over 2.5 kHz): −30 % · flat · +30 %"),
     "level": ("LEVEL", {"quiet": "quiet", "normal": "normal", "loud": "loud"},
               "the mix bus gain: 60 % · 85 % · 100 %"),
-    "moments": ("MOMENTS", {"rare": "rare", "some": "some", "lots": "lots"},
-                "how often the DJ makes its own moments, spaced at least 8 min (some) / 4 min (lots) apart and only while the arc is warm: "
+    "moments": ("MOMENTS", {"rare": "none (yours only)", "some": "some", "lots": "lots"},
+                "rare: no moments or composed events of the DJ's own - only the ones you press (the default). "
+                "some / lots: how often the DJ makes its own moments, spaced at least 8 min (some) / 4 min (lots) apart and only while the arc is warm: "
                 "one song, a double-drop into the next song; layered, breaks at breakdowns, drops onto a voice, and every bed change "
                 "as a four-bar breakdown before the new drums and bass land (rare = clean crosses only)"),
     "fx": ("FX", {"none": "none", "some": "some", "lots": "lots"},
@@ -1241,10 +1244,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         """The moments say what they do, in the mode we are in (the detail in the tooltip). One song at a time
         only the first moment works: the autoDJ's DROP (a build into the next song's drop)."""
         one = mode != "layered"
+        record = mode == "record"
         texts = {
-            "NEXT": ("NEXT SONG", "move on to the next song at the next phrase") if one
-                    else ("NEXT MOVE", "the conductor's next lane move on the next bar"),
-            "HOLD": ("STAY", "one more phrase of this song before moving on" if one else "freeze the lanes for a phrase"),
+            "NEXT": (("NEXT SONG", "the short blend to the next record starts at the next bar + 2 (the moment it is decoded); under way, the bass swap comes forward") if record
+                     else ("NEXT SONG", "move on to the next song at the next phrase") if one
+                     else ("NEXT MOVE", "the conductor's next lane move on the next bar")),
+            "HOLD": ("STAY", "the planned blend moves one phrase later (while it has not started)" if record
+                     else ("one more phrase of this song before moving on" if one else "freeze the lanes for a phrase")),
             "GOOD": ("👍 GOOD", "that was good - the DJ does more of it"),
             "BAD": ("👎 BAD", "that was bad - the DJ does less of it; on a moment it asks which of five things hurt and moves that one number"),
         }
@@ -1254,7 +1260,12 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             self.buttons[k].setToolTip(tip)
         for key, label in MOMENT_ROW:
             b = self.moment_btns[key]
-            if one:
+            # RECORD: the moments look switched off but stay pressable - the Director answers each with
+            # "not in RECORD mode yet (Phase 2)"
+            b.setStyleSheet("color: #777;" if record else "")
+            if record:
+                b.setEnabled(True)
+            elif one:
                 b.setEnabled(key == "slam")
                 if key == "slam" and b.text() != "DROP":
                     b.setText("DROP")

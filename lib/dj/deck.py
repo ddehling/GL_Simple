@@ -49,6 +49,12 @@ def _stretch_engine():
     return _ENGINES.get(name, VarispeedStretcher)
 
 RATE = 44100
+# Positions (beat phase, telemetry time, the sync PLL's grid error, snaps and
+# nudges) are read from where the deck is HEARD, not from where the stretcher
+# has rendered to - see Deck._audible_source_pos. False restores the old
+# rendered-cursor reading exactly (for A/B checks; DJ_AUDIBLE_POS=0 in the
+# environment does the same for a whole gate or census run).
+AUDIBLE_POSITION = os.environ.get("DJ_AUDIBLE_POS", "1") not in ("0", "off", "false")
 LOOP_XFADE = 128                 # frames, equal-power seam blend
 ENV_FPS = 200                    # output kick-envelope rate (5ms bins)
 ENV_LEN = 2 * ENV_FPS            # ring holds the last 2s
@@ -258,8 +264,10 @@ class Deck:
         falling (variable-speed resample, not WSOLA - a brake IS a pitch
         drop). The deck stops itself when the platter reaches zero."""
         if self.playing:
+            # From where it is HEARD: the brake reads the samples directly
+            # and the stretcher's unplayed output is skipped.
             self._brake = [1.0, 1.0 / max(duration_s, 0.1),
-                           float(self.stretch.source_pos)]
+                           float(self._audible_source_pos())]
 
     def jump_cut(self, time_s):
         """Phrase-jump edit: hard relocate at a downbeat with a short
@@ -324,8 +332,49 @@ class Deck:
                 return ls + (virt - ls) % (le - ls)
         return virt
 
+    def _audible_source_pos(self):
+        """Source frame of the NEXT sample this deck will output (fractional,
+        before the loop map).
+
+        stretch.source_pos is where the stretcher has RENDERED to. What it
+        rendered but the deck has not played yet sits in its output fifo
+        (Rubber Band and the bypass make 1024-frame blocks, WSOLA/PV a hop)
+        and, on a key-shifted deck, in the pitch resampler's buffer. That
+        lead is up to ~1024 source frames (~23 ms) and changes block to
+        block - so phase read from the rendered cursor carried a sawtooth,
+        and the sync PLL chased it: a same-tempo pair with a key shift
+        breathed its rate trim over 0.7-1.3 % (the record-mode night of
+        2026-10-26, "utterly terrible"). Read from the audible position the
+        trim holds within ~0.15 % like an unshifted pair, and the audible
+        kick spread is equal or better (measured 2026-10-26)."""
+        st = self.stretch
+        pos = float(st.source_pos)
+        if not AUDIBLE_POSITION:
+            return pos
+        fifo = getattr(st, "_fifo", None)
+        pending = len(fifo) if fifo is not None else 0
+        if self._pitch_f != 1.0:
+            pending += max(0.0, len(self._rs_buf) - self._rs_pos)
+        if pending:
+            pos -= pending * float(getattr(st, "rate", 1.0))
+        return pos
+
+    def _seek_relative(self, shift_frames):
+        """Move the platter by shift_frames FROM WHERE IT IS HEARD. A seek
+        drops the stretcher's unplayed fifo, so the base must be the audible
+        position (the rendered one overshot by the fifo's lead), and the
+        pitch resampler's buffered frames are dropped too (cue() does the
+        same) or they would play first from the old place."""
+        if not AUDIBLE_POSITION:
+            self.stretch.seek(int(round(self.stretch.source_pos + shift_frames)))
+            return
+        self.stretch.seek(int(round(self._audible_source_pos() + shift_frames)))
+        if self._pitch_f != 1.0:
+            self._rs_buf = self._rs_buf[:0]
+            self._rs_pos = 0.0
+
     def source_time_s(self):
-        return self._map_source(int(self.stretch.source_pos)) / RATE
+        return self._map_source(int(self._audible_source_pos())) / RATE
 
     def beat_period_s(self):
         t = self.source_time_s()
@@ -352,7 +401,7 @@ class Deck:
     def nudge_seconds(self, dt_s):
         """Shift the play cursor by dt_s (source-domain seconds); used by
         onset-anchored sync to slide the deck onto the master's kicks."""
-        self.stretch.seek(int(round(self.stretch.source_pos + dt_s * RATE)))
+        self._seek_relative(dt_s * RATE)
 
     def phase_snap(self, target_phase):
         """Instantly shift the play cursor so beat_phase == target_phase -
@@ -364,7 +413,7 @@ class Deck:
             return 0.0
         err = (self.beat_phase() - target_phase + 0.5) % 1.0 - 0.5
         shift_frames = -err * g["period_s"] * RATE      # move back if ahead
-        self.stretch.seek(int(round(self.stretch.source_pos + shift_frames)))
+        self._seek_relative(shift_frames)
         return err
 
     def effective_rate(self):

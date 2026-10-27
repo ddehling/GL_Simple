@@ -234,6 +234,11 @@ class DJSubmix:
                               e.get("ramp_s", 0.05))
         elif cmd == "rate":
             deck.set_rate(e["value"], e.get("ramp_s", 0.0))
+        elif cmd == "stretch_hold":
+            # keep the stretcher ENGAGED (no bypass flip when the rate comes back to 1.0): the flip crossfades two
+            # blocks the engine's latency puts at different positions - a phase kick heard as a click (the record
+            # player holds the new record after a blend; a reload releases it)
+            deck.stretch.no_bypass = bool(e.get("value", True))
         elif cmd == "pitch":
             # key shift on a loaded deck (the stem stage moves a melodic lane toward the master key)
             deck.set_pitch(float(e.get("semitones", 0.0)))

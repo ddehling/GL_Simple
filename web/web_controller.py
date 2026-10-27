@@ -64,6 +64,7 @@ class WebController:
         
         # Add thread lock for thread-safe dictionary access
         self._dict_lock = threading.RLock()
+        self._socket_clients = set()     # connected Socket.IO sids (see handle_connect)
         
         # Cache for frequently accessed values to reduce lock contention
         self._values_cache = None
@@ -74,6 +75,10 @@ class WebController:
                         template_folder=str(Path(__file__).parent / 'templates'),
                         static_folder=str(Path(__file__).parent / 'static'),
                         static_url_path='/static')
+        # A page edit shows on the next browser reload, no app restart (debug is off, which would otherwise
+        # cache every template for the life of the process - a fixed DJ page kept serving its old self, 2026-10-24)
+        self.app.config['TEMPLATES_AUTO_RELOAD'] = True
+        self.app.jinja_env.auto_reload = True
 
         # Custom JSON provider so jsonify() handles numpy types everywhere.
         from flask.json.provider import DefaultJSONProvider
@@ -1060,6 +1065,12 @@ class WebController:
 
         @self.socketio.on('connect')
         def handle_connect():
+            # Who is listening: the emitter skips building snapshots while
+            # nobody is (see _start_emitter). Kept as a set of socket ids so
+            # a duplicate or missed event cannot drift a counter.
+            from flask import request as _req
+            with self._dict_lock:
+                self._socket_clients.add(getattr(_req, 'sid', None))
             # Send initial state snapshot on connect
             with self._dict_lock:
                 snapshot = {
@@ -1106,8 +1117,10 @@ class WebController:
                 )
 
         @self.socketio.on('disconnect')
-        def handle_disconnect():
+        def handle_disconnect(*_args):
+            from flask import request as _req
             with self._dict_lock:
+                self._socket_clients.discard(getattr(_req, 'sid', None))
                 if self.control_dict.get('_preview_subscribers', 0) > 0:
                     self.control_dict['_preview_subscribers'] -= 1
 
@@ -2145,6 +2158,18 @@ class WebController:
                             self._values_cache = None
                             print(f"[WebController] Set-switch timer fired "
                                   f"({t['hours']}): -> {t['target']}")
+
+                # Nobody connected: nothing to build. The state snapshot (a
+                # copy + recursive sanitize of the whole control picture,
+                # DJ status included) at 5 Hz and the audio summary at 30 Hz
+                # were built and thrown away all night on an unattended box,
+                # holding the GIL against the render loop. A client that
+                # connects gets a full snapshot from handle_connect.
+                with self._dict_lock:
+                    listening = bool(self._socket_clients)
+                if not listening:
+                    time.sleep(0.015)
+                    continue
 
                 # Push state updates at 5 Hz
                 if now - last_state_push >= state_interval:

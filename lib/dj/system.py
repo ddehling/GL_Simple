@@ -301,6 +301,21 @@ class DJSystem:
         if self.brain is None:
             return
         try:
+            # UNCHANGED INPUTS, NO REBUILD: this ran every 10 s over the whole library in pure Python (60-95 ms of
+            # GIL on the brain thread, every autoDJ frame over 40 ms in the 2026-10-25 profile lined up with it).
+            # The vocabulary depends on the tags table, the pool / the setlist and the current song: when none of
+            # them changed (PRAGMA data_version moves on any other connection's commit - the planner's tag writes),
+            # the last vocabulary stands; a forced rebuild every 120 s is the backstop.
+            cur = self.db.conn
+            dv = cur.execute("PRAGMA data_version").fetchone()[0]
+            tc = cur.execute("SELECT COUNT(*), MAX(rowid) FROM tags").fetchone()
+            pool = self.brain.pool_ids
+            sig = (dv, tuple(tc), (len(pool) if pool is not None else None), id(pool),
+                   tuple(e["track_id"] for e in (self._setlist_queue or [])), self.current.id if self.current is not None else None)
+            now = time.time()
+            if sig == getattr(self, "_tags_sig", None) and now - getattr(self, "_tags_sig_t", 0.0) < 120.0:
+                return
+            self._tags_sig, self._tags_sig_t = sig, now
             per_track = {}
             for r in self.db.conn.execute("SELECT track_id, tag FROM tags"):
                 per_track.setdefault(r["track_id"], []).append(r["tag"])
@@ -432,16 +447,20 @@ class DJSystem:
             except Exception:
                 pass
         self._log({"event": "stop"})
-        if self._tempo_pool is not None:
-            try:
-                self._tempo_pool.stdin.close()      # EOF -> worker exits
-                self._tempo_pool.wait(timeout=2.0)
-            except Exception:
+        proc, self._tempo_pool = self._tempo_pool, None
+        if proc is not None:
+            # closed off the caller's thread: waiting on the worker held the render thread 367 ms at every STOP
+            # (the perf profile, 2026-10-25). _verify_in_worker spawns no new worker once _running is False.
+            def _close(p):
                 try:
-                    self._tempo_pool.kill()
+                    p.stdin.close()                 # EOF -> worker exits
+                    p.wait(timeout=2.0)
                 except Exception:
-                    pass
-            self._tempo_pool = None
+                    try:
+                        p.kill()
+                    except Exception:
+                        pass
+            threading.Thread(target=_close, args=(proc,), daemon=True, name="tempo-worker-close").start()
 
     @property
     def active(self):
@@ -3294,6 +3313,8 @@ class DJSystem:
         import pickle
         import struct
         hdr = struct.Struct("<Q")
+        if not self._running:
+            return None                         # STOP came first: no worker spawned for a decode that no longer matters
         try:
             proc = self._tempo_pool
             if proc is None or proc.poll() is not None:
@@ -3325,6 +3346,8 @@ class DJSystem:
                 raise RuntimeError(res[1])
             return res
         except Exception as e:
+            if not self._running:
+                return None                     # the pipe died because STOP closed it: no CPU-heavy fallback either
             print(f"[DJ] tempo verify worker unavailable ({type(e).__name__}"
                   f": {e}); measuring in-process")
             try:

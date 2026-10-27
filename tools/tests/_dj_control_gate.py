@@ -364,7 +364,8 @@ def run(music, seed, presses, seconds, verbose):
             errors.append((t_now, "set", f"the chain's head changed without a trigger: {d.title(set_watch['head'])[:20]} → {d.title(head)[:20] if head else 'nothing'} ({d._hz_why})"))
         set_watch["sig"], set_watch["head"] = sig, head
         rec = rc.songs.get(rc.record_deck)
-        if rec is not None and rec.entered_k is not None and rc.bar_n - rec.entered_k > 24 and not d.horizon and not getattr(d, "_hz_busy", False):
+        if rec is not None and rec.entered_k is not None and rc.bar_n - rec.entered_k > 24 and not d.horizon and not getattr(d, "_hz_busy", False) \
+                and getattr(rc, "policy", "record") != "mashup":     # (the MASHUP rotates its slots and keeps no chain: THE SET's rows do not apply there)
             # an empty chain is honest after a far song (nothing inside the wall after 147 bpm) - but THE PLAN must say so
             pr = d.status().get("plan_rows") or []
             if not any(r.get("kind") == "THEN" and "nothing fits" in r.get("text", "") for r in pr):

@@ -35,7 +35,8 @@ def _mmss(x):
 
 DIALS = {
     "mixing": ("auto", "blend", "cut", "morph"),
-    "layers": ("one", "two", "three", "mashup"),
+    # record = THE RECORD IS THE RECORD (docs/DJ_RESCOPE.md, Phase 1): one record whole at its own tempo, one cut per record
+    "layers": ("record", "one", "two", "three", "mashup"),
     "energy": ("cool", "hold", "amp"),
     "tempo": ("slower", "hold", "faster"),
     "pace": ("short", "normal", "long"),
@@ -55,9 +56,11 @@ DIALS.update({
     "arc": ("theme", "steady", "build", "waves", "down", "yours"),
     "length": ("45m", "90m", "3h", "night"),
 })
-DEFAULTS = {"mixing": "auto", "layers": "one", "energy": "hold", "tempo": "hold", "pace": "normal",
+DEFAULTS = {"mixing": "auto", "layers": "record", "energy": "hold", "tempo": "hold", "pace": "normal",
             "seams": "normal", "vocals": "some", "variety": "varied", "loops": "off",
-            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "some", "fx": "none",   # (no shapes on exits by default: a "filter out" sweep was flagged as a bad seam; the dial is off the surface)
+            "bass": "flat", "tone": "neutral", "level": "normal", "moments": "rare", "fx": "none",   # (no shapes on exits by default: a "filter out" sweep was flagged as a bad seam; the dial is off the surface)
+            # MOMENTS rare = no moments or composed events of the DJ's own: only the ones you press (2026-10-24: "got some really
+            # weird looping" - the automatic BUILD, the eight bars before the drop looped twice with the bass pulled, twice a record)
             "arc": "theme", "length": "90m"}
 ARC_SHAPE = {"theme": None, "steady": "flat", "build": "rise", "waves": "peak_wave", "down": "wind_down", "yours": "yours"}
 ARC_LEN_S = {"45m": 45 * 60.0, "90m": 90 * 60.0, "3h": 3 * 3600.0, "night": 6 * 3600.0}
@@ -153,7 +156,7 @@ FLAG_GOOD = {
 FLAG_KINDS = {**FLAG_BAD, **FLAG_GOOD}
 MOMENT_RATE = {"rare": 0.0, "some": 0.25, "lots": 0.6}               # the DJ's own drops / breaks, chance per opportunity
 MOMENT_GAP_S = {"rare": 1e9, "some": 480.0, "lots": 240.0}           # ...and never closer than this to the last moment (peaks are spaced)
-COMPOSE_N = {"rare": 1, "some": 2, "lots": 4}
+COMPOSE_N = {"rare": 0, "some": 2, "lots": 4}                       # rare = the composer writes NO events: the record plays, you press the moments
 MASH_BARS = {"rare": 32, "some": 16, "lots": 8}                     # MASHUP: bars per scene (docs/DJ_MASHUP.md)                        # THE COMPOSER: events in a record's score (docs/DJ_THE_COMPOSER.md)
 FX_LEVEL = {"none": 0.0, "some": 0.6, "lots": 1.0}                   # shapes on moves; filter / echo seams' odds
 TEMPO_LEAN_BPM = {"slower": -6.0, "hold": 0.0, "faster": 6.0}       # the autoDJ's planned journey
@@ -194,13 +197,17 @@ class Director:
         self.up_next = []                # track ids, in order
         self.system = None               # the autoDJ, when layers = one
         self.rc = None                   # the conductor, when layers = two / three
-        self.mode = None                 # "one" | "layered"
+        self.player = None               # the record player (lib/dj/recordplay.py), when layers = record
+        self._pstat = None               # the player's status(), read once per tick
+        self._rec_tid = None             # the record the player had on the last tick
+        self.mode = None                 # "record" | "one" | "layered"
         self._switch = None              # a handover in progress
         self._hold_until = None
         self._fed = None                 # (current id, queued id) fed to the autoDJ
         self._loop_k = None
         self.running = False
         self._thread = None
+        self._relaunch_at = None         # a LAYERS change while running: the engine is swapped on the Director's thread
         self._lock = threading.Lock()
         self.events = []                 # (hms, text) the Director's own log
         self.last_error = None
@@ -280,6 +287,16 @@ class Director:
             warm()
         except Exception:
             pass
+        if self.dials["layers"] == "record":
+            # RECORD: the player is built now and its opener decoded onto deck A; START reuses it while the
+            # theme, the pool and the moods are the same (the signature), else builds a fresh one
+            p = self._build_player()
+            first = p.prepare()
+            if first is None:
+                return None
+            self._player_ready, self._player_sig = p, self._player_signature()
+            self._event(f"ready before START: {first.title[:30]} is decoded on deck A")
+            return first
         rc = self._new_conductor(attach=False)
         first = rc._pick_first()
         if first is None:
@@ -292,9 +309,12 @@ class Director:
         return first
 
     def start(self, threaded=True):
-        want = "one" if self.dials["layers"] == "one" else "layered"
+        layers = self.dials["layers"]
+        want = "record" if layers == "record" else ("one" if layers == "one" else "layered")
         try:
-            if want == "one":
+            if want == "record":
+                self.player = self._new_player()
+            elif want == "one":
                 self.system = self._new_system()
             else:
                 rc_ready = getattr(self, "_rc_ready", None)
@@ -333,6 +353,13 @@ class Director:
 
     def stop(self, fade_s=1.5):
         self.running = False
+        if self.player is not None:
+            try:
+                self.player.stop(fade_s=fade_s)
+            except Exception:
+                pass
+            self.player = None
+            self._pstat, self._rec_tid = None, None
         if self.system is not None:
             try:
                 self.system.stop(fade_s=fade_s)
@@ -390,6 +417,78 @@ class Director:
             self._attach("dj_remix", rc.submix)
         self._apply_to_conductor(rc)
         return rc
+
+    def _player_signature(self):
+        return (self.theme, self.pool_name, tuple(sorted(self.tags)), "record")
+
+    def _build_player(self):
+        """The record player with the dials' settings, not attached, not started."""
+        from lib.dj.recordplay import RecordPlayer
+        p = RecordPlayer(self.db, self.music_root, self.library, theme=self.theme)
+        self._apply_to_player(p)
+        try:
+            if getattr(p, "brain", None) is not None:
+                self._seed_brain(p.brain)             # (the night's plays are avoid_ids too)
+        except Exception:
+            pass
+        return p
+
+    def _new_player(self):
+        """THE RECORD IS THE RECORD (docs/DJ_RESCOPE.md 4a): the record player, attached as "dj_record" and
+        ticked by the Director (no thread of its own). A player prepared before START is reused while its
+        signature holds (its start() finds the prepared opener itself)."""
+        ready, self._player_ready = getattr(self, "_player_ready", None), None
+        if ready is not None and getattr(self, "_player_sig", None) == self._player_signature():
+            p = ready
+            self._apply_to_player(p)                  # (pace or the queue may have changed since)
+        else:
+            if ready is not None:
+                try:
+                    ready.stop(fade_s=0.0)
+                except Exception:
+                    pass
+            p = self._build_player()
+        self._attach("dj_record", p.submix)
+        if not p.start(threaded=False):
+            raise RuntimeError(p.last_error or "the record player failed to start")
+        self._apply_bus(p.submix)
+        return p
+
+    def _apply_to_player(self, p):
+        """What the dials say to the record player: PACE is its minimum play; nothing played tonight is picked;
+        UP NEXT's head is its next pick; the MOOD tags and the pool reach its brain. BASS / TONE / LEVEL are the
+        bus (_apply_bus). Nothing else applies in RECORD mode."""
+        p.play_min_s = PLAY_MIN_S[self.dials["pace"]]
+        p.avoid_ids = self._played_ids()
+        p.pick_hook = self._record_pick
+        br = getattr(p, "brain", None)
+        if br is None:
+            return
+        try:
+            br.set_require_tags(self.tags)
+        except Exception:
+            pass
+        try:
+            br.flavor["prefer_tags"] = dict(self.taste["like"])
+            br.flavor["avoid_tags"] = dict(self.taste["dislike"])
+        except Exception:
+            pass
+        try:
+            if self.pool_name:
+                from lib.dj.setlist import get_setlist
+                sl = get_setlist(self.db, name=self.pool_name)
+                have = {t.id for t in self.library}
+                br.pool_ids = {int(e["track_id"]) for e in (sl or {}).get("entries", []) if int(e["track_id"]) in have} or None
+            else:
+                br.pool_ids = None
+        except Exception:
+            pass
+
+    def _record_pick(self, *_a, **_k):
+        """The record player's pick hook: the UP NEXT head (popped once it is on a deck), else None (the brain picks)."""
+        if not self.up_next:
+            return None
+        return self.track(self.up_next[0])
 
     def _send(self, eng, name, value, fn):
         """Hand a steering value to an engine ONLY when it changed since the last time this engine got it.
@@ -634,6 +733,9 @@ class Director:
         the end (or on cancel)."""
         if key not in PROGRAMS:
             return False
+        if self.player is not None:
+            self._phase2(f"program {PROGRAMS[key][0]}")
+            return False
         n = int(max(2, min(6, n)))
         if self.program is not None:
             self.cancel_program(quiet=True)
@@ -711,6 +813,21 @@ class Director:
             return True
         self.dials[name] = value
         self._event(f"{name}: {value}")
+        if name == "layers" and self.running:
+            want = "record" if value == "record" else ("one" if value == "one" else "layered")
+            if want != self.mode and (want == "record" or self.mode == "record"):
+                # RECORD is its own engine with no handover into or out of it, so the Director fades the engine
+                # out and starts the other - on its own thread, at the next step (the user, 2026-10-24: "make
+                # the engine change when I press the button"). one <-> layered keep their warm handover below.
+                self._relaunch_at = time.time()
+                self._event(f"LAYERS {value}: switching engines - a fade, then {value} starts")
+                return True
+        if self.player is not None:
+            if name == "pace":
+                self.player.play_min_s = PLAY_MIN_S[value]
+            elif name in ("bass", "tone", "level"):
+                self._apply_bus(self.player.submix)
+            return True                               # (every other dial is a no-op in RECORD mode)
         if self.system is not None:
             self._apply_to_system(self.system)
         if self.rc is not None:
@@ -753,6 +870,8 @@ class Director:
 
     def _warm_step(self):
         """Keep the OTHER engine's opener ready for the playing song."""
+        if self.player is not None:
+            return                                    # RECORD: no handover, nothing to keep warm
         if self._warm_busy or self._switch is not None:
             return
         # not in the first half minute: the standby engine's brain is seconds of GIL, and the start already
@@ -818,6 +937,8 @@ class Director:
                 self._apply_to_conductor(self.rc)
             else:
                 self.rc.set_pool(None)
+        if self.player is not None:
+            self._apply_to_player(self.player)
         self._event(f"songs: {name or 'whole library'}")
 
     def queue(self, track_id):
@@ -878,6 +999,13 @@ class Director:
                     state = ("leaving" if s.leaving else "in play" if lanes else ("staged" if s.staged_at is not None else "decoding"))
             elif self.system is not None and self.system.next_track is not None and self.system.next_track.id == tid:
                 state = "next"
+            elif self.player is not None:
+                try:
+                    d = self.player.deck_of(tid)
+                    if d is not None and d in self.player.songs:
+                        state = str(getattr(self.player.songs[d], "state", "next") or "next")
+                except Exception:
+                    pass
             rows.append({"id": tid, "title": self.title(tid), "state": state, "lanes": lanes})
         return rows
 
@@ -947,6 +1075,8 @@ class Director:
         predecessor, a key clash, not tonight) and extend to five again; a change of the triggers (the record,
         the queue, a skip, the dials that steer picks) does the same at once. Hops that still fit stay - the
         chain does not churn (rule 2)."""
+        if self.player is not None:
+            return                                    # RECORD: no set chain in Phase 1
         rc = self.rc
         if rc is None or rc.master is None or rc.record_deck not in rc.songs:
             if self.horizon:
@@ -1053,6 +1183,8 @@ class Director:
         2026-09-19 ran at 65-85 % of real time for eight minutes (2.4-3.0 s per bar against 1.97) and nothing said
         so - the flags read 'dead air', 'nothing happening', 'seam'. Measured over ten-second windows; when two in
         a row fall under 0.92 the story row says it, once a minute, and the log gets a row."""
+        if self.player is not None:
+            return                                    # RECORD: no slip watch in Phase 1
         rc = self.rc
         now = time.time()
         st = getattr(self, "_slip", None)
@@ -1317,6 +1449,8 @@ class Director:
     def drop_pair(self, pair):
         """DROP IT: the pair's record goes UP NEXT (unless it is the record now) and the pair is planted as an idea
         already taken - it fires when that record plays. Returns a sentence."""
+        if self.player is not None:
+            return self._phase2("PAIR")
         rc = self.rc
         if rc is None or rc.master is None:
             return "layer first: LAYERS two"
@@ -1396,6 +1530,8 @@ class Director:
 
     def mash_pad(self, slot, lane):
         """A MASHUP pad (docs/DJ_MASHUP.md): `lane` to the song in `slot` on the next bar; a lit pad takes it out."""
+        if self.player is not None:
+            return self._phase2("pad")
         if self.rc is None or self.rc.master is None:
             return "layer first: LAYERS mashup"
         ok, msg = self.rc.mash_pad(int(slot), lane)
@@ -1404,6 +1540,8 @@ class Director:
 
     def idea_take(self):
         """"Do it" on the DJ's IDEA row (docs/DJ_MORE_THAN_A_MIXER.md 2). Returns a sentence."""
+        if self.player is not None:
+            return self._phase2("IDEA")
         if self.rc is None or self.rc.master is None:
             return "not layered"
         ok, msg = self.rc.idea_take()
@@ -1412,6 +1550,8 @@ class Director:
 
     def idea_skip(self):
         """"Skip" on the DJ's IDEA row. Returns a sentence."""
+        if self.player is not None:
+            return self._phase2("IDEA")
         if self.rc is None or self.rc.master is None:
             return "not layered"
         ok, msg = self.rc.idea_skip()
@@ -1478,15 +1618,38 @@ class Director:
                 self.system.request_reroll()
         if self.rc is not None:
             self._apply_to_conductor(self.rc)
-        self._event("mood: " + (", ".join(self.tags) if self.tags else "everything"))
+        if self.player is not None:
+            self._apply_to_player(self.player)
+        self._event("mood: " +(", ".join(self.tags) if self.tags else "everything"))
 
     def describe_dials(self):
         d = self.dials
+        if d["layers"] == "record":
+            return f"record: one record at a time, whole, mixed into the next (the blend; the breakdown swap when offered) · {d['pace']} plays (min {_mmss(PLAY_MIN_S[d['pace']])})"
         return (f"{d['layers']} song{'s' if d['layers'] != 'one' else ''} · {d['mixing']} mixing · energy {d['energy']} · "
                 f"{d['pace']} plays · loops {d['loops']}")
 
     # -- the moments -----------------------------------------------------------------------------------------
+    PHASE2 = "not in RECORD mode yet (Phase 2)"
+
+    def _phase2(self, what):
+        """A control RECORD mode does not have yet: said in the story row, the same sentence returned."""
+        self._event(f"{what}: {self.PHASE2}")
+        return self.PHASE2
+
+    @staticmethod
+    def _said(what, ok, msg):
+        """The story row for a player's answer: its own words, prefixed once ("NEXT: …" / "NEXT refused: …")."""
+        msg = str(msg)
+        if msg.upper().startswith(what + ":"):
+            msg = msg[len(what) + 1:].lstrip()
+        return f"{what}: {msg}" if ok else f"{what} refused: {msg}"
+
     def next(self):
+        if self.player is not None:
+            ok, msg = self.player.next()
+            self._event(self._said("NEXT", ok, msg))
+            return ok, msg
         if self.system is not None:
             self.system.request_skip()
         if self.rc is not None:
@@ -1494,6 +1657,10 @@ class Director:
         self._event("NEXT")
 
     def hold(self):
+        if self.player is not None:
+            ok, msg = self.player.stay()
+            self._event(self._said("STAY", ok, msg))
+            return ok, msg
         if self.system is not None:
             self.system.request_hold()
         if self.rc is not None:
@@ -1502,6 +1669,9 @@ class Director:
         self._event("HOLD")
 
     def drop(self):
+        if self.player is not None:
+            self._phase2("DROP")
+            return
         if self.system is not None:
             self.system.moment("drop")
         if self.rc is not None:
@@ -1510,6 +1680,9 @@ class Director:
         self._event("DROP")
 
     def break_(self):
+        if self.player is not None:
+            self._phase2("BREAK")
+            return False
         if self.rc is not None:
             r = self.rc.break_()
             ok = bool(r[0]) if isinstance(r, tuple) else bool(r)
@@ -1524,6 +1697,8 @@ class Director:
         """Arm a composed moment (layered). Pressing the armed one again = go now. One song at a time: the
         first moment is the autoDJ's DROP (a build into the next song's drop); the rest need layers.
         Returns (ok, sentence)."""
+        if self.player is not None:
+            return False, (self.PHASE2 if auto else self._phase2(str(kind).upper()))
         if self.rc is not None and self.rc.master is not None:
             ok, msg = self.rc.arm_moment(kind, auto=auto)
             if ok:
@@ -1541,11 +1716,15 @@ class Director:
         return False, "press START first"
 
     def moment_go(self):
+        if self.player is not None:
+            return False, self._phase2("moment")
         if self.rc is not None:
             return self.rc.moment_go()
         return False, "nothing armed"
 
     def moment_cancel(self):
+        if self.player is not None:
+            return False, self._phase2("cancel")
         if self.rc is not None:
             ok, msg = self.rc.moment_cancel()
             if ok:
@@ -1562,6 +1741,8 @@ class Director:
         within the coming phrase, else the phrase) or "bar" (the next bar). Returns a sentence."""
         if kind not in ("takeover", "bridge"):
             return "only TAKEOVER and BRIDGE take a song"
+        if self.player is not None:
+            return self._phase2(kind.upper())
         if self.rc is None or self.rc.master is None:
             return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
         rc = self.rc
@@ -1597,6 +1778,8 @@ class Director:
         return f"{self.title(tid)[:24]} is being staged; {kind.upper()} arms the moment it is ready"
 
     def _pending_moment_step(self):
+        if self.player is not None:
+            return                                    # RECORD: no pending moments
         p = getattr(self, "_pending_moment", None)
         if p is None or self.rc is None:
             return
@@ -1616,7 +1799,7 @@ class Director:
         """The playing engine's bus under -48 dBFS for more than a bar (a planned hole is two beats at most)
         is a DROPOUT: logged once with the mode, the handover state, the armed moment and the last moves, and
         shown in the state line; its end is logged with the length. The next silence names itself."""
-        eng = self.rc if self.rc is not None else self.system
+        eng = self.player if self.player is not None else (self.rc if self.rc is not None else self.system)
         if eng is None or not self.running:
             self._quiet_since = None
             return
@@ -1651,7 +1834,8 @@ class Director:
             ctx = {"t": now, "mode": self.mode, "switching": (self._switch or {}).get("to") if self._switch else None,
                    "moment": (f"{mo['label']} {'running' if mo['started'] else 'armed'} ({mo['who']}), the one in {mo['in_bars']} bars" if mo else None),
                    "events": [e[1] for e in self.events[-3:]],
-                   "moves": ([m for _, m in self.rc.moves[-3:]] if self.rc is not None else [])}
+                   "moves": ([m for _, m in self.rc.moves[-3:]] if self.rc is not None else
+                             ([str(m[1] if isinstance(m, (list, tuple)) else m) for m in ((self._pstat or {}).get("moves") or [])[-3:]] if self.player is not None else []))}
             # the machine's state with it: a 14.7 s silence on 2026-09-21 with every deck at gain and no slip row left
             # nothing to read - memory, the decks, the decodes in flight and the decks' cursors are in the row now
             try:
@@ -1689,6 +1873,8 @@ class Director:
         """Bring one song's `lane` under what plays - on the next bar (or the next phrase), loud for a
         phrase. A song not yet on a deck is staged first and comes in the moment it is ready. Layered
         mode only (one song: the autoDJ owns its decks). Returns a sentence."""
+        if self.player is not None:
+            return self._phase2(f"{lane} in")
         if self.rc is None or self.rc.master is None:
             return "layer first: LAYERS two (the autoDJ owns its decks in one-song mode)"
         rc = self.rc
@@ -1715,6 +1901,12 @@ class Director:
         """Take a song off the decks (the PLAYING list, user 2026-09-17): its parts go back to the record and it
         leaves a bar later; a staged song just leaves (the seam or the event that counted on it is re-planned).
         The record itself is not ejected - that is NEXT (the seam now) or DROP. Returns a sentence."""
+        if self.player is not None:
+            tid = int(track_id)
+            self.unqueue(tid)
+            msg = str(self.player.eject(tid))
+            self._event(f"eject {self.title(tid)[:24]}: {msg}")
+            return msg
         if self.rc is None or self.rc.master is None:
             return "not layered"
         rc = self.rc
@@ -1737,6 +1929,8 @@ class Director:
         return "off the decks" if ok else "already leaving"
 
     def stem_out(self, lane):
+        if self.player is not None:
+            return self._phase2(f"{lane} out")
         if self.rc is None or self.rc.master is None:
             return "not layered"
         ok, msg = self.rc.release(lane)
@@ -1744,6 +1938,8 @@ class Director:
         return msg
 
     def _pending_stem_step(self):
+        if self.player is not None:
+            return                                    # RECORD: no pending stem moves
         p = getattr(self, "_pending_stem", None)
         if p is None or self.rc is None:
             return
@@ -1822,6 +2018,9 @@ class Director:
     def rate_target(self):
         """What GOOD / BAD would land on right now: {"text", "kind", "moment": kind or None} - the tab asks
         before a BAD, so a BAD on a moment can carry the ear's word."""
+        if self.player is not None:
+            rec = (self._pstat or {}).get("record")
+            return {"text": f"the record: {rec.get('title')}", "kind": "record", "moment": None} if rec else None
         if self.rc is not None:
             from lib.dj.remix import RATED_KINDS, MOMENTS
             m = next((x for x in reversed(self.rc.move_log) if x["kind"] in RATED_KINDS and x.get("fb") is None), None)
@@ -1846,6 +2045,33 @@ class Director:
         info = {"up": up, "t": time.time(), "what": None, "learn": None, "did": None, "style": None}
         song_id = None
         tuned = None
+        if self.player is not None:
+            # RECORD: the verdict is on the record playing; its tags lean the next pick; nothing moves now
+            rec = (self._pstat or {}).get("record")
+            song_id = rec.get("track_id") if rec else None
+            info["what"] = f"the record: {rec.get('title')}" if rec else "nothing playing"
+            tags = self._learn_song(song_id, up)
+            info["learn"] = (f"songs tagged {', '.join(tags)} are {'favoured' if up else 'held back'} for the next picks" if tags else "stored")
+            if up:
+                info["did"] = "noted (a GOOD steers the next pick)"
+            else:
+                # BAD acts at once (the user sat through 24 bars of a bad blend, 2026-10-26): a blend under way swaps
+                # on the next bar and the record is out in a beat; otherwise it is a NEXT
+                try:
+                    ok, msg = self.player.bad()
+                    info["did"] = msg if ok else f"could not move on: {msg}"
+                except Exception as e:  # noqa: BLE001
+                    info["did"] = f"could not move on: {type(e).__name__}: {e}"
+            try:
+                br = getattr(self.player, "brain", None)
+                if br is not None:
+                    br.flavor["prefer_tags"] = dict(self.taste["like"])
+                    br.flavor["avoid_tags"] = dict(self.taste["dislike"])
+            except Exception:
+                pass
+            self.last_verdict = info
+            self._event(("GOOD" if up else "BAD") + f": {info['what'][:50]}")
+            return info
         if not up and word and self.rc is not None:
             tgt = self.rate_target()
             if tgt and tgt.get("moment"):
@@ -1926,7 +2152,11 @@ class Director:
         except Exception:
             pass
         try:
-            if self.rc is not None and self.rc.master is not None:
+            if self.player is not None:
+                tel = self.player.submix.telemetry or {}
+                snap.update({"engine": "record", "clock_s": tel.get("clock_s"), "rms": tel.get("rms"), "peak": tel.get("peak"),
+                             "decks": tel.get("decks"), "player": self._pstat})
+            elif self.rc is not None and self.rc.master is not None:
                 rc = self.rc
                 tel = rc.submix.telemetry or {}
                 decks = tel.get("decks") or {}
@@ -1980,9 +2210,40 @@ class Director:
         return msg
 
     # -- the tick ---------------------------------------------------------------------------------------------
+    def _relaunch(self):
+        """A LAYERS change while running: fade the engine out, release its submix, build the engine the dial
+        now names and start it. Runs on whichever thread steps the Director (its own, normally), so start()
+        is called unthreaded and the running loop simply carries on with the new engine."""
+        self._relaunch_at = None
+        old = [s for s in (getattr(self.player, "submix", None), getattr(self.system, "submix", None), getattr(self.rc, "submix", None)) if s is not None]
+        was = self.describe_dials()
+        self.stop(fade_s=1.0)
+        time.sleep(1.1)                                   # the fade (the audio thread keeps rendering meanwhile)
+        for s in old:
+            try:
+                s.fade_out(0.2)                           # (done -> the mixer drops the old submix)
+            except Exception:
+                pass
+        self._switch = None
+        self._hold_until = None
+        self._fed = None
+        ok = self.start(threaded=False)                   # (the loop that called us keeps running; no second thread)
+        if ok:
+            self._event(f"engine switched: {was.split(':')[0]} -> {self.describe_dials().split(':')[0]}")
+        else:
+            self._event(f"engine switch failed: {self.last_error}")
+
     def step(self):
+        if self._relaunch_at is not None and time.time() >= self._relaunch_at:
+            self._relaunch()
+            return
         if not self.running:
             return
+        if self.player is not None:
+            try:
+                self._player_step()
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"record: {type(e).__name__}: {e}"
         if self.system is not None and not self.system.threaded:
             self.system.step()
         if self.rc is not None:
@@ -2044,9 +2305,247 @@ class Director:
         except Exception as e:  # noqa: BLE001
             self.last_error = f"picture: {type(e).__name__}: {e}"
 
+    def _player_step(self):
+        """RECORD mode's tick: the player steps; its status is read ONCE for this tick (self._pstat); a new
+        record is the night's memory and a song change."""
+        p = self.player
+        p.avoid_ids = self._played_ids()
+        p.step()
+        st = p.status() or {}
+        self._pstat = st
+        rec = st.get("record")
+        tid = rec.get("track_id") if rec else None
+        if tid is not None and tid != self._rec_tid:
+            first = self._rec_tid is None
+            self._rec_tid = tid
+            self._note_played(tid)
+            if not first:
+                self._song_changed()
+
+    # -- the decks drawn: what each record IS (its structure, its energy, its bands), for the web page's strips ------------
+    def _lib_by_id(self):
+        m = getattr(self, "_lib_by_id_cache", None)
+        if m is None or len(m) != len(self.library):
+            m = self._lib_by_id_cache = {t.id: t for t in self.library}
+        return m
+
+    def _engine_decks(self):
+        """{deck: (track, telemetry, extra)} for the playing engine's decks that hold a track - every engine, from
+        its submix telemetry (track ids) and its own song records (role, lanes, cue)."""
+        out = {}
+        src = self._engine_src()
+        if src is None:
+            return out
+        tel = (getattr(src, "submix", None).telemetry or {}).get("decks") or {} if getattr(src, "submix", None) is not None else {}
+        by = self._lib_by_id()
+        if self.player is not None:
+            p = self.player
+            for dk, r in list(p.songs.items()):
+                role = ("record" if dk == p.record else ("leaving" if r.state == "leaving" else ("in" if r.state == "playing" else r.state)))
+                out[dk] = (r.track, tel.get(dk) or {}, {"role": role, "cue_s": float(r.cue_t), "lanes": None})
+        elif self.rc is not None:
+            rc = self.rc
+            for dk, s in list(rc.songs.items()):
+                lanes = [ln for ln, d in rc.lanes.items() if d == dk]
+                t = tel.get(dk) or {}
+                # a STAGED song's deck runs silent (the beat lock settles before a lane enters): its fader is 0 and no lane is its
+                staged = bool(t.get("playing")) and not lanes and float(t.get("gain") or 0.0) < 0.02 and not getattr(s, "entered", False)
+                role = ("record" if dk == rc.master else ("leaving" if getattr(s, "leaving", False) else
+                        ("in" if getattr(s, "entered", False) else ("staged" if staged else "ready"))))
+                out[dk] = (s.track, t, {"role": role, "cue_s": None, "lanes": lanes})
+        elif self.system is not None:
+            sysm = self.system
+            for dk, t in tel.items():
+                tr = by.get(t.get("track_id"))
+                if tr is None:
+                    continue
+                role = "record" if dk == sysm.active_deck else ("in" if t.get("playing") and float(t.get("gain") or 0.0) > 0.02 else "ready")
+                out[dk] = (tr, t, {"role": role, "cue_s": None, "lanes": None})
+        return out
+
+    def _picture(self):
+        """What the page draws, for EVERY engine: the main deck's record (position, bar), the plan's timings in seconds
+        (the next record in, the swap, the old one out) and the decks as heard. {"record", "plan", "decks"}."""
+        decks = {}
+        eng = self._engine_decks()
+        for dk, (tr, t, ex) in eng.items():
+            eq = t.get("eq") or [1.0, 1.0, 1.0]
+            gain = float(t.get("gain") or 0.0)
+            # the LEVEL the room hears from this deck: the fader, times the loudest stem it holds a lane for (the conductor
+            # moves songs lane by lane: a deck at fader 1 with no lane is silent)
+            sg = t.get("stem_gains")
+            lanes = ex.get("lanes")
+            if isinstance(sg, dict) and lanes is not None:
+                level = gain * (max([float(sg.get(ln, 0.0) or 0.0) for ln in lanes]) if lanes else 0.0)
+            else:
+                level = gain
+            decks[dk] = {"title": tr.title, "track_id": tr.id, "role": ex["role"], "lanes": lanes, "level": round(level, 3),
+                         "playing": bool(t.get("playing")), "gain": round(gain, 3),
+                         "low": round(float(eq[0]), 3), "mid": round(float(eq[1]), 3), "high": round(float(eq[2]), 3),
+                         "rate": round(float(t.get("rate") or 1.0), 4), "time_s": float(t.get("time_s") or 0.0)}
+        record = plan = None
+        if self.player is not None:
+            st = self._pstat or {}
+            rec, cut = st.get("record"), st.get("cut")
+            if rec:
+                record = {"title": rec.get("title"), "track_id": rec.get("track_id"), "time_s": rec.get("time_s"), "duration_s": rec.get("duration_s"),
+                          "played_s": rec.get("played_s"), "min_left_s": rec.get("min_left_s"), "bar": st.get("bar"), "bar_s": st.get("bar_s"), "rate": rec.get("rate")}
+            plan = cut
+        elif self.rc is not None:
+            rc = self.rc
+            ms = rc.songs.get(rc.master) if rc.master else None
+            bar_s = rc._bar_clock() / RATE if rc.master else 2.0
+            if ms is not None:
+                dk = decks.get(rc.master) or {}
+                record = {"title": ms.track.title, "track_id": ms.track.id, "time_s": dk.get("time_s", 0.0), "duration_s": float(ms.track.duration_s),
+                          "played_s": None, "min_left_s": None, "bar": rc.bar_n, "bar_s": bar_s, "rate": dk.get("rate", 1.0)}
+            sm = None
+            try:
+                sm = rc._seam_status()
+            except Exception:
+                sm = None
+            if sm:
+                in_bars = max(0, int(sm.get("in_bars") or 0))
+                L = int(sm.get("len") or 8)
+                running = sm.get("state") == "running"
+                plan = {"state": "started" if running else "planned", "kind": "seam", "words": sm.get("words"), "why": sm.get("why"),
+                        "in_s": in_bars * bar_s, "swap_in_s": (in_bars + L / 2.0) * bar_s, "end_in_s": (in_bars + L) * bar_s,
+                        "lead_bars": L // 2, "tail_bars": L - L // 2, "size": sm.get("order"), "b_title": sm.get("b")}
+            else:
+                mo = None
+                try:
+                    mo = rc.moment_status()
+                except Exception:
+                    mo = None
+                if mo:
+                    in_bars = max(0, int(mo.get("in_bars") or 0))
+                    plan = {"state": "started" if mo.get("started") else "planned", "kind": "moment", "words": mo.get("label"),
+                            "in_s": in_bars * bar_s, "swap_in_s": in_bars * bar_s, "end_in_s": (in_bars + 2) * bar_s, "lead_bars": 0, "tail_bars": 2, "size": mo.get("kind")}
+        elif self.system is not None:
+            sysm = self.system
+            cur = sysm.current
+            tel = (sysm.submix.telemetry or {}).get("decks") or {}
+            d = tel.get(sysm.active_deck) or {}
+            if cur is not None:
+                bar_s = 4.0 * float(cur.period_s or 0.5) / max(float(d.get("rate") or 1.0), 1e-6)
+                pos = float(d.get("time_s") or 0.0)
+                fb = float((cur.grid or [{}])[0].get("first_beat_s", 0.0)) if cur.grid else 0.0
+                record = {"title": cur.title, "track_id": cur.id, "time_s": pos, "duration_s": float(cur.duration_s), "played_s": None, "min_left_s": None,
+                          "bar": int((pos - fb) / max(bar_s, 1e-6)), "bar_s": bar_s, "rate": float(d.get("rate") or 1.0)}
+                if sysm.state == "armed" and sysm.blend_at is not None and sysm.next_track is not None:
+                    clk = sysm.submix.clock
+                    beats = float((sysm.plan or {}).get("beats") or 32)
+                    beat_s = bar_s / 4.0
+                    in_s = max(0.0, (sysm.blend_at - clk) / RATE)
+                    swap_in = max(0.0, ((sysm.swap_at if sysm.swap_at is not None else sysm.blend_at) - clk) / RATE)
+                    end_in = max(swap_in, (sysm.blend_at - clk) / RATE + beats * beat_s)
+                    started = clk >= sysm.blend_at
+                    plan = {"state": ("swapped" if (sysm.swap_at is not None and clk >= sysm.swap_at) else ("started" if started else "planned")),
+                            "kind": str((sysm.plan or {}).get("style") or "blend"), "in_s": in_s, "swap_in_s": swap_in, "end_in_s": end_in,
+                            "lead_bars": int(round((swap_in - in_s) / max(bar_s, 1e-6))), "tail_bars": int(round((end_in - swap_in) / max(bar_s, 1e-6))),
+                            "size": f"{int(beats)} beats", "b_title": sysm.next_track.title}
+        return {"record": record, "plan": plan, "decks": decks}
+
+    def deck_maps(self):
+        """{deck: map} for the decks that hold a record, every engine - the track's sections, its 2 Hz energy and
+        low/mid/high curves (downsampled to at most 240 points), its first downbeat and bar, where it starts (cue,
+        the record player's), its landmark and its drops. Built once per track and cached (a heavy delta key)."""
+        eng = self._engine_decks()
+        if not eng:
+            return {}
+        p = self.player
+        cache = getattr(self, "_deck_map_cache", None)
+        if cache is None:
+            cache = self._deck_map_cache = {}
+        out = {}
+        for dk, (t, _tel, ex) in eng.items():
+            m = cache.get(t.id)
+            if m is None:
+                def down(xs, n=240):
+                    xs = list(xs or [])
+                    if len(xs) <= n:
+                        return [round(float(v), 3) for v in xs]
+                    step = len(xs) / float(n)
+                    return [round(float(max(xs[int(i * step):max(int(i * step) + 1, int((i + 1) * step))])), 3) for i in range(n)]
+                row = getattr(t, "row", {}) or {}
+                bands = row.get("band_curve") or {}
+                try:
+                    from lib.dj.features import drop_moments
+                    drops = [round(float(x), 2) for x in drop_moments(t.sections or [])]
+                except Exception:
+                    drops = []
+                g0 = (t.grid or [{}])[0] if t.grid else {}
+                per = float(g0.get("period_s") or t.period_s or 0.5)
+                first_down = float(g0.get("first_beat_s") or 0.0) + float(t.downbeat_offset or 0) * per
+                try:
+                    from lib.dj.recordplay import RecordPlayer as _RP
+                    landmark = float(p.landmark(t)) if p is not None else float(_RP.body_start(t))
+                except Exception:
+                    landmark = 0.0
+                m = {"track_id": t.id, "title": t.title, "artist": t.artist or "", "bpm": float(t.bpm or 0.0), "camelot": t.camelot or "",
+                     "duration_s": float(t.duration_s or 0.0), "first_down_s": first_down, "bar_s": 4.0 * per,
+                     "sections": [[s.get("kind"), round(float(s["start_s"]), 2), round(float(s["end_s"]), 2), round(float(s.get("energy") or 0.0), 3)]
+                                  for s in (t.sections or [])],
+                     "energy": down(row.get("energy_curve") or []),
+                     "low": down(bands.get("low") or []), "mid": down(bands.get("mid") or []), "high": down(bands.get("high") or []),
+                     "landmark_s": round(landmark, 2), "drops": drops}
+                cache[t.id] = m
+                if len(cache) > 8:
+                    for k in list(cache)[:-8]:
+                        cache.pop(k, None)
+            mm = dict(m)
+            mm["cue_s"] = round(float(ex["cue_s"]), 2) if ex.get("cue_s") is not None else None
+            mm["role"] = ex["role"]
+            out[dk] = mm
+        return out
+
+    # -- the room: the playing engine's ground truth for the lights (Stories_OGL reads these every audio tick) --------------
+    def _engine_src(self):
+        return self.player if self.player is not None else (self.rc if self.rc is not None else self.system)
+
+    def live_beat(self):
+        """The audible deck's beat as the room hears it (bpm, phase, bar/phrase phase, bass share, drive), or None."""
+        fn = getattr(self._engine_src(), "live_beat", None)
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
+    def outstate_keys(self):
+        """The playing engine's outstate (dj_energy, drop stamps and ETAs, blend/swap countdowns), {} when it has none."""
+        fn = getattr(self._engine_src(), "outstate_keys", None)
+        if fn is None:
+            return {}
+        try:
+            return dict(fn() or {})
+        except Exception:
+            return {}
+
     def _feed_up_next(self):
         """The UP NEXT list: the head goes to the autoDJ as its next track (once per song), or is staged
         for the conductor when a deck is free; popped when it plays."""
+        if self.player is not None:
+            # RECORD: the head is the player's pick (pick_hook); it leaves the list once it is on a deck
+            moves = getattr(self.player, "moves", None) or []
+            seen = getattr(self, "_pmoves_seen", 0)
+            if seen > len(moves):
+                seen = 0                              # (the player trims its list)
+            refused = {m.get("to_id") for m in moves[seen:] if isinstance(m, dict) and m.get("kind") == "pick" and "cannot be the record" in str(m.get("text"))}
+            self._pmoves_seen = len(moves)
+            if self.up_next:
+                head = self.up_next[0]
+                if self.player.deck_of(head) is not None:
+                    self.up_next.pop(0)
+                    self.via_ids.discard(head)
+                    self._event(f"up next {self.title(head)[:30]} is on a deck: the next record")
+                elif head in refused:
+                    # the player would not take it as a record (it said why): it leaves the list rather than block it
+                    self.up_next.pop(0)
+                    self.via_ids.discard(head)
+                    self._event(f"up next {self.title(head)[:30]} leaves the list: the player refused it as a record")
+            return
         if not self.up_next:
             if self.rc is not None:
                 self.rc.reserve_pick = False
@@ -2116,6 +2615,8 @@ class Director:
         rides under the playing one for a stretch (deck C, never over an armed seam, never from the song it
         plays under). Once per record at most, on a groove, with the record's payoff behind it (its first
         drop or hook heard) and enough runway ahead; some = a third of records, lots = most."""
+        if self.player is not None:
+            return                                    # RECORD: no loops
         level = LOOP_LEVEL[self.dials["loops"]]
         sysm = self.system
         if level <= 0 or sysm is None or sysm.current is None:
@@ -2218,6 +2719,9 @@ class Director:
         return now + int((t_next - time_s) / rate * RATE), t_next
 
     def _handover(self):
+        # RECORD is its own engine: switching to or from it takes effect at the next START, never a handover
+        if self.mode == "record" or self.player is not None or (self._switch is None and self.dials["layers"] == "record"):
+            return
         want = "one" if self.dials["layers"] == "one" else "layered"
         if self._switch is None:
             if want == self.mode:
@@ -2336,6 +2840,8 @@ class Director:
         even with every deck loudness-compensated (user: "things seem a lot less loud when multiple songs
         are playing"). The autoDJ's output RMS is the night's reference (a slow average while it plays);
         layered, the conductor's bus gain is trimmed UP toward it - never down, at most +6 dB, a slow ramp."""
+        if self.player is not None:
+            return                                    # RECORD: no loudness match (the record is the record)
         now = time.time()
         if now - getattr(self, "_loud_t", 0.0) < 0.5:
             return
@@ -2378,6 +2884,8 @@ class Director:
         (the nextdrop moment) once per record, when the record has played 60 % and the next has a drop.
         Layered: a BREAK at a breakdown of the bed song (the conductor's auto break, scaled) and now and
         then a DROP onto a voice that has been heard two phrases - the bed and voice become one song."""
+        if self.player is not None:
+            return                                    # RECORD: no auto moments
         rate = MOMENT_RATE[self.dials["moments"]]
         if rate <= 0.0:
             return
@@ -2503,6 +3011,12 @@ class Director:
 
     # -- the picture: the run as a timeline ----------------------------------------------------------------------------
     def _bpm(self):
+        if self.player is not None:
+            rec = (self._pstat or {}).get("record") or {}
+            try:
+                return float(rec.get("bpm") or 120.0)
+            except (TypeError, ValueError):
+                return 120.0
         if self.system is not None and self.system.current is not None:
             return float(self.system.current.bpm or 120.0)
         if self.rc is not None and self.rc.master_bpm:
@@ -2580,6 +3094,46 @@ class Director:
                 del self.marks[:-400]
         self._record_gains(b)
         self.plan_marks = []
+        if self.player is not None:
+            # RECORD: the record on all four lanes from its opening; the planned cut is the ghost
+            st = self._pstat or {}
+            rec = st.get("record")
+            if not rec or rec.get("track_id") is None:
+                no_ghost()
+                return
+            tid = int(rec["track_id"])
+            pos = float(rec.get("time_s") or 0.0)
+            if self._cur_song != tid:
+                first = self._cur_song is None
+                self._cur_song = tid
+                self.tl.add(tid, list(LANES), b, max(0.0, pos - (self.bar() - b) * self._bar_len(tid)))
+                self._lane_snap = {ln: tid for ln in LANES}
+                title = str(rec.get("title") or self.title(tid))
+                if first:
+                    mark(f"{title[:28]} opens", "open")
+                else:
+                    mark(f"→ {title[:28]} is the record", "seam", lanes=list(LANES))
+            cut, nxt = st.get("cut"), st.get("next")
+            if cut and nxt and nxt.get("track_id") is not None and cut.get("in_bars") is not None:
+                ntid = int(nxt["track_id"])
+                at = self._anchor(("rcut", ntid, cut.get("bar")), b + int(cut["in_bars"]))   # (the projected and the decided cut at the same bar share one anchor: the ghost does not hop when the plan is decided)
+                cue = nxt.get("landmark_s")
+                try:
+                    if cue is None and nxt.get("deck") is not None:
+                        cue = getattr(self.player.songs.get(nxt["deck"]), "cue_t", None)
+                    cue = float(cue or 0.0)
+                except Exception:
+                    cue = 0.0
+                ghost(("record", ntid, at), ntid, list(LANES), at, cue)
+                kind = str(cut.get("kind") or "cut")
+                end_bar = cut.get("end_bar")
+                self.plan_marks.append({"bar": int(at), "end_bar": (b + int(end_bar) - int(cut.get("bar") or 0)) if (end_bar is not None and kind != "cut") else None,
+                                        "lanes": list(LANES), "ghost": True, "kind": "seam",
+                                        "text": ({"blend": "the blend → ", "breakdown": "the breakdown swap → ", "cut": "the cut on the one → "}.get(kind, "→ ")
+                                                 + str(nxt.get("title") or self.title(ntid))[:24])})
+            else:
+                no_ghost()
+            return
         if self.system is not None:
             sysm = self.system
             cur = sysm.current
@@ -2843,12 +3397,19 @@ class Director:
                     g = min(1.0, float(sg.get(ln, 0.0)) * dg)
                     if g > 0.02:
                         out[ln][tid] = max(out[ln].get(tid, 0.0), g)
-        elif self.system is not None:
-            decks = (self.system.submix.telemetry or {}).get("decks") or {}
+        elif self.system is not None or self.player is not None:
+            sub = (self.system if self.system is not None else self.player).submix
+            decks = (sub.telemetry or {}).get("decks") or {}
+            by_deck = {}
+            if self.player is not None:
+                try:
+                    by_deck = {d: s.track.id for d, s in self.player.songs.items()}
+                except Exception:
+                    by_deck = {}
             for d, t in decks.items():
                 if not t.get("playing"):
                     continue
-                tid = t.get("track_id")
+                tid = t.get("track_id") or by_deck.get(d)
                 if tid is None:
                     continue
                 sg = t.get("stem_gains") or {}
@@ -2923,7 +3484,21 @@ class Director:
             via_map = self.via_by_tempo() if layered else {}
         except Exception:
             via_map = {}
-        if self.system is not None and self.system.current is not None:
+        if self.player is not None:
+            # RECORD: the reference is the record playing at its own tempo; reach is the brain's stretch window,
+            # as one song at a time (no stems needed: the record plays whole)
+            st = self._pstat
+            if st is None:
+                try:
+                    st = self.player.status()
+                except Exception:
+                    st = {}
+            rec = (st or {}).get("record") or {}
+            cur = self.track(rec["track_id"]) if rec.get("track_id") is not None else None
+            if cur is not None:
+                bpm, cam = float(rec.get("bpm") or cur.bpm or 0), rec.get("camelot") or cur.camelot
+            arc = 0.6
+        elif self.system is not None and self.system.current is not None:
             cur = self.system.current
             bpm, cam = float(cur.bpm or 0), cur.camelot
             try:
@@ -2943,8 +3518,8 @@ class Director:
             if ref is not None:
                 cur, bpm, cam = ref, float(ref.bpm or bpm or 0), ref.camelot or cam
                 self.rank_ref = ref.title
-        brain = self.system.brain if self.system is not None else (self.rc.brain if self.rc is not None else None)
-        smin = getattr(brain, "stretch_min", 0.92) if brain else 0.92
+        brain = self.system.brain if self.system is not None else (self.rc.brain if self.rc is not None else getattr(self.player, "brain", None))
+        smin =getattr(brain, "stretch_min", 0.92) if brain else 0.92
         smax = getattr(brain, "stretch_max", 1.08) if brain else 1.08
         rows = []
         for t in self.library:
@@ -3110,6 +3685,46 @@ class Director:
             else:
                 row(None, "REQUEST", f"{r['title'][:30]}: {r.get('stage', '')}" + (f" ({float(r['pct']):.0f} %)" if r.get("pct") is not None else ""),
                     "one job at a time: analysis, stems, pairings", key=("req", k, r.get("stage")), tid=r.get("id"))
+        if self.player is not None:
+            # RECORD (docs/DJ_RESCOPE.md 4a): the record, its one cut, the next record, UP NEXT
+            st = self._pstat or {}
+            rec, nxt, cut = st.get("record"), st.get("next"), st.get("cut")
+            wait = str(st.get("wait_why") or "")
+            if rec:
+                min_left = float(rec.get("min_left_s") or 0.0)
+                bits = [f"{_mmss(rec.get('played_s') or 0.0)} played",
+                        (f"min play in {_mmss(min_left)}" if min_left > 0 else "past its minimum play")]
+                try:
+                    bits.append(f"ends in {_mmss(float(rec.get('duration_s') or 0.0) - float(rec.get('time_s') or 0.0))}")
+                except (TypeError, ValueError):
+                    pass
+                row(0.0, "NOW", str(rec.get("title") or "")[:34], " · ".join(bits), key=("rnow", rec.get("track_id")), tid=rec.get("track_id"))
+            if cut and nxt:
+                # decided: its bar is fixed (NEXT / STAY move it); projected: where it WILL fall if nothing is pressed
+                projected = cut.get("state") == "projected"
+                kind = str(cut.get("kind") or "cut")
+                label = {"blend": "BLEND", "breakdown": "BREAKDOWN SWAP", "cut": "CUT"}.get(kind, "BLEND")
+                sub = " · ".join(x for x in (str(cut.get("why") or ""),
+                                             "projected - decided when the next record is ready; NEXT brings it, STAY delays it" if projected else str(cut.get("state") or ""),
+                                             (f"beat-matched {(float(cut.get('ratio') or 1.0) - 1.0) * 100:+.1f}%" if kind != "cut" and not projected else "")) if x)
+                row(cut.get("in_s"), label if not projected else f"{label} (plan)",
+                    f"{str(nxt.get('title') or '')[:30]} {str(cut.get('words') or 'comes in whole at its landmark · the cut on the one')}", sub,
+                    key=("rcut", cut.get("seq"), cut.get("bar"), projected), bar=cut.get("bar"), tid=nxt.get("track_id"))
+            elif nxt:
+                title_n = str(nxt.get("title") or "")[:30]
+                if nxt.get("state") == "decoding":
+                    row(None, "NEXT", f"{title_n} is decoding", wait, key=("rnext", nxt.get("track_id"), "decoding"), tid=nxt.get("track_id"))
+                else:
+                    row(None, "NEXT", f"{title_n} is ready · the blend is planned from the record's minimum play", wait,
+                        key=("rnext", nxt.get("track_id"), nxt.get("state")), tid=nxt.get("track_id"))
+            if self.up_next:
+                row(None, "UP NEXT", ", ".join(self.title(t)[:24] for t in self.up_next[:4]) + (" …" if len(self.up_next) > 4 else ""),
+                    "your queue, in order", key=("upnext-r", tuple(self.up_next[:4])))
+            if not rec and not nxt:
+                row(None, "PLAN", wait or "nothing playing yet", "" if self.running else "press START", key=("rwait", wait[:40]))
+            elif rec and not nxt and wait:
+                row(None, "NEXT", wait[:90], "put a song UP NEXT to decide it", key=("rwait", wait[:40]))
+            return rows
         if rc is not None and rc.master is not None and getattr(rc, "policy", "record") == "mashup":
             # MASHUP (docs/DJ_MASHUP.md): the three songs, the scene now, the next scene with its bar, the rotation
             bar_s = rc._bar_clock() / RATE
@@ -3327,7 +3942,39 @@ class Director:
                "events": list(self.events[-12:]), "error": self.last_error, "now": None, "next": None,
                "intent": "", "songs": [], "recent": []}
         try:
-            if self.system is not None:
+            if self.player is not None:
+                st = self._pstat if self._pstat is not None else (self.player.status() or {})
+                rec, nxt, cut = st.get("record"), st.get("next"), st.get("cut")
+                wait = str(st.get("wait_why") or "")
+                if rec:
+                    out["now"] = {"title": rec.get("title"), "artist": rec.get("artist"), "pos_s": rec.get("time_s"),
+                                  "duration_s": rec.get("duration_s"), "bpm": rec.get("bpm"), "camelot": rec.get("camelot")}
+                if nxt:
+                    out["next"] = {"title": nxt.get("title"), "artist": nxt.get("artist"), "eta_s": (cut or {}).get("in_s"),
+                                   "how": ({"blend": "the blend", "breakdown": "the breakdown swap", "cut": "the cut on the one"}.get(str((cut or {}).get("kind") or "cut"), "the blend")
+                                           + (f" - {cut['why']}" if cut and cut.get("why") else ""))}
+                if rec:
+                    min_left = float(rec.get("min_left_s") or 0.0)
+                    s = (f"the record: {str(rec.get('title') or '')[:30]} ({_mmss(rec.get('played_s') or 0.0)} played, "
+                         + (f"min play in {_mmss(min_left)}" if min_left > 0 else "past its minimum play") + ")")
+                    if nxt and cut:
+                        s += (f" · next: {str(nxt.get('title') or '')[:28]}, "
+                              + {"blend": "the blend starts in ", "breakdown": "the breakdown swap starts in ", "cut": "the cut in "}.get(str(cut.get("kind") or "cut"), "in ")
+                              + _mmss(cut.get("in_s") or 0.0)) + (f" · {cut['why']}" if cut.get("why") else "")
+                    elif nxt:
+                        s += f" · next: {str(nxt.get('title') or '')[:28]} ({nxt.get('state')})" + (f" · {wait}" if wait else "")
+                    elif wait:
+                        s += f" · {wait}"
+                    out["intent"] = s
+                else:
+                    out["intent"] = wait or "no record playing"
+                out["wait_why"] = wait
+                moves = st.get("moves") or []
+                out["recent"] = [(f"{m[0]}  {m[1]}" if isinstance(m, (list, tuple)) and len(m) >= 2 else str(m)) for m in moves[-8:]]
+                out["error"] = out["error"] or st.get("error")
+                t_rec = rec.get("title") if rec else None
+                out["lanes"] = {ln: t_rec for ln in ("drums", "bass", "other", "vocals")}
+            elif self.system is not None:
                 st = self.system.status()
                 cur, nxt, plan = st.get("current") or {}, st.get("next") or {}, st.get("plan") or {}
                 if cur:
@@ -3454,6 +4101,13 @@ class Director:
             out["why"], out["in_effect"] = self._explain()
         except Exception as e:  # noqa: BLE001
             out["why"], out["in_effect"] = [f"(explain: {type(e).__name__}: {e})"], []
+        # THE PICTURE for the web page, every engine (2026-10-24 "we need more visual indicators" / "the other systems
+        # are back to the text heavy no visual interface"): the main deck's record, the plan's timings, the decks as heard
+        try:
+            out.update(self._picture())
+        except Exception as e:  # noqa: BLE001
+            out["record"], out["plan"], out["decks"] = None, None, {}
+            out["error"] = out["error"] or f"picture: {type(e).__name__}: {e}"
         try:
             out["mash"] = self.rc.mash_status() if (self.rc is not None and getattr(self.rc, "policy", "record") == "mashup") else None
         except Exception:
@@ -3527,6 +4181,9 @@ class Director:
         """WHY the DJ is doing what it does, and what each dial is doing right now - in words."""
         d = self.dials
         why, eff = [], []
+        if self.player is not None:
+            return (["the record plays whole; from its minimum play (or your NEXT) the next record is mixed in - a beat-matched blend, bass out, the bass swap on the phrase, or the breakdown swap when the record offers one"],
+                    ["layers record", f"pace {d['pace']} (min play {_mmss(PLAY_MIN_S[d['pace']])})"])
         if self.system is not None:
             sysm = self.system
             st = sysm.status()

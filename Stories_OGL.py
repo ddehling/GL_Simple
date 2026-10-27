@@ -1,6 +1,20 @@
+import time as _boot_clock
+_BOOT_T0 = _boot_clock.perf_counter()     # the first thing the script does: every [boot] mark counts from here
 import argparse
 import os
 import sys
+
+
+BOOT_WINDOW_S = 30.0          # how long after the script's first line "boot" rules apply (the short fade-in)
+BOOT_FADE_SKIP_S = 2.0        # the background effects' fade-ins start this far in at boot
+
+
+def _boot_mark(label):
+    """One line per boot phase, elapsed since the script's first line (the interpreter's own start-up, ~0.1 s,
+    and a launcher's git pulls come before it). The user, 2026-10-26: "it takes much longer than 6 seconds to
+    go from start to showing patterns" - these say where."""
+    print(f"[boot] +{_boot_clock.perf_counter() - _BOOT_T0:6.2f}s  {label}", flush=True)
+
 
 # Force stdout/stderr to UTF-8 so the many print statements scattered
 # through the engine + project shaders that use unicode glyphs (check
@@ -37,11 +51,28 @@ import threading
 from pathlib import Path
 import yaml
 from engine.render_pipeline import RenderPipeline
-import lib.dmx_sender as imdmx
 from lib.osc_listener import OscListener
+
+
+class _LazyModule:
+    """`imdmx.X` imports lib.dmx_sender on first use. At module level it pulled lib.pixel_extract (numba, 0.7 s)
+    and core.correction (0.45 s of kernel warm-up) in before any GL work; the render pipeline now loads them
+    after its context (its _load_output_modules), and the warm-up thread has them in sys.modules by then."""
+    def __init__(self, name):
+        self._name = name
+
+    def __getattr__(self, attr):
+        import importlib
+        return getattr(importlib.import_module(self._name), attr)
+
+
+imdmx = _LazyModule("lib.dmx_sender")
 from lib.mdns_resolve import resolve as mdns_resolve
 
-from lib.audio_analyzer import MicrophoneAnalyzer
+# lib.audio_analyzer (scipy.signal + sounddevice, 1.65 s) and web.web_controller (the flask-socketio stack,
+# 0.9 s) are imported where they are first used, after the render pipeline has built the GL context; a
+# warm-up thread started at the top of __init__ loads them MEANWHILE (the context creation sits in driver
+# code with the GIL released: measured, the heavy imports overlap it almost fully). See _warm_imports.
 from lib.beat_detector import BeatDetector
 from lib.audio_signals import AudioStructure, HarmonicTracker
 from lib.bluetooth_audio import create_bluetooth_receiver
@@ -57,11 +88,28 @@ from lib.weather_state import WeatherStateController
 from lib.weather_set import WeatherSetManager
 from renderer.effects.celestial_bodies import CELESTIAL_BODIES
 from renderer import effects as fx
-from web.web_controller import WebController
+
+
+def _warm_imports():
+    """Load the heavy modules the constructor needs AFTER the GL context, on a thread, so they come in while
+    glfw and the driver build the context (0.85 s of C with the GIL released). The constructor's own local
+    imports then find them in sys.modules, or wait on the import lock for the few ms left.
+    In the order the constructor needs them: the pipeline's output modules right after the context, the
+    analyzer next, the web stack last - a module the main thread reaches first it imports itself, and the
+    two threads then serialize on the import lock, so the order IS the overlap."""
+    def work():
+        try:
+            import core.correction     # noqa: F401  (the Numba output kernels warm at import, ~0.45 s)
+            import lib.dmx_sender      # noqa: F401  (-> lib.pixel_extract / numba, ~0.7 s)
+            import lib.audio_analyzer  # noqa: F401
+            import web.web_controller  # noqa: F401
+            _boot_mark("import warm-up done (correction, DMX, audio analyzer, web stack loaded on the side)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[boot] import warm-up failed (the constructor imports them itself): {e}")
+    threading.Thread(target=work, daemon=True, name="import-warmup").start()
 from core.project import load_project, list_projects
-from core.correction import (
-    NEUTRAL_GAIN, SYSTEM as CORRECTION_SYSTEM, build_correction_plans,
-)
+# core.correction is imported where the plans are built (_publish_strip_metadata): at module level it
+# warmed its Numba kernels (~0.45 s) before any GL work. The warm-up thread has it loaded by then.
 from core.shader_loader import load_project_shaders
 
 def load_config(project_override: str | None = None):
@@ -90,6 +138,13 @@ def load_config(project_override: str | None = None):
         # 1-Wire temps) and prints them. Mapping into actual events is a
         # later step.
         "osc": {"enabled": True, "port": 9001, "bind_ip": "0.0.0.0"},
+        # Pixelblaze mirror (lib/pixelblaze_mirror.py): stream the show
+        # output to every Pixelblaze that beacons on the LAN.
+        "pixelblaze": {"enabled": False, "discover": True, "hosts": [],
+                       "pattern": "GL_Simple Mirror", "fps": 30,
+                       "max_samples": 600, "interpolate": False, "segment": 0,
+                       "group": "", "gain": 1.0, "strip_axis": "columns",
+                       "strip_reduce": "max", "flip_y": False},
         # Autonomous DJ. enabled=True makes the DJ AVAILABLE (web tab +
         # start button); it never auto-plays on boot. music_dir empty =
         # <repo_parent>/music (the library travels parallel to the repo).
@@ -237,10 +292,15 @@ def _start_parent_watcher(parent_pid: int) -> None:
     threading.Thread(target=_watch, name="ParentWatcher", daemon=True).start()
 
 
+_boot_mark("imports done (python modules, the DJ's included; analyzer, DMX, correction and the web stack warm on a thread)")
+
+
 class EnvironmentalSystem:
     def __init__(self, project_override: str | None = None,
                  emulator_port: int | None = None):
+        _warm_imports()
         cfg, self.project = load_config(project_override=project_override)
+        _boot_mark(f"config + project '{self.project.id}' loaded")
         # Hold onto cfg so swap_project can rebuild from machine-local
         # settings (DMX bind IP, legacy receiver fallback) without
         # re-reading from disk.
@@ -285,6 +345,7 @@ class EnvironmentalSystem:
         # Desert/Spooky/Beloved) into projects/fan/shaders/ and this call
         # auto-loads them; WoL has none today so this is a no-op.
         load_project_shaders(self.project)
+        _boot_mark("project shader modules imported")
 
         # Geometry provider — drives the web preview's geometry JSON and the
         # PNG-encode composite path. Built once from the active project's
@@ -310,6 +371,7 @@ class EnvironmentalSystem:
             emu = EmulatorBroadcaster(emulator_port)
             if not emu.start():
                 emu = None
+            _boot_mark(f"emulator broadcaster {'listening' if emu else 'FAILED to bind'} on port {emulator_port}")
 
         self.scheduler = RenderPipeline(
             frame_dimensions=frame_dimensions,
@@ -323,6 +385,15 @@ class EnvironmentalSystem:
             audio_sample_rate=self.project.audio_sample_rate,
         )
         self._emulator = emu
+        _boot_mark("render pipeline up (GL context, audio engine, DMX senders)")
+
+        # Mirror the show output onto any Pixelblaze seen on the LAN.
+        pb_cfg = cfg.get("pixelblaze", {})
+        if pb_cfg.get("enabled"):
+            from lib.pixelblaze_mirror import PixelblazeMirror
+            mirror = PixelblazeMirror(pb_cfg, bind_ip=dmx_cfg.get("bind_ip", ""))
+            mirror.start()
+            self.scheduler.mirrors.append(mirror)
 
         # Per-project brightness ceiling. Each piece has its own PSU
         # budget; the project.yaml ``brightness_limit:`` key seeds
@@ -375,6 +446,7 @@ class EnvironmentalSystem:
         self._audio_tap_wired = False
         if audio_cfg.get("enabled", True):
             try:
+                from lib.audio_analyzer import MicrophoneAnalyzer   # (warmed on a thread during the GL context)
                 self.analyzer = MicrophoneAnalyzer(
                     source=audio_cfg.get("source", "linein"),
                     device_name=audio_cfg.get("device_name"),
@@ -386,6 +458,8 @@ class EnvironmentalSystem:
                 print(f"[Audio] Failed to initialize audio analyzer: {e}")
                 print("[Audio] Continuing without audio input")
                 self.analyzer = None
+
+        _boot_mark("audio analyzer started (device opened)")
 
         # Bluetooth audio sink (advertised as "lucifera"). Linux + BlueZ only;
         # an inert stub elsewhere (e.g. Windows), so this never fails. Defaults
@@ -463,6 +537,7 @@ class EnvironmentalSystem:
                 # project's folder rather than a hardcoded ``media/``.
                 "media_root": str(self.project.media_root),
             }
+            from web.web_controller import WebController       # (warmed on a thread during the GL context)
             self.web_controller = WebController(
                 self.web_controls,
                 port=web_cfg["port"],
@@ -473,6 +548,7 @@ class EnvironmentalSystem:
             self.web_controller.start(threaded=True)
             # Register viewports so socket handlers can mutate them directly
             self.web_controller.control_dict['_viewports'] = self.scheduler._shader_renderer.viewports
+            _boot_mark("web controller started")
 
         # OSC listener — observability + project-side routing. The
         # listener stays a print-only catch-all by default; the active
@@ -586,6 +662,7 @@ class EnvironmentalSystem:
         
         # Initialize background events for the starting weather set
         self._initialize_weather_set_events()
+        _boot_mark("ready: weather set events scheduled (end of __init__)")
 
         self.whompcount = 0
 
@@ -1334,6 +1411,9 @@ class EnvironmentalSystem:
         # than on top of it. Built from ``project_receivers`` rather than
         # the network-filtered ``receivers_list`` so a box's correction is
         # a property of the box, not of whether mDNS resolved it at boot.
+        from core.correction import (
+            NEUTRAL_GAIN, SYSTEM as CORRECTION_SYSTEM, build_correction_plans,
+        )
         correction_plans = build_correction_plans(project_receivers,
                                                   group_metadata)
         for gid, plan in correction_plans.items():
@@ -1838,6 +1918,21 @@ class EnvironmentalSystem:
             print(f"[WEATHER]   Background event: {event_name}")
             self._schedule_event_from_map(event_name, 0, sim_forever, frame_id=0)
 
+        # AT BOOT the strips are dark anyway: the background effects fade themselves in over 2-3 s of
+        # state['elapsed_time'], so a 6.5 s boot read as ten seconds to a full picture (the boot marks,
+        # 2026-10-26). Within the boot window their clocks start BOOT_FADE_SKIP_S in: a 3 s fade shows its last
+        # second, a 2 s fade is up at once. A set change later in the night keeps the full fades (a uniform
+        # shift keeps the queue's heap order; these events last for ever, the lost 2 s is nothing).
+        if _boot_clock.perf_counter() - _BOOT_T0 < BOOT_WINDOW_S:
+            shifted = 0
+            sched = getattr(self.scheduler, "_scheduler", self.scheduler)     # the EventScheduler inside the pipeline
+            for ev in list(getattr(sched, "event_queue", [])) + list(getattr(sched, "active_events", [])):
+                ev.start_time -= BOOT_FADE_SKIP_S
+                ev.state['start_time'] = ev.start_time
+                shifted += 1
+            if shifted:
+                print(f"[boot] {shifted} background effects start {BOOT_FADE_SKIP_S:.0f} s into their fade-in (boot only)")
+
         # Per-set audio source. A set that declares ``audio_source`` (e.g.
         # WoL's "Elements" set uses "internal" so its own music drives the
         # audio-reactive visuals) switches the analyzer when activated. Sets
@@ -2059,8 +2154,10 @@ class EnvironmentalSystem:
         _pw_mark('bt')
 
         # Autonomous DJ: drain queued web actions + mirror status.
+        self._perf_dj_detail = {}
         self._apply_dj_controls()
         _pw_mark('dj')
+        _pw.update(self._perf_dj_detail or {})   # per-action + mirror split of 'dj'
 
         # Interaction panel: drain queued button/slider presses.
         self._apply_interaction_controls()
@@ -2460,6 +2557,13 @@ class EnvironmentalSystem:
                 lb = self._dj.live_beat()
             except Exception:
                 lb = None
+        elif getattr(self, "_director", None) is not None:
+            # THE DIRECTOR: the playing engine's beat (the record player's in RECORD mode) - the lights were
+            # blind to the Director's decks before this (2026-10-24: "something that works in the LED system")
+            try:
+                lb = self._director.live_beat()
+            except Exception:
+                lb = None
         self._dj_vis.apply(state, audio_dt, lb)
         state["music_mood"] = sig["mood"]
         state["music_perc"] = sig["perc"]
@@ -2707,10 +2811,18 @@ class EnvironmentalSystem:
         """
         if self.web_controller is None or not self.dj_cfg.get("enabled", False):
             return
+        self._director_adopt()          # a Director built off-thread is taken over here, on the render thread
+        self._dj_adopt()                # ...and an autoDJ built off-thread
         with self.web_controller._dict_lock:
             actions = self.web_controller.control_dict.pop(
                 'request_dj_actions', [])
+        # Hitch attribution: these actions run ON THE RENDER THREAD, so a
+        # slow one is a frame hitch. Name each one's cost in the web
+        # sub-phases (/api/perf web_detail) instead of one 'dj' lump.
+        _dj_detail = {}
+        self._perf_dj_detail = _dj_detail
         for action, arg in actions:
+            _act_t0 = time.perf_counter()
             try:
                 if action == 'start':
                     self._dj_start()
@@ -2725,6 +2837,9 @@ class EnvironmentalSystem:
                 elif action.startswith('director_'):
                     d = getattr(self, '_director', None)
                     if d is None:
+                        if getattr(self, '_director_starting', False):
+                            # pressed while the Director is still being built off-thread: replayed on adopt
+                            self._director_queued = (getattr(self, '_director_queued', None) or []) + [(action, arg)]
                         continue
                     if action == 'director_dial':
                         d.set_dial(arg['name'], arg['value'])
@@ -2772,6 +2887,8 @@ class EnvironmentalSystem:
                         self._dj.set_theme(str(arg))
                     if getattr(self, '_remix', None) is not None:
                         self._remix.set_theme(str(arg))
+                    if getattr(self, '_director', None) is not None:
+                        self._director.set_theme(str(arg))      # (RECORD mode: its brain reads it at the next START)
                 elif action == 'set_length':
                     # Works idle (arms the next start) or live. dj_cfg-
                     # backed like theme/persona, so DJ stop/start within
@@ -2798,6 +2915,12 @@ class EnvironmentalSystem:
                     self._dj_idle_vocab = (0.0, [], [])  # re-scope the chips
                     if self._dj is not None and self._dj.active:
                         self._dj.load_setlist(str(arg or ''), mode=mode)
+                    if getattr(self, '_director', None) is not None:
+                        # THE DIRECTOR knows one way to use a list: as the SONGS pool its records are picked from
+                        self._director.set_pool(name)
+                elif action == 'next_id' and getattr(self, '_director', None) is not None:
+                    ok, words = self._director.queue(int(arg))
+                    print(f"[DJ] up next: {words}")
                 elif action in ('nudge', 'arc') and (
                         self._dj is None or not self._dj.active):
                     # IDLE STEERING: arm now, applied the moment START hits.
@@ -2810,6 +2933,9 @@ class EnvironmentalSystem:
                     self._dj_pending_flavor = dict(arg or {})
                     if self._dj is not None and self._dj.active:
                         self._dj.set_flavor(self._dj_pending_flavor)
+                elif self._dj is None and getattr(self, '_dj_starting', False):
+                    # pressed while the autoDJ is still being built off-thread: replayed on adopt
+                    self._dj_queued = (getattr(self, '_dj_queued', None) or []) + [(action, arg)]
                 elif self._dj is not None and self._dj.active:
                     if action == 'skip':
                         self._dj.request_skip()
@@ -2852,7 +2978,22 @@ class EnvironmentalSystem:
                         self._dj.abort_transition()
             except Exception as e:
                 print(f"[DJ] action '{action}' failed: {e}")
+            _act_ms = round((time.perf_counter() - _act_t0) * 1000.0, 1)
+            _key = f"dj_act:{action}"
+            _dj_detail[_key] = round(_dj_detail.get(_key, 0.0) + _act_ms, 1)
+            if _act_ms > 50.0:
+                print(f"[Perf] DJ action '{action}' held the render thread "
+                      f"{_act_ms:.0f} ms")
+        _mirror_t0 = time.perf_counter()
+        try:
+            self._dj_mirror_status()
+        finally:
+            _dj_detail["dj_mirror"] = round(
+                (time.perf_counter() - _mirror_t0) * 1000.0, 1)
 
+    def _dj_mirror_status(self):
+        """The 5 Hz DJ status mirror (split out of _apply_dj_controls so its
+        cost is timed apart from the actions')."""
         # Mirror into the web snapshot + scheduler outstate.
         if getattr(self, '_director', None) is not None:
             # THE DIRECTOR: the page's Director panel renders from `director`
@@ -2863,20 +3004,30 @@ class EnvironmentalSystem:
                 dst = d.status()
             except Exception as e:
                 dst = {"error": f"status: {e}"}
+            pool = getattr(d, "pool_name", None)
             info = {"available": True, "active": False, "state": "idle",
                     "director_active": True, "director": dst,
-                    "theme": self.dj_cfg.get("theme", "groove"),
+                    "theme": getattr(d, "theme", None) or self.dj_cfg.get("theme", "groove"),
+                    # the SONGS pool and the setlist names: the page's record-mode panel offers them
+                    "setlists": self._dj_list_setlists(), "setlist": pool, "setlist_mode": "pool" if pool else "",
                     "music_dir": self._dj_music_dir_display(),
                     "error": dst.get("error") or self._dj_last_error}
+            try:
+                info["deck_maps"] = d.deck_maps()        # the records drawn (a heavy key: sent only when it changes)
+            except Exception as e:
+                info["deck_maps"] = {}
+                info["error"] = info["error"] or f"deck maps: {e}"
             info.update(self._dj_idle_steer_info())
             try:
                 arc = dst.get("arc") or {}
-                self.scheduler.state["dj_arc_phase"] = arc.get("progress")
-                self.scheduler.state["dj_arc_heat"] = arc.get("target")
-                src = d.rc if d.rc is not None else d.system
-                if src is not None and hasattr(src, "outstate_keys"):
-                    for k, v in src.outstate_keys().items():
-                        self.scheduler.state[k] = v
+                # RECORD mode has no arc target: publish numbers, never None (the club director does
+                # float(outstate.get('dj_arc_heat', 0.5)) - a None here killed the render loop, 2026-10-24)
+                prog, heat = arc.get("progress"), arc.get("target")
+                self.scheduler.state["dj_arc_phase"] = float(prog) if prog is not None else 0.0
+                self.scheduler.state["dj_arc_heat"] = float(heat) if heat is not None else 0.5
+                # the playing engine's outstate (the record player's, the conductor's or the autoDJ's)
+                for k, v in d.outstate_keys().items():
+                    self.scheduler.state[k] = v
             except Exception:
                 pass
         elif getattr(self, '_remix', None) is not None:
@@ -2942,8 +3093,14 @@ class EnvironmentalSystem:
         self._dj_sent_n += 1
         if self._dj_sent_n % 15 == 0:
             self._dj_sent = {}
+        if getattr(self, '_director_starting', False):
+            info["director_starting"] = True      # the page says "starting…" instead of idle while the worker builds it
+            info["state"] = "starting"
+        if getattr(self, '_dj_starting', False):
+            info["dj_starting"] = True
+            info["state"] = "starting"
         for k in ('arc_curve', 'track_map', 'next_map', 'horizon',
-                  'history', 'tags', 'themes', 'setlists'):
+                  'history', 'tags', 'themes', 'setlists', 'deck_maps'):
             if k in info:
                 h = hash(_json.dumps(info[k], sort_keys=True, default=str))
                 if self._dj_sent.get(k) == h:
@@ -3142,11 +3299,10 @@ class EnvironmentalSystem:
         return self._dj_disk_info()[1]
 
     def _dj_start(self):
-        if self._dj is not None and self._dj.active:
+        if (self._dj is not None and self._dj.active) or getattr(self, '_dj_starting', False):
             return
         self._remix_stop()                    # one of the two owns the soundtrack
         from lib.dj import resolve_music_dir
-        from lib.dj.system import DJSystem
         engine = self.scheduler.state.get("soundengine")
         # Every module in lib/dj hardcodes RATE = 44100, and the submix is
         # mounted as one track, so at any other device rate the whole mix
@@ -3170,57 +3326,110 @@ class EnvironmentalSystem:
                 engine.oneshots_muted = True
             except Exception:
                 pass
-        self._dj = DJSystem(
-            resolve_music_dir(self.dj_cfg.get("music_dir", "")),
-            engine=engine,
-            theme=self.dj_cfg.get("theme", "groove"),
-            night_hours=float(self.dj_cfg.get("night_hours", 6.0)),
-            stretch_max=float(self.dj_cfg.get("stretch_max", 1.10)),
-            record=bool(self.dj_cfg.get("record", False)),
-            persona=str(self.dj_cfg.get("persona", "auto")))
-        # Armed idle steering queues BEFORE start(): start() spawns the
-        # step thread, and its very first step picks the OPENING track -
-        # queuing after it raced that pick (user-heard: a pool night
-        # opened with an off-pool song, then corrected).
-        if self._dj_pending_setlist:
-            name, mode = (self._dj_pending_setlist
-                          if isinstance(self._dj_pending_setlist, tuple)
-                          else (self._dj_pending_setlist, 'order'))
-            self._dj.load_setlist(name, mode=mode)
-        if self._dj_pending_flavor:
-            self._dj.set_flavor(self._dj_pending_flavor)
-        if self._dj_pending_arc:
-            self._dj.set_arc_waypoints(self._dj_pending_arc)
-        if self._dj_pending_nudge:
-            self._dj.set_energy_nudge(self._dj_pending_nudge)
-        # Operator's set-length choice survives DJ stop/start (dj_cfg-
-        # backed, same contract as theme/persona; config.yaml dj:
-        # set_length_s sets the across-restart default).
-        if self.dj_cfg.get('set_length_s'):
-            self._dj.set_set_length(float(self.dj_cfg['set_length_s']))
-        if not self._dj.start():
-            self._dj_last_error = self._dj.last_error or "DJ failed to start"
-            self._dj = None
-            print(f"[DJ] start failed: {self._dj_last_error}")
-            # Give the soundtrack back - we already stopped/muted it above.
+        # BUILT OFF THE RENDER THREAD (the perf profile 2026-10-25: 'start' held it 1484 ms - the library load
+        # and the first import of lib.dj.system): the worker builds the autoDJ, applies the steering armed at
+        # the press in today's order BEFORE start() (start() spawns the step thread whose first step picks the
+        # opener), and _dj_adopt() on the render thread takes it over or restores the room.
+        self._dj_starting = True
+        self._dj_cancel = False
+        self._dj_pending_sys = None
+        self._dj_queued = []
+        cfg = dict(self.dj_cfg)
+        music = resolve_music_dir(cfg.get("music_dir", ""))
+        snap = {"setlist": self._dj_pending_setlist, "flavor": dict(self._dj_pending_flavor), "arc": list(self._dj_pending_arc),
+                "nudge": float(self._dj_pending_nudge or 0.0), "set_length": cfg.get('set_length_s')}
+        self._dj_start_snap = snap
+
+        def work():
+            try:
+                from lib.dj.system import DJSystem
+                sysm = DJSystem(music, engine=engine, theme=cfg.get("theme", "groove"),
+                                night_hours=float(cfg.get("night_hours", 6.0)), stretch_max=float(cfg.get("stretch_max", 1.10)),
+                                record=bool(cfg.get("record", False)), persona=str(cfg.get("persona", "auto")))
+                self._dj_apply_steering(sysm, snap)
+                if not sysm.start():
+                    self._dj_pending_sys = (None, sysm.last_error or "DJ failed to start")
+                    return
+                self._dj_pending_sys = (sysm, None)
+            except Exception as e:  # noqa: BLE001
+                self._dj_pending_sys = (None, f"DJ start failed: {e}")
+        threading.Thread(target=work, daemon=True, name="dj-start").start()
+
+    @staticmethod
+    def _dj_apply_steering(sysm, snap):
+        """The steering armed while idle, applied to a fresh autoDJ in the order it always was."""
+        if snap.get("setlist"):
+            sl = snap["setlist"]
+            name, mode = sl if isinstance(sl, tuple) else (sl, 'order')
+            sysm.load_setlist(name, mode=mode)
+        if snap.get("flavor"):
+            sysm.set_flavor(snap["flavor"])
+        if snap.get("arc"):
+            sysm.set_arc_waypoints(snap["arc"])
+        if snap.get("nudge"):
+            sysm.set_energy_nudge(snap["nudge"])
+        # Operator's set-length choice survives DJ stop/start (dj_cfg-backed, same contract as theme/persona;
+        # config.yaml dj: set_length_s sets the across-restart default).
+        if snap.get("set_length"):
+            sysm.set_set_length(float(snap["set_length"]))
+
+    def _dj_adopt(self):
+        """The render thread takes over an autoDJ the worker finished building: steering armed DURING the build
+        is applied, the soundtrack is handed over, presses that arrived meanwhile go back to the queue's head -
+        or the room is restored on a failure or a STOP pressed meanwhile."""
+        if not getattr(self, '_dj_starting', False):
+            return
+        pend = getattr(self, '_dj_pending_sys', None)
+        if pend is None:
+            return
+        self._dj_starting = False
+        self._dj_pending_sys = None
+        sysm, err = pend
+        engine = self.scheduler.state.get("soundengine")
+        if sysm is None or getattr(self, '_dj_cancel', False):
+            if sysm is not None:
+                try:
+                    sysm.stop(fade_s=0.3)
+                except Exception:
+                    pass
+            self._dj_last_error = err or ""
+            if err:
+                print(f"[DJ] start failed: {err}")
             if engine is not None:
                 engine.oneshots_muted = False
                 self._restore_state_ambient(engine)
             return
+        # steering that changed while the worker was building: applied now (the snapshot went in before start)
+        snap = getattr(self, '_dj_start_snap', None) or {}
+        now = {"setlist": self._dj_pending_setlist, "flavor": dict(self._dj_pending_flavor), "arc": list(self._dj_pending_arc),
+               "nudge": float(self._dj_pending_nudge or 0.0), "set_length": self.dj_cfg.get('set_length_s')}
+        diff = {k: v for k, v in now.items() if v != snap.get(k)}
+        if diff:
+            try:
+                self._dj_apply_steering(sysm, {k: now[k] for k in diff})
+            except Exception as e:  # noqa: BLE001
+                print(f"[DJ] steering after start failed: {e}")
+        self._dj = sysm
         self._dj_last_error = ""
-        # The DJ takes the soundtrack: silence state ambient, point the
-        # analyzer at the engine's own output.
+        # The DJ takes the soundtrack: silence state ambient, point the analyzer at the engine's own output.
         try:
             engine.stop_ambient()
         except Exception:
             pass
         if self.analyzer is not None:
-            self._dj_prev_source = getattr(self.analyzer, "_active_source",
-                                           None)
+            self._dj_prev_source = getattr(self.analyzer, "_active_source", None)
             self.set_audio_source("internal")
         print("[DJ] live - ambient handed off, analyzer on internal mix")
+        queued = getattr(self, '_dj_queued', None) or []
+        self._dj_queued = []
+        if queued and self.web_controller is not None:
+            with self.web_controller._dict_lock:
+                q = self.web_controller.control_dict.get('request_dj_actions') or []
+                self.web_controller.control_dict['request_dj_actions'] = queued + list(q)
 
     def _dj_stop(self):
+        if getattr(self, '_dj_starting', False):
+            self._dj_cancel = True            # (a STOP while it is still being built: dropped when it arrives)
         if self._dj is None:
             return
         self._dj.stop()
@@ -3304,7 +3513,7 @@ class EnvironmentalSystem:
         """The Director on the show's engine: the autoDJ as it is, the stem
         conductor when LAYERS asks for it, both submixes on the engine, the
         same soundtrack takeover as the automixer."""
-        if getattr(self, '_director', None) is not None:
+        if getattr(self, '_director', None) is not None or getattr(self, '_director_starting', False):
             return
         self._dj_stop()
         self._remix_stop()
@@ -3323,17 +3532,49 @@ class EnvironmentalSystem:
             except Exception:
                 pass
         music = resolve_music_dir(self.dj_cfg.get("music_dir", ""))
-        try:
-            d = Director(music, engine=None, theme=self.dj_cfg.get("theme", "groove"),
-                         attach=(engine.attach_track if engine is not None else None))
-            ok = d.start(threaded=True)
-        except Exception as e:
-            ok, d = False, None
-            self._dj_last_error = f"director start failed: {e}"
-        if not ok:
-            self._dj_last_error = (d.last_error if d else None) \
-                or self._dj_last_error or "the Director failed to start"
-            print(f"[DJ] {self._dj_last_error}")
+        # BUILT OFF THE RENDER THREAD: loading the library and starting the engine held the render thread for
+        # 1.2 s (the perf profile, 2026-10-25) - a visible LED freeze on every START. The Director is built and
+        # started in a worker; _director_adopt() (the render thread's next tick) takes it over or restores the room.
+        self._director_starting = True
+        self._director_cancel = False
+        self._director_pending = None
+        self._director_queued = []
+        self._dj_last_error = ""
+        attach = engine.attach_track if engine is not None else None
+        theme = self.dj_cfg.get("theme", "groove")
+
+        def work():
+            try:
+                d = Director(music, engine=None, theme=theme, attach=attach)
+                ok = d.start(threaded=True)
+                err = None if ok else (d.last_error or "the Director failed to start")
+            except Exception as e:  # noqa: BLE001
+                d, ok, err = None, False, f"director start failed: {e}"
+            self._director_pending = (d if ok else None, err)
+        threading.Thread(target=work, daemon=True, name="director-start").start()
+
+    def _director_adopt(self):
+        """The render thread takes over a Director the worker finished building (see _director_start): the
+        analyzer follows the mix, the state ambient stops, the room is marked live - or, on a failure (or a STOP
+        pressed meanwhile), the room is restored."""
+        if not getattr(self, '_director_starting', False):
+            return
+        pend = getattr(self, '_director_pending', None)
+        if pend is None:
+            return
+        self._director_starting = False
+        self._director_pending = None
+        d, err = pend
+        engine = self.scheduler.state.get("soundengine")
+        if d is None or getattr(self, '_director_cancel', False):
+            if d is not None:
+                try:
+                    d.stop(fade_s=0.5)
+                except Exception:
+                    pass
+            self._dj_last_error = err or ("" if getattr(self, '_director_cancel', False) else "the Director failed to start")
+            if err:
+                print(f"[DJ] {err}")
             if engine is not None:
                 engine.oneshots_muted = False
                 self._restore_state_ambient(engine)
@@ -3352,8 +3593,17 @@ class EnvironmentalSystem:
                 print(f"[DJ] analyzer source switch failed: {e}")
         self.scheduler.state['dj_active'] = True
         print("[DJ] THE DIRECTOR live on the show's engine")
+        # the presses that arrived during the build (a LAYERS turn, a dial, NEXT): back at the head of the queue
+        queued = getattr(self, '_director_queued', None) or []
+        self._director_queued = []
+        if queued and self.web_controller is not None:
+            with self.web_controller._dict_lock:
+                q = self.web_controller.control_dict.get('request_dj_actions') or []
+                self.web_controller.control_dict['request_dj_actions'] = queued + list(q)
 
     def _director_stop(self):
+        if getattr(self, '_director_starting', False):
+            self._director_cancel = True      # (a STOP while it is still being built: dropped when it arrives)
         d = getattr(self, '_director', None)
         if d is None:
             return
@@ -3540,6 +3790,15 @@ class EnvironmentalSystem:
             self.bt_receiver.shutdown()
         if self.osc_listener is not None:
             self.osc_listener.stop()
+        # Pixelblaze mirrors give each device it switched its own pattern
+        # back on close(). The headless show box never reaches
+        # RenderPipeline.cleanup() (no window to close), so without this a
+        # device stayed on the mirror pattern after the show stopped.
+        for mirror in list(getattr(self.scheduler, "mirrors", []) or []):
+            try:
+                mirror.close()
+            except Exception as e:
+                print(f"[Pixelblaze] close failed (ignoring): {e}")
 
 
 # Main execution
@@ -3567,6 +3826,7 @@ if __name__ == "__main__":
     except Exception as _e:
         print(f"[Project] startup weather pick failed ({_e}); "
               f"using project default")
+    _boot_mark("startup weather applied")
     # Frame pacing: read the per-project target FPS from env_system on
     # every iteration so a project swap re-paces the loop without
     # restart. ``env_system.frame_time`` is set by ``_compute_frame_time``
@@ -3576,7 +3836,9 @@ if __name__ == "__main__":
     # becoming preemptible. The DJ brain/audio threads run long Python
     # stretches; 2ms (default 5ms) caps the stall any single slice can
     # inflict on this render loop.
-    sys.setswitchinterval(0.002)
+    # (never ABOVE what the audio engine already chose: AudioEngine.start sets 0.0005 for its callback's sake,
+    # and this line used to overwrite it - the perf session's finding, 2026-10-25)
+    sys.setswitchinterval(min(sys.getswitchinterval(), 0.002))
     # Everything allocated during boot is permanent — freeze it so cyclic
     # GC passes stop rescanning it (smaller, rarer, faster collections).
     gc.freeze()
@@ -3633,6 +3895,14 @@ if __name__ == "__main__":
 
             # Update environmental system (includes scheduler.update())
             env_system.update()
+            if frame_count == 0:
+                _boot_mark("first frame rendered and sent (the effects' first spawn and shader compiles)")
+            elif frame_count in (10, 40, 120, 240, 400):
+                # the PICTURE: the corrected output level the strips get (render_pipeline publishes state['out_level']);
+                # wrappers fade in over their own seconds, so "patterns visible" trails "first frame" - this says by how much
+                lvl = env_system.scheduler.state.get("out_level")
+                _boot_mark(f"frame {frame_count}: strips at {f'{100 * float(lvl):.0f}% of full' if lvl is not None else 'n/a (no out_level yet)'}"
+                           + (" - patterns are on the strips" if frame_count == 10 else ""))
 
             if env_system.scheduler.should_exit:
                 break

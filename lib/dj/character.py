@@ -69,18 +69,41 @@ def valence_raw(t):
 
 def dynamics(t):
     """0 = steady/flat, 1 = dynamic (big breakdowns/builds). Std of the
-    2 Hz energy curve."""
+    2 Hz energy curve. Memoized on the track: the curve never changes."""
+    cached = getattr(t, "_dynamics_cache", None)
+    if cached is not None:
+        return cached
     curve = t.row.get("energy_curve") or []
     if len(curve) < 8:
-        return 0.5
-    m = sum(curve) / len(curve)
-    var = sum((c - m) ** 2 for c in curve) / len(curve)
-    return _clamp((var ** 0.5) * 3.0)
+        val = 0.5
+    else:
+        m = sum(curve) / len(curve)
+        var = sum((c - m) ** 2 for c in curve) / len(curve)
+        val = _clamp((var ** 0.5) * 3.0)
+    try:
+        t._dynamics_cache = val
+    except Exception:
+        pass
+    return val
 
 
 def character_tags(t):
     """A few browsable character tags (thresholds on the RANKED values, so
-    they're library-relative)."""
+    they're library-relative). Memoized on the track, keyed on the two ranked
+    values that can change (rank_library), like all_tags: the autoDJ's tag
+    refresh called this for every track every 10 s - most of its 60-95 ms."""
+    key = (getattr(t, "danceability", None), getattr(t, "valence", None))
+    if getattr(t, "_char_tags_key", None) == key:
+        return list(t._char_tags_cache)
+    tags = _character_tags(t)
+    try:
+        t._char_tags_key, t._char_tags_cache = key, tuple(tags)
+    except Exception:
+        pass
+    return tags
+
+
+def _character_tags(t):
     tags = []
     d = getattr(t, "danceability", None)
     if d is not None:
