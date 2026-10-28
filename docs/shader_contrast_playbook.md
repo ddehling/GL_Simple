@@ -116,6 +116,50 @@ everywhere and high in isolated points. Naturally budget-friendly. The
 risk: too sparse and there's nothing to see — calibrate density to the
 pixel count of the target group canvas.
 
+### The coverage floor (club patterns, October 2026)
+
+Sparse-bright taken too far gave the club two thin curves on black
+(predator: 3% of pixels lit, with multi-second stretches under that) and
+a set of kick-only patterns that go fully dark for as long as a
+breakdown lasts (tunnel, flow field, mandala, spots, starfall, tesla,
+rain). The operator's rule: **contrast and motion are good; almost no
+pixels lit for an extended period is not.** Stuff may come and go, but
+something structured must always be there.
+
+So every club pattern carries a **resting bed** under its beat
+features: dim, structured, slowly moving content that persists without
+kicks (a comet wake with stippled footprints behind the predator's arms,
+an ember bed under the flame, a faint lattice under the tunnel, a star
+field under the meteors). Not a flat wash — a wash spends the budget and
+reads as nothing.
+
+Mind the gamma: the pipeline squares every value (web gamma 2.0) before
+the limiter, so a shader value of 0.04 is 0.15% LED duty (off), 0.15 is
+about 2% (a dim glow in a dark room), 0.3 is 9%. A bed authored at 0.05
+to 0.1 looks fine in the preview and does not exist on the fan; author
+beds at 0.25 to 0.4. The limiter compresses only above a mean duty of
+0.08 and these patterns sit at 0.01, so that bed costs the bright
+features nothing.
+
+Mind the composition too. Many club shaders built `col += c * b;
+a = max(a, b)` and wrote `vec4(col, a)`: under straight-alpha blending
+that shows a feature of brightness b at b squared, and the pipeline's
+gamma squares it again, so anything dim was gone. Blend a bed in at its
+own weight (`a2 = max(a, bed); col = (col * a + bedColor * bed) / a2`)
+or divide the colour by the alpha. Round two of the October fix found
+this in eleven shaders.
+
+Measure, don't eyeball: `python tools/tests/_club_coverage_survey.py
+--patterns --only <names>` renders a pattern alone (level 1.0, energy
+0.8) through a track with a 6 s breakdown, applies gamma and the
+limiter the way the pipeline does, and reports cov2 (mean fraction of
+pixels above 2% LED duty), cov6 (above 6%), p10 (cov2's 10th percentile
+over time), dark_s (longest run under 3%) and lum (mean duty); `--rooms`
+does the same for every club state as the director plays it. Targets
+per pattern alone: cov2 >= 0.12, p10 >= 0.08, dark_s = 0, lum <= 0.06.
+Then read the strips it writes (darkest 10% | median | brightest 10%):
+the numbers can't tell a bed from a wash.
+
 ## Anti-patterns
 
 | Pattern | Why it fails |
