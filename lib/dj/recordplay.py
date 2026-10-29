@@ -62,6 +62,8 @@ LAST_FROM = 0.6                   # a blend starts no earlier than this fraction
 UNDER_GAIN = 0.6                  # the next record sits under the record at this fader until the bass swap ("cut, don't boost")
 TAIL_BARS = 4                     # the record comes down over this after the swap...
 TAIL_OUTRO_BARS = 8               # ...or this when the swap is in its outro
+KEY_BLEND = 0.68                  # two records overlap for phrases only when their keys fit this well (the conductor's ENTRY_FIT); under it, the cut
+KEY_LONG = 0.90                   # ...and only a near-perfect fit earns more than the short blend (Inevitable Ending -> Dunes at 0.55 got 36 bars, 2026-10-26)
 ALLOWED_WHY =("still decoding", "nothing planned yet", "is the record playing", "not on a deck", "no such song", "press START")
 
 
@@ -116,6 +118,23 @@ def mix_level(samples):
     return float(np.sqrt((x * x).mean())) if x.size else 0.0
 
 
+def mix_envelope(samples, gain_db=0.0):
+    """The mix's RMS per half second (absolute, with the library's loudness trim applied), float16: the record's OWN
+    quiet passages, so a breakdown at -50 dBFS is not logged as a DROPOUT (Ruhi's, twice, 2026-10-26)."""
+    import numpy as np
+    hop = RATE // 2
+    n = len(samples) // hop
+    if n < 2:
+        return None
+    e = np.empty(n, dtype=np.float32)
+    step = 240
+    for j in range(0, n, step):
+        j1 = min(n, j + step)
+        blk = np.asarray(samples[j * hop:j1 * hop], dtype=np.float32).reshape(j1 - j, hop, -1)
+        e[j:j1] = np.sqrt((blk * blk).mean(axis=(1, 2)))
+    return (e * (10.0 ** (float(gain_db or 0.0) / 20.0))).astype(np.float16)
+
+
 class Rec:
     def __init__(self, deck, track):
         self.deck = deck
@@ -127,6 +146,7 @@ class Rec:
         self.next_pressed = False     # NEXT was pressed while it was the record (the gate's min-play exemption)
         self.rate = 1.0               # the rate it was started at (beat-matched to the record before it)
         self.vox = None               # the VOCAL stem's envelope, one value per half second, 1.0 = its loud level (measured at decode; nothing is played from stems)
+        self.mix_env = None           # the mix's own RMS per half second (its quiet passages are not dropouts)
 
 
 class RecordPlayer:
@@ -157,6 +177,9 @@ class RecordPlayer:
         self._thread = None
         self._open_pending = None
         self._settled_clock = 0       # the record is back at its own tempo from this clock (plans wait for it)
+        self._unfit = set()           # track ids found unmixable with the record playing (vocals / keys / tempo): picked again
+        self._repicks = 0             # how often the next record was picked again for this record (two at most)
+        self._user_ids = set()        # track ids the user asked for (UP NEXT): never picked again, the relaxed blend applies
 
     # -- lifecycle -----------------------------------------------------------------------------------------------------
     def prepare(self, first_track=None):
@@ -179,8 +202,12 @@ class RecordPlayer:
             vox = vocal_envelope(self.music_root, first.id, mix_rms=mix_level(samples))
         except Exception:
             vox = None
+        try:
+            menv = mix_envelope(samples, first.gain_db)
+        except Exception:
+            menv = None
         with self._lock:
-            self._pending["a"] = (first, samples, vox)
+            self._pending["a"] = (first, samples, vox, menv)
         self.songs["a"] = Rec("a", first)
         self._first = first
         self._move("ready", f"ready before START: {first.title[:30]} is decoded on deck A", to_id=first.id)
@@ -349,11 +376,12 @@ class RecordPlayer:
             if t is not None and t.id not in busy:
                 why = self.fits_as_record(t)
                 if why is None:
+                    self._user_ids.add(t.id)
                     return t
                 self._move("pick", f"{t.title[:30]} cannot be the record ({why}): the DJ picks instead", to_id=t.id)
         if self.brain is None:
             return None
-        self.brain.veto_ids = set(self.avoid_ids) | busy | {t.id for t in self.library if self.fits_as_record(t) is not None}
+        self.brain.veto_ids = set(self.avoid_ids) | busy | set(self._unfit) | {t.id for t in self.library if self.fits_as_record(t) is not None}
         if current is None:
             cands = [t for t in self.library if t.id not in self.brain.veto_ids]
             if not cands:
@@ -368,11 +396,28 @@ class RecordPlayer:
             lo, hi = self.brain.theme.bpm_range
             mid = 0.5 * (lo + hi)
             return min(cands, key=lambda t: abs(float(t.bpm) - mid))
-        try:
-            pick, _meta = self.brain.choose_next(current, 0.6, float(current.bpm))
-        except Exception as e:  # noqa: BLE001
-            self.last_error = f"pick: {type(e).__name__}: {e}"
-            pick = None
+        # THE PICK MUST BE MIXABLE (2026-10-26, "just had a mix hard cut?": the brain picked 4A after 7B and 7B after 4A,
+        # fit 0.30 twice, and the key gate rightly refused to blend them - so the room got two cuts in a row). A record
+        # whose key clashes with the one playing is vetoed at the pick while any mixable record is left; the cut is the
+        # fallback for a plan that cannot be placed, not a way of life
+        base_veto = set(self.brain.veto_ids)
+        cur_bpm = float(current.bpm) * (self._rate_now(self.record) if self.record else 1.0)
+        clash = {t.id for t in self.library if t.id not in base_veto
+                 and ((self.key_fit(current, t) or 1.0) < KEY_BLEND or abs(cur_bpm / max(float(t.bpm), 1e-6) - 1.0) > MAX_TEMPO_GAP)}
+        pick = None
+        for veto in (base_veto | clash, base_veto):
+            self.brain.veto_ids = veto
+            try:
+                pick, _meta = self.brain.choose_next(current, 0.6, float(current.bpm))
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"pick: {type(e).__name__}: {e}"
+                pick = None
+            if pick is not None:
+                if veto is not base_veto or not clash:
+                    break
+                self._move("pick", f"no record in a key that mixes with {current.title[:24]} ({current.camelot or '?'}) is left tonight: {pick.title[:24]} ({pick.camelot or '?'}) will be a cut", to_id=pick.id)
+                break
+        self.brain.veto_ids = base_veto
         return pick
 
     def _decode(self, track, deck, opener=False):
@@ -391,8 +436,30 @@ class RecordPlayer:
                 except Exception as e:  # noqa: BLE001
                     vox = None
                     self._move("error", f"vocal envelope of {track.title[:24]}: {type(e).__name__}: {e} (the blend will not know where it sings)", to_id=track.id)
+                try:
+                    menv = mix_envelope(samples, track.gain_db)
+                except Exception:
+                    menv = None
+                # THE PICK MUST BLEND (the user, 2026-10-26: never a cut the DJ decided): with its vocal envelope known, a next
+                # record that cannot be placed under the record playing by the rules is picked again, twice at most; a record
+                # the user asked for is kept (the relaxed blend applies)
+                if not opener and self.record in self.songs and track.id not in self._user_ids and self._repicks < 2:
+                    probe = Rec(deck, track)
+                    probe.vox, probe.state = vox, "ready"
+                    try:
+                        feasible = self._find_blend_strict(self.songs[self.record], probe) is not None
+                    except Exception:
+                        feasible = True
+                    if not feasible:
+                        self._unfit.add(track.id)
+                        self._repicks += 1
+                        self.songs.pop(deck, None)
+                        del samples
+                        self._move("pick", f"{track.title[:28]} cannot be blended with {self.songs[self.record].track.title[:22]} by the rules "
+                                           f"({getattr(self, '_no_blend_why', 'no placement')}): picked again", to_id=track.id)
+                        return
                 with self._lock:
-                    self._pending[deck] = (track, samples, vox)
+                    self._pending[deck] = (track, samples, vox, menv)
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"decode {track.title}: {type(e).__name__}: {e}"
                 self._move("error", self.last_error, to_id=track.id)
@@ -406,11 +473,11 @@ class RecordPlayer:
             item = self._pending.pop(deck, None)
         if item is None:
             return None
-        track, samples, vox = (item + (None,))[:3]
+        track, samples, vox, menv = (tuple(item) + (None, None))[:4]
         r = self.songs.get(deck)
         if r is None or r.track.id != track.id:
             r = self.songs[deck] = Rec(deck, track)
-        r.vox = vox
+        r.vox, r.mix_env = vox, menv
         opener = self.record is None and not any(x.state in ("playing", "leaving") for x in self.songs.values())
         r.cue_t = max(0.0, track.nearest_downbeat(0.0)) if opener else self.landmark(track)
         self.submix.post_many([
@@ -531,6 +598,7 @@ class RecordPlayer:
         self.cut = None
         self._next_asap = False
         self._settled_clock = 0
+        self._repicks = 0
         self.wait_why = ""
         if self.brain is not None:
             try:
@@ -567,6 +635,17 @@ class RecordPlayer:
     def _tempo_ratio(self, rec, nxt):
         """The next record's rate so its beat matches the record's (the record at the rate it plays now)."""
         return float(rec.track.bpm) * self._rate_now(rec.deck) / float(nxt.track.bpm)
+
+    @staticmethod
+    def key_fit(a, b):
+        """Camelot fit of two records' keys, 0..1; None when a key is unknown."""
+        try:
+            from lib.dj.brain import camelot_compat
+            if not a.camelot or not b.camelot:
+                return None
+            return float(camelot_compat(a.camelot, b.camelot))
+        except Exception:
+            return None
 
     # -- where the records SING (the vocal envelopes measured at decode) ------------------------------------------------------
     @staticmethod
@@ -607,7 +686,56 @@ class RecordPlayer:
                 return c, (abs(c - (lm - span)) < 0.5 * bar_b)
         return None, False
 
-    def _find_blend(self, rec, nxt):
+    def _quietest_cue(self, nxt, L, bar_b):
+        """When no window of the next record is vocal-quiet for the lead: the phrase boundary of its intro (or its
+        landmark minus the lead) whose lead window sings LEAST - the relaxed plan's cue, never None."""
+        t = nxt.track
+        lm = self.landmark(t)
+        span = L * bar_b
+        first = max(0.0, t.nearest_downbeat(0.0))
+        cands = [max(0.0, t.nearest_downbeat(lm - span))] if lm - span >= -0.5 * bar_b else []
+        k = int(math.floor((lm - span - first) / max(PHRASE_BARS * bar_b, 1e-6)))
+        while k >= 0:
+            cands.append(max(0.0, t.nearest_downbeat(first + k * PHRASE_BARS * bar_b)))
+            k -= 1
+        cands.append(first)
+        if nxt.vox is None:
+            return cands[0], False
+        best, best_v = cands[0], None
+        for c in cands:
+            i0, i1 = max(0, int(c * 2)), min(len(nxt.vox), int(math.ceil((c + span) * 2)) + 1)
+            v = float(max(nxt.vox[i0:i1])) if i1 > i0 else 0.0
+            if best_v is None or v < best_v - 1e-6:
+                best, best_v = c, v
+        return best, abs(best - (lm - span)) < 0.5 * bar_b
+
+    def _find_blend(self, rec, nxt, relax=False):
+        """... `relax` (2026-10-26, the user: "we should never be just ripping a playing song out of the mix unless I hit
+        the next key"): when no placement keeps the rules, the blend is placed anyway at the LAST phrases of the record
+        - its outro, where records are built to be mixed out of - as the short blend, with the next record's least-
+        singing intro window; the keys may only get along. A blend that bends a rule beats a cut the user did not ask for."""
+        if relax:
+            track, t_now, bar_s, k_now, open_bar, k_min, k_end = self._geometry(rec)
+            L, _T0 = SIZES["short"]
+            T = TAIL_BARS
+            K = self._phrase_up(max(k_now + CUT_MIN_BARS, k_min), open_bar)
+            K_last = K
+            while K_last + PHRASE_BARS + L + T <= k_end - 1:
+                K_last += PHRASE_BARS
+            K = K_last
+            if K + L + T > k_end - 1:
+                return None                           # no phrase of the record is left: it runs out (the cut at its end)
+            bar_b = self.bar_s(nxt.track, self.landmark(nxt.track))
+            cue_b, on_lm = self._cue_for_lead(nxt, L, bar_b, quiet_bars=L)
+            if cue_b is None:
+                cue_b, on_lm = self._quietest_cue(nxt, L, bar_b)
+            fit = self.key_fit(track, nxt.track)
+            why = (f"no placement kept every rule, so the last phrases of {track.title[:22]} (its way out), the short blend"
+                   + (f"; keys {track.camelot}→{nxt.track.camelot} fit {fit:.2f}" if fit is not None else "") + (", its drop on the swap" if on_lm else ", from its intro"))
+            return {"K": K, "size": "short", "L": L, "T": T, "cue_b": cue_b, "on_landmark": on_lm, "why": why, "relaxed": True}
+        return self._find_blend_strict(rec, nxt)
+
+    def _find_blend_strict(self, rec, nxt):
         """PLACEMENT BY THE RECORDS (docs/DJ_MIXING.md 7): the earliest phrase boundary K of the record at or after its
         minimum play AND its last stretch (LAST_FROM of its length), in a groove or an outro (a build or a breakdown is
         the breakdown swap's), with a size (long when the next record's intro allows it, else standard, else short)
@@ -616,39 +744,77 @@ class RecordPlayer:
         vocal is quiet through the overlap and the next record's until the swap. Returns
         {"K","size","L","T","cue_b","on_landmark","why"} or None."""
         track, t_now, bar_s, k_now, open_bar, k_min, k_end = self._geometry(rec)
+        fit = self.key_fit(track, nxt.track)
+        self._no_blend_why = "no place where a blend keeps the two records' vocals apart over a steady stretch of the record"
+        if fit is not None and fit < KEY_BLEND:
+            self._no_blend_why = f"keys {track.camelot}→{nxt.track.camelot} clash (fit {fit:.2f}): no phrases of the two together"
+            return None                               # the keys clash: two records never overlap for phrases (the cut does not care)
         k_last = int(math.ceil((LAST_FROM * float(track.duration_s) - self._first_down(track, t_now)) / bar_s))
-        K = self._phrase_up(max(k_now + CUT_MIN_BARS, k_min, k_last), open_bar)
+        K0 = self._phrase_up(max(k_now + CUT_MIN_BARS, k_min, k_last), open_bar)
         bar_b = self.bar_s(nxt.track, self.landmark(nxt.track))
-        lm_bars_b = self.landmark(nxt.track) / max(bar_b, 1e-6)
-        sizes = [nm for nm in ("long", "standard", "short") if nm != "long" or lm_bars_b >= 32 - 1e-6]
+        # the DJ's own sizes: the standard blend and the short one - never the long one (2026-10-26: a 32-bar lead held
+        # two records together for a minute, with the record's own build and drop inside it; BAD); long is for a dial
+        sizes = ["short"] if (fit is not None and fit < KEY_LONG) else ["standard", "short"]
+        best, best_score = None, None
+        K = K0
         while K + SIZES["short"][0] + 1 <= k_end - 1:
             tK = self._bar_time(track, K, t_now)
             kind = self._section_kind(track, tK + 0.25 * bar_s)
-            if kind in ("build", "breakdown"):
-                K += PHRASE_BARS
-                continue
             for nm in sizes:
                 L, _T0 = SIZES[nm]
                 T = TAIL_OUTRO_BARS if self._section_kind(track, self._bar_time(track, K + L, t_now) + 0.25 * bar_s) == "outro" else TAIL_BARS
                 if K + L + T > k_end - 1:
                     continue
-                a_quiet = self._vox_quiet(rec, tK, self._bar_time(track, K + L + T, t_now))
+                t1 = self._bar_time(track, K + L + T, t_now)
+                # THE RECORD STAYS STEADY through the overlap: no build, no breakdown, no drop of its own under the next record
+                # (Dissolution built and dropped inside a lead, then the next record dropped on the swap: two drops, BAD)
+                if not self._steady_span(track, tK, t1):
+                    continue
+                a_quiet = self._vox_quiet(rec, tK, t1)
+                score = 0
                 # (1) the next record silent for the whole overlap: the record may sing over its intro
                 cue_b, on_lm = self._cue_for_lead(nxt, L, bar_b, quiet_bars=L + T)
                 how = f"{nxt.track.title[:22]}'s vocal silent through the mix"
-                if cue_b is None:
+                if cue_b is not None:
+                    score = 3 if a_quiet is not False else 1
+                    if a_quiet is not False:
+                        how = "neither record sings through the mix"
+                else:
                     # (2) the record quiet through the overlap, the next record quiet until the swap
                     if a_quiet is False:
                         continue                      # both would sing: not this place, not this size
                     cue_b, on_lm = self._cue_for_lead(nxt, L, bar_b, quiet_bars=L)
                     if cue_b is None:
                         continue                      # the next record sings everywhere it could enter for this lead
+                    score = 2
                     how = f"{track.title[:22]}'s vocal quiet through the mix, {nxt.track.title[:22]}'s until the swap"
+                if on_lm:
+                    score += 0.5                      # its drop on the swap: the payoff lands on the one
+                if kind == "outro":
+                    score += 0.5                      # the record's way out is where it is built to be mixed out of
                 why = (f"{track.title[:22]}'s {kind or 'groove'} from bar {self.bar_n + (K - k_now)}; {how}"
-                       + (", its drop on the swap" if on_lm else ", from its intro"))
-                return {"K": K, "size": nm, "L": L, "T": T, "cue_b": cue_b, "on_landmark": on_lm, "why": why}
+                       + (", its drop on the swap" if on_lm else ", from its intro") + (f"; keys {track.camelot}→{nxt.track.camelot} fit {fit:.2f}" if fit is not None else ""))
+                if best_score is None or score > best_score + 1e-9:
+                    best, best_score = {"K": K, "size": nm, "L": L, "T": T, "cue_b": cue_b, "on_landmark": on_lm, "why": why}, score
+                if best_score >= 3.5:
+                    return best                      # nothing beats both quiet with the drop on the swap: the earliest such place
             K += PHRASE_BARS
-        return None
+        return best
+
+    def _steady_span(self, track, t0, t1):
+        """The record is steady from t0 to t1: no build or breakdown section inside, and no DROP (a groove that follows a
+        build, a breakdown or an intro) starting inside - the next record is the only thing that moves under a blend."""
+        secs = track.sections or []
+        eps = 0.25 * self.bar_s(track, t0)
+        for i, s in enumerate(secs):
+            s0, s1 = float(s["start_s"]), float(s["end_s"])
+            if s1 <= t0 + eps or s0 >= t1 - eps:
+                continue
+            if s.get("kind") in ("build", "breakdown"):
+                return False
+            if s.get("kind") == "groove" and i > 0 and secs[i - 1].get("kind") in ("build", "breakdown", "intro") and t0 + eps < s0 < t1 - eps:
+                return False
+        return True
 
     def _cancel_plan(self):
         if self.cut is not None:
@@ -663,11 +829,20 @@ class RecordPlayer:
         if rec is None or nxt is None or nxt.state != "ready":
             return False
         ratio = self._tempo_ratio(rec, nxt)
+        fit = self.key_fit(rec.track, nxt.track)
+        if asap and fit is not None and fit < KEY_BLEND:
+            # NEXT into a clashing key: the cut now, not a phrase of two keys fighting
+            return self._plan_cut(nxt, why=f"{why} - keys {rec.track.camelot}→{nxt.track.camelot} clash (fit {fit:.2f}): the cut", phrase=False, min_bars=NEXT_BARS, honor_min=False)
         if abs(ratio - 1.0) > MAX_TEMPO_GAP:
             if k_start is not None:
                 return False
-            return self._plan_cut(nxt, why=f"{why} - a tempo gap of {abs(ratio - 1.0) * 100:.0f}% the stretcher cannot match: the cut",
-                                  phrase=not asap, min_bars=NEXT_BARS if asap else CUT_MIN_BARS, honor_min=not asap)
+            if asap:
+                return self._plan_cut(nxt, why=f"{why} - a tempo gap of {abs(ratio - 1.0) * 100:.0f}% the stretcher cannot match: the cut",
+                                      phrase=False, min_bars=NEXT_BARS, honor_min=False)
+            # the DJ's own plan never rips the record: a tempo gap no blend can bridge means the record plays to its END and the
+            # next record comes in whole on its last downbeat (the pick should not have offered it: see _pick)
+            return self._plan_cut(nxt, why=f"{why} - a tempo gap of {abs(ratio - 1.0) * 100:.0f}% no blend can bridge: {rec.track.title[:22]} plays to its end",
+                                  at_song_t=float(rec.track.duration_s) - 0.3)
         found = None
         with self._lock:
             track, t_now, bar_s, k_now, open_bar, k_min, k_end = self._geometry(rec)
@@ -679,7 +854,9 @@ class RecordPlayer:
                 # still keeps its vocal out until the swap when any cue of it can
                 K = max(k_now + 1, int(k_start)) if k_start is not None else k_now + NEXT_BARS
                 lm_bars_b = lm_b / max(bar_b, 1e-6)
-                order = [size] if size else ["long", "standard", "short"]
+                if size == "long":
+                    size = "standard"                 # (the DJ never chooses the long blend; a STAY carried it forward - the gate, 2026-10-27)
+                order = [size] if size else ["standard", "short"]
                 for nm in order + [x for x in ("standard", "short") if x not in order]:
                     L, _T0 = SIZES[nm]
                     if nm == "long" and not (size == "long" or lm_bars_b >= 32 - 1e-6):
@@ -696,8 +873,11 @@ class RecordPlayer:
                     if cue_b is None:
                         cue_b = max(0.0, nxt.track.nearest_downbeat(lm_b - L * bar_b)) if lm_b - L * bar_b >= 0.0 else max(0.0, nxt.track.nearest_downbeat(0.0))
             else:
-                # THE PLAN: placement by the records (vocals apart, the record's last stretch, the sizes that fit)
+                # THE PLAN: placement by the records (vocals apart, the record's last stretch, the sizes that fit); when
+                # no placement keeps every rule, the relaxed one at the record's way out - NEVER a cut the user did not press
                 found = self._find_blend(rec, nxt)
+                if found is None:
+                    found = self._find_blend(rec, nxt, relax=True)
                 if found is not None:
                     K, chosen, T, cue_b = found["K"], found["size"], found["T"], found["cue_b"]
                     why = f"{why}: {found['why']}"
@@ -705,7 +885,8 @@ class RecordPlayer:
             if k_start is not None:
                 return False                          # STAY with no room a phrase later: the plan stands (never an earlier cut)
             if not asap:
-                return self._plan_cut(nxt, why=f"{why} - no place where a blend keeps the two records' vocals apart before {track.title[:22]} runs out: the cut", phrase=True, honor_min=True)
+                # not a phrase of the record is left for any blend: it plays to its end and the next record comes in whole there
+                return self._plan_cut(nxt, why=f"{why} - no phrase of {track.title[:22]} is left for a blend: it plays to its end", at_song_t=float(track.duration_s) - 0.3)
             return self._plan_cut(nxt, why=f"{why} - {track.title[:24]} has no room left for a blend: the cut", phrase=False, min_bars=NEXT_BARS, honor_min=False)
         with self._lock:
             L, _T0 = SIZES[chosen]
@@ -962,6 +1143,7 @@ class RecordPlayer:
                 b.state, b.open_clock = "playing", c["clock"]
             b.open_bar = self._bar_index(b.track, b.cue_t)
             self.record = b.deck
+            self._repicks = 0
             if self.brain is not None:
                 try:
                     self.brain.note_played(b.track)
@@ -1105,6 +1287,8 @@ class RecordPlayer:
                 return False, "nothing planned yet: the record has no phrase left to stay for - the blend stands"
             size = c.get("size") if c["kind"] == "blend" and k_start + L + T <= k_end - 1 else None
             ok = self._plan_blend(nxt, why="STAY: a phrase later", size=size, k_start=k_start)
+            if not ok:
+                return False, "nothing planned yet: the record has no phrase left to stay for - the blend stands"
         if ok:
             self._move("stay", f"STAY: the {'cut' if self.cut['kind'] == 'cut' else 'blend'} moved a phrase later, in {self.cut['bar'] - self.bar_n} bars")
             return True, f"STAY: the {'cut' if self.cut['kind'] == 'cut' else 'blend'} in {self.cut['bar'] - self.bar_n} bars"
@@ -1115,6 +1299,21 @@ class RecordPlayer:
             if r.track.id == int(track_id):
                 return d
         return None
+
+    def room_quiet_by_design(self, thr=0.004):
+        """True when every record SOUNDING is itself under `thr` (RMS) at its cursor by its own envelope: the record's
+        breakdown, not a dropout. None when nothing is known."""
+        known = False
+        tel = (self._tel().get("decks") or {})
+        for dk, r in self.songs.items():
+            t = tel.get(dk) or {}
+            if not t.get("playing") or float(t.get("gain") or 0.0) <= 0.1 or r.mix_env is None:
+                continue
+            known = True
+            i = int(float(t.get("time_s") or 0.0) * 2)
+            if i < len(r.mix_env) and float(r.mix_env[i]) * float(t.get("gain") or 1.0) >= thr:
+                return False
+        return True if known else None
 
     def eject(self, track_id):
         d = self.deck_of(track_id)
@@ -1380,6 +1579,8 @@ class RecordPlayer:
         try:
             track, t_now, bar_s, k_now, open_bar, k_min, k_end = self._geometry(rec)
             found = self._find_blend(rec, nxt) if (nxt.state == "ready" or nxt.vox is not None) else None
+            if found is None and (nxt.state == "ready" or nxt.vox is not None):
+                found = self._find_blend(rec, nxt, relax=True)
             if found is not None:
                 K, L, T = found["K"], found["L"], found["T"]
                 in_s = max(0.0, self._bar_time(track, K, t_now) - t_now)

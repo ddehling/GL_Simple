@@ -321,6 +321,45 @@ out over 4 bars; "both singing" worst 0.00; 24.5 s of overlap instead of 49. The
 The beat lock still breathed 0.990-1.003 on this unshifted same-tempo pair; the engine session is on it (deck.py: the
 PLL reads the stretcher's rendered position, not the audible one).
 
+**The second session (19:50-20:09, the OLD placement, "a couple more bad mixes").** Replayed with the new code:
+Ruhi -> Beam Me Up (both sung; the old code gave them a 48-bar long blend) is now the cut; Inevitable Ending -> Dunes
+(both instrumental, keys 9A -> 7A, fit 0.55; the old code and the first new code both gave them a 36-bar blend; the
+user's BAD came in the lead) exposed the missing KEY rule: `KEY_BLEND` 0.68 - under it the records never overlap for
+phrases, the cut; `KEY_LONG` 0.90 - under it only the short blend. Now the cut. Fellaheen got a GOOD at 20:03. The two
+3-s DROPOUTs at 19:57:29 and :33 were RUHI'S OWN BREAKDOWN: the replay of the 19:50 blend (per-block rms, mix gain and
+deck state logged) reproduced no silence at the blend's start, but found Ruhi alone at full gain rendering under
+-48 dBFS from 255 to 261 s of its own time (its breakdown starts at 4:12); live, the swap landed on its landmark
+(134 s) and the dropouts came 127-131 s later at rate 0.991 = the same passage. Not the engine, not the decode
+handoff, not the load. The Director's dropout watch now asks the player whether every sounding record is itself
+quiet at its cursor (a mix envelope measured at decode, `mix_envelope`) and keeps silent when it is. The record
+gate's first run on the new placement caught two fallbacks that moved the music EARLIER instead of refusing - a cut
+"from the minimum play" that ignored the minimum (47 s of a record), and a STAY that became a cut six bars out when a
+phrase later had no room - both fixed (the cut honours the minimum and lands where the record is not singing in the bar
+before; STAY refuses and the blend stands).
+
+**"We should never be just ripping a playing song out of the mix unless I hit the next key. That just sounds gross"
+(2026-10-26, 20:2x, after the key gate cut Namande -> Elephante, fit 0.30 twice from the pick).** The rule, now in the
+code: THE CUT IS THE USER'S. The DJ's own plan never cuts a playing record. (1) The pick vetoes records whose key clashes
+(fit under 0.68) or whose tempo is beyond the stretcher (8 %) while any mixable record is left; (2) once a next record's
+vocal envelope is measured at decode, a record that cannot be placed under the record playing by the rules is PICKED
+AGAIN (twice at most; a record the user queued is kept); (3) when no placement keeps every rule, the RELAXED blend: the
+short blend at the record's last phrases (its way out), the next record's least-singing intro window, keys as they are -
+a blend that bends a rule beats a cut nobody asked for; (4) the only cuts the DJ plans by itself are at a record's END
+(no phrase left for any blend; a tempo gap no blend can bridge) - the record finished, nothing was ripped. NEXT keeps its
+cut when keys clash or no room is left (the user's order), and BAD before a blend is a NEXT. Not yet gated: the record
+gate and the vocal-pair replays run after the user's listening session.
+
+**BAD at 20:45:46: Dissolution -> The Sound of Hope.** Keys 7B -> 7B (fit 1.00), tempo +0.8 %, neither singing in the
+lead - every rule held, and it was still bad. The plan was the LONG blend (32 bars) from bar 112 = 3:37 of Dissolution,
+the earliest phrase that passed: 64 s of two records, and Dissolution's own build (4:07) and drop (4:23) fell inside the
+lead, so the room heard Dissolution build and drop under the incoming record, then The Sound of Hope's drop on the swap:
+two drops a minute apart, neither owned. The placement took the FIRST place that passed instead of the best one. Changed
+(`_find_blend_strict`): the record must be STEADY through the whole overlap (`_steady_span`: no build, no breakdown,
+no drop of its own inside it); the DJ's own sizes are standard and short only (long is not chosen automatically); every
+candidate place is scored (neither singing 3, one singing 1-2; the next record's drop on the swap +0.5; the record's
+outro +0.5) and the best wins, the earliest among equals. Tonight's pair now: the standard blend from bar 144 (4:39,
+after Dissolution's drop), neither record singing, The Sound of Hope's drop on the swap.
+
 ## Sources
 
 - [Crossfader: 3 Ways To Mix House Music](https://wearecrossfader.co.uk/blog/3-ways-to-mix-house-music/) (seamless blend, EQ swap, layering, with bar counts)

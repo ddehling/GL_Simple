@@ -1814,6 +1814,10 @@ class Director:
         elif not getattr(self, "_heard", False):
             self._quiet_since = None
             return
+        elif self.player is not None and self.player.room_quiet_by_design(0.004) is True:
+            # RECORD: the record's own quiet passage (Ruhi's breakdown at -50 dBFS read as two DROPOUTs, 2026-10-26) is music
+            self._quiet_since = None
+            return
         if rms >= 0.004:
             q = getattr(self, "_quiet_since", None)
             if q is not None and getattr(self, "_dropout_open", False):
@@ -1847,6 +1851,21 @@ class Director:
                                          "entered": s.entered, "leaving": s.leaving} for dk, s in rc.songs.items()}
                     ctx["decoding"] = [t.title[:20] for t in rc._decoding.values()]
                     ctx["pending"] = [p[0].title[:20] for p in rc._pending.values()]
+                if self.player is not None:
+                    # RECORD: the mix state that rendered the silence (two 3-s dropouts at a blend's start, 2026-10-26, left
+                    # nothing to read): the bus gain, every deck's fader / bands / playing / loop / cursor, the plan, the decodes
+                    telp = self.player.submix.telemetry or {}
+                    ctx["mix_gain"] = telp.get("mix_gain")
+                    ctx["decks"] = {dk: {"track": (self.player.songs[dk].track.title[:20] if dk in self.player.songs else None),
+                                         "state": (self.player.songs[dk].state if dk in self.player.songs else None),
+                                         "playing": bool(t.get("playing")), "gain": t.get("gain"), "eq": t.get("eq"), "loop": t.get("loop"),
+                                         "t": t.get("time_s"), "rate": t.get("rate"), "filter": t.get("filter"), "echo": t.get("echo")}
+                                    for dk, t in (telp.get("decks") or {}).items()}
+                    ctx["plan"] = {k: v for k, v in (self.player.cut or {}).items() if k in ("kind", "size", "state", "bar", "swap_bar", "end_bar", "clock", "swap_clock", "end_clock", "why")}
+                    ctx["clock"] = telp.get("clock")
+                    ctx["decoding"] = [t.title[:20] for t in self.player._decoding.values()]
+                    ctx["pending"] = [p[0].title[:20] for p in self.player._pending.values()]
+                    ctx["recent_events"] = list(getattr(self.player.submix, "recent_events", []) or [])[-20:]
                 import ctypes
                 from ctypes import wintypes
 
