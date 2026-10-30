@@ -107,6 +107,21 @@
     border-color: #0a5;
 }
 
+.quality-btn {
+    margin-left: 12px;
+    padding: 6px 12px;
+    border: 1px dashed #555;
+    border-radius: 4px;
+    background: #1a1a1a;
+    color: #aaa;
+    cursor: pointer;
+    font-size: 0.85em;
+}
+
+.quality-btn:hover {
+    background: #2a2a2a;
+}
+
 .fps-label {
     margin-left: auto;
     font-size: 0.85em;

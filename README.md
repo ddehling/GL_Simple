@@ -306,7 +306,7 @@ The OpenGL window and web preview support four view modes:
 
 ### Web Preview
 
-Visit `http://localhost:5000/preview` for a live WebGL preview in the browser. The same four view modes are available via buttons. Frames are streamed as lossless PNG at 15 Hz over Socket.IO. Works when the app is running in headless mode (no desktop window).
+Visit `http://localhost:5000/preview` for a live WebGL preview in the browser. The same four view modes are available via buttons. Frames are streamed up to 15 Hz over Socket.IO, as lossless PNG or, with the page's Light button, JPEG at about a third of the data; each page is paced to its own speed and a hidden tab pauses its stream. Works when the app is running in headless mode (no desktop window).
 
 ---
 

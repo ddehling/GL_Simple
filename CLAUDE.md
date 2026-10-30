@@ -91,7 +91,7 @@ The four resulting modes:
 
 ## Web Preview
 
-Visit `http://localhost:5000/preview` for a live WebGL preview in the browser. Supports the same four view modes via buttons. Frames are streamed as lossless PNG at 15 Hz via Socket.IO. Works in headless mode (no GLFW window needed).
+Visit `http://localhost:5000/preview` for a live WebGL preview in the browser. Supports the same four view modes via buttons. Frames are streamed up to 15 Hz via Socket.IO, as lossless PNG or, with the page's Light button, JPEG at about a third of the data. Each page gets its next frame only after acknowledging the last (`preview_ack`), so a slow device gets fewer frames instead of a backlog. A hidden tab pauses its stream. Works in headless mode (no GLFW window needed).
 
 ## Architecture
 

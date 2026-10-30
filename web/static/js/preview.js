@@ -266,11 +266,38 @@ void main() {
         }
     }
 
-    // ---- Render ----
+    // ---- Render (on demand) ----
+    //
+    // The page used to redraw and re-measure its layout on every animation
+    // frame (60-144 Hz) while new pictures arrive at most 15 Hz. Now a draw
+    // is scheduled only when something changed: a new frame, the mode,
+    // pan/zoom, or the page size.
+
+    let drawQueued = false;
+    let layoutDirty = true;
+    const uniformCache = new Map();   // program -> {name: location}
+
+    function uniformLoc(prog, name) {
+        let m = uniformCache.get(prog);
+        if (!m) { m = {}; uniformCache.set(prog, m); }
+        if (!(name in m)) m[name] = gl.getUniformLocation(prog, name);
+        return m[name];
+    }
+
+    function scheduleDraw(relayout) {
+        if (relayout) layoutDirty = true;
+        if (drawQueued) return;
+        drawQueued = true;
+        requestAnimationFrame(() => { drawQueued = false; render(); });
+    }
 
     function render() {
         if (!geometry) return;
+        if (layoutDirty) { layoutDirty = false; layoutCanvas(); }
+        draw();
+    }
 
+    function layoutCanvas() {
         // Set canvas size based on display mode and available space
         const isFan = mode.startsWith("fan");
         const aspect = isFan ? (900 / 500) : (geometry.num_strips / geometry.num_leds);
@@ -301,7 +328,9 @@ void main() {
             canvas.width = w;
             canvas.height = h;
         }
+    }
 
+    function draw() {
         gl.viewport(0, 0, canvas.width, canvas.height);
         gl.clearColor(0.02, 0.02, 0.02, 1.0);
         gl.clear(gl.COLOR_BUFFER_BIT);
@@ -344,10 +373,10 @@ void main() {
             const vao = vaos[renderMode];
             const info = buffers[renderMode];
             gl.useProgram(prog);
-            gl.uniform1i(gl.getUniformLocation(prog, "uTexture"), 0);
-            gl.uniform2f(gl.getUniformLocation(prog, "uAspect"), ax, ay);
-            gl.uniform1f(gl.getUniformLocation(prog, "uZoom"), z);
-            gl.uniform2f(gl.getUniformLocation(prog, "uPan"), px, py);
+            gl.uniform1i(uniformLoc(prog, "uTexture"), 0);
+            gl.uniform2f(uniformLoc(prog, "uAspect"), ax, ay);
+            gl.uniform1f(uniformLoc(prog, "uZoom"), z);
+            gl.uniform2f(uniformLoc(prog, "uPan"), px, py);
             gl.bindVertexArray(vao);
 
             if (renderMode === "fan-smooth") {
@@ -363,31 +392,140 @@ void main() {
             gl.enable(gl.BLEND);
             gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
             gl.useProgram(prog);
-            gl.uniform1i(gl.getUniformLocation(prog, "uTexture"), 0);
-            gl.uniform1f(gl.getUniformLocation(prog, "uRadius"), info.dotRadius);
-            gl.uniform2f(gl.getUniformLocation(prog, "uAspect"), ax, ay);
-            gl.uniform1f(gl.getUniformLocation(prog, "uZoom"), z);
-            gl.uniform2f(gl.getUniformLocation(prog, "uPan"), px, py);
+            gl.uniform1i(uniformLoc(prog, "uTexture"), 0);
+            gl.uniform1f(uniformLoc(prog, "uRadius"), info.dotRadius);
+            gl.uniform2f(uniformLoc(prog, "uAspect"), ax, ay);
+            gl.uniform1f(uniformLoc(prog, "uZoom"), z);
+            gl.uniform2f(uniformLoc(prog, "uPan"), px, py);
             gl.bindVertexArray(vao);
             gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, info.nInstances);
             gl.disable(gl.BLEND);
         }
 
         gl.bindVertexArray(null);
-
-        // FPS counter — updated via state_update from server (see below)
-
-        requestAnimationFrame(render);
     }
 
-    // ---- Frame reception ----
+    // ---- Frame reception (pull-paced) ----
+    //
+    // The server sends this page its next frame only after we ack the last
+    // one (web_controller._preview_push), so a slow device gets fewer frames
+    // instead of a growing backlog that ends in a dropped socket. One decode
+    // in flight; a frame that arrives meanwhile replaces the waiting one.
 
-    function onFrame(pngBytes) {
-        const blob = new Blob([pngBytes], { type: "image/png" });
-        createImageBitmap(blob).then(bmp => {
-            gl.bindTexture(gl.TEXTURE_2D, frameTexture);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
-            bmp.close();
+    let socketRef = null;
+    let quality = "png";              // "png" lossless | "jpg" Light
+    let subscribed = false;
+    let decoding = false;
+    let pendingBytes = null;
+    let texW = 0, texH = 0;
+    let lastFrameAt = 0;
+    let shownCount = 0;
+    let shownRate = 0;
+    let lastServerFps = null;
+
+    try { quality = localStorage.getItem("preview-quality") === "jpg" ? "jpg" : "png"; }
+    catch (e) { /* storage blocked: default lossless */ }
+
+    function subscribe() {
+        if (!socketRef || !socketRef.connected || document.hidden) return;
+        socketRef.emit("subscribe_preview", { fmt: quality });
+        subscribed = true;
+        lastFrameAt = performance.now();   // grace period for the watchdog
+    }
+
+    function unsubscribe() {
+        if (socketRef && socketRef.connected && subscribed) {
+            socketRef.emit("unsubscribe_preview");
+        }
+        subscribed = false;
+    }
+
+    function ack() {
+        if (socketRef && socketRef.connected && subscribed) socketRef.emit("preview_ack");
+    }
+
+    function onFrame(bytes) {
+        lastFrameAt = performance.now();
+        if (decoding) { pendingBytes = bytes; return; }
+        decodeFrame(bytes);
+    }
+
+    function decodeFrame(bytes) {
+        decoding = true;
+        let type = "";                     // a Blob payload: let the decoder sniff it
+        if (bytes instanceof ArrayBuffer || ArrayBuffer.isView(bytes)) {
+            const head = bytes instanceof ArrayBuffer
+                ? new Uint8Array(bytes, 0, 2)
+                : new Uint8Array(bytes.buffer, bytes.byteOffset, 2);
+            type = (head[0] === 0xFF && head[1] === 0xD8) ? "image/jpeg" : "image/png";
+        }
+        createImageBitmap(new Blob([bytes], type ? { type } : {}))
+            .then(bmp => {
+                gl.bindTexture(gl.TEXTURE_2D, frameTexture);
+                if (bmp.width === texW && bmp.height === texH) {
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+                } else {
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bmp);
+                    texW = bmp.width; texH = bmp.height;
+                }
+                bmp.close();
+                shownCount++;
+                scheduleDraw(false);
+            })
+            .catch(err => console.warn("preview frame decode failed:", err))
+            .finally(() => {
+                decoding = false;
+                if (pendingBytes) {
+                    const next = pendingBytes;
+                    pendingBytes = null;
+                    decodeFrame(next);
+                } else {
+                    ack();                 // ready for the next one
+                }
+            });
+    }
+
+    function updateFpsLabel() {
+        const fpsEl = document.getElementById("preview-fps");
+        if (!fpsEl) return;
+        const parts = [];
+        if (lastServerFps != null) parts.push(lastServerFps + " FPS");
+        if (subscribed) parts.push(shownRate + " shown/s");
+        fpsEl.textContent = parts.join(" · ") || "-- FPS";
+    }
+
+    function startWatchdog() {
+        // Frames stopped while we are connected, subscribed and visible
+        // (a lost ack, a server restart that kept the socket): subscribe
+        // again. Subscribing is idempotent on the server.
+        let lastCount = 0;
+        setInterval(() => {
+            shownRate = shownCount - lastCount;
+            lastCount = shownCount;
+            updateFpsLabel();
+            if (subscribed && socketRef && socketRef.connected && !document.hidden
+                    && performance.now() - lastFrameAt > 3000) {
+                console.info("preview: no frames for 3 s, re-subscribing");
+                subscribe();
+            }
+        }, 1000);
+    }
+
+    function setupQualityButton() {
+        const btn = document.getElementById("preview-quality");
+        if (!btn) return;
+        const label = () => {
+            btn.textContent = quality === "jpg" ? "Light" : "Lossless";
+            btn.title = quality === "jpg"
+                ? "Light: JPEG frames, about a third of the data (slight colour error). Click for lossless."
+                : "Lossless: exact PNG frames. Click for Light (less data, for phones and wifi).";
+        };
+        label();
+        btn.addEventListener("click", () => {
+            quality = quality === "jpg" ? "png" : "jpg";
+            try { localStorage.setItem("preview-quality", quality); } catch (e) { /* ignore */ }
+            label();
+            if (subscribed) subscribe();
         });
     }
 
@@ -406,6 +544,7 @@ void main() {
                     panX = 0.0;
                     panY = 0.0;
                 }
+                scheduleDraw(true);
             });
         });
     }
@@ -430,6 +569,7 @@ void main() {
             panX = clipX - (clipX - panX) * newZoom / oldZoom;
             panY = clipY - (clipY - panY) * newZoom / oldZoom;
             zoom = newZoom;
+            scheduleDraw(false);
         }, { passive: false });
 
         // Drag to pan
@@ -445,6 +585,7 @@ void main() {
                 zoom = 1.0;
                 panX = 0.0;
                 panY = 0.0;
+                scheduleDraw(false);
             }
         });
 
@@ -457,6 +598,7 @@ void main() {
             lastMouseY = e.clientY;
             panX += dx;
             panY += dy;
+            scheduleDraw(false);
         });
 
         window.addEventListener("mouseup", (e) => {
@@ -548,7 +690,10 @@ void main() {
         setupPanZoom();
 
         const socket = createSocket();
+        socketRef = socket;
         setupSelectors(socket);
+        setupQualityButton();
+        startWatchdog();
 
         // Fetch geometry once
         fetch("/api/preview/geometry")
@@ -556,14 +701,27 @@ void main() {
             .then(geo => {
                 geometry = geo;
                 buildAllGeometry(geo);
-                requestAnimationFrame(render);
+                scheduleDraw(true);
             })
             .catch(err => console.error("Geometry fetch failed:", err));
 
-        // Subscribe to frame stream
+        window.addEventListener("resize", () => scheduleDraw(true));
+        if (window.ResizeObserver) {
+            new ResizeObserver(() => scheduleDraw(true)).observe(canvas.parentElement);
+        }
+
+        // Subscribe to the frame stream on every (re)connect; the server
+        // forgets a page when its socket drops.
         socket.on("connect", () => {
-            socket.emit("subscribe_preview");
+            subscribe();
             refreshSelectors();
+        });
+        socket.on("disconnect", () => { subscribed = false; decoding = false; pendingBytes = null; });
+
+        // A hidden tab stops the stream (the server then encodes nothing
+        // for it); coming back resumes it.
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) unsubscribe(); else subscribe();
         });
 
         socket.on("frame", onFrame);
@@ -574,9 +732,9 @@ void main() {
         socket.on("weather_changed", () => refreshSelectors());
 
         socket.on("state_update", (data) => {
-            const fpsEl = document.getElementById("preview-fps");
-            if (fpsEl && data.fps != null) {
-                fpsEl.textContent = data.fps + " FPS";
+            if (data.fps != null) {
+                lastServerFps = data.fps;
+                updateFpsLabel();
             }
 
             // Sync the SET dropdown to the live current set. Set switches are

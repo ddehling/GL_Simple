@@ -65,6 +65,11 @@ class WebController:
         # Add thread lock for thread-safe dictionary access
         self._dict_lock = threading.RLock()
         self._socket_clients = set()     # connected Socket.IO sids (see handle_connect)
+        # Preview viewers, sid -> {'fmt', 'ready', 'last_seq', 'sent_t'}.
+        # Per sid, so a page that never subscribed cannot take a viewer's
+        # stream down when it disconnects (the old shared counter did), and
+        # 'ready' paces each page to its own speed (see _preview_push).
+        self._preview_clients = {}
         
         # Cache for frequently accessed values to reduce lock contention
         self._values_cache = None
@@ -1100,29 +1105,48 @@ class WebController:
             emit('state_update', _sanitize_for_json(snapshot))
 
         @self.socketio.on('subscribe_preview')
-        def handle_subscribe_preview():
-            join_room('preview')
+        def handle_subscribe_preview(data=None):
+            # Idempotent: a page re-subscribes on every (re)connect and from
+            # its stall watchdog. {fmt: 'png' | 'jpg'} picks the encoding.
+            from flask import request as _req
+            sid = getattr(_req, 'sid', None)
+            fmt = (data or {}).get('fmt') if isinstance(data, dict) else None
+            fmt = fmt if fmt in ('png', 'jpg') else 'png'
             with self._dict_lock:
-                self.control_dict['_preview_subscribers'] = (
-                    self.control_dict.get('_preview_subscribers', 0) + 1
-                )
-            print(f"[WebController] Preview client subscribed")
+                new = sid not in self._preview_clients
+                c = self._preview_clients.setdefault(
+                    sid, {'last_seq': None, 'sent_t': 0.0})
+                c['fmt'] = fmt
+                c['ready'] = True
+                c['last_seq'] = None        # send the current frame at once
+                self._preview_sync_locked()
+            if new:
+                print(f"[WebController] Preview client subscribed ({fmt})")
+
+        @self.socketio.on('preview_ack')
+        def handle_preview_ack(*_args):
+            # The page has drawn its last frame: it may have the next one.
+            from flask import request as _req
+            with self._dict_lock:
+                c = self._preview_clients.get(getattr(_req, 'sid', None))
+                if c is not None:
+                    c['ready'] = True
 
         @self.socketio.on('unsubscribe_preview')
-        def handle_unsubscribe_preview():
-            leave_room('preview')
+        def handle_unsubscribe_preview(*_args):
+            from flask import request as _req
             with self._dict_lock:
-                self.control_dict['_preview_subscribers'] = max(
-                    0, self.control_dict.get('_preview_subscribers', 0) - 1
-                )
+                self._preview_clients.pop(getattr(_req, 'sid', None), None)
+                self._preview_sync_locked()
 
         @self.socketio.on('disconnect')
         def handle_disconnect(*_args):
             from flask import request as _req
+            sid = getattr(_req, 'sid', None)
             with self._dict_lock:
-                self._socket_clients.discard(getattr(_req, 'sid', None))
-                if self.control_dict.get('_preview_subscribers', 0) > 0:
-                    self.control_dict['_preview_subscribers'] -= 1
+                self._socket_clients.discard(sid)
+                if self._preview_clients.pop(sid, None) is not None:
+                    self._preview_sync_locked()
 
         @self.socketio.on('update_global')
         def handle_update_global(data):
@@ -2139,6 +2163,48 @@ class WebController:
                              {'status': 'failed', 'error': err,
                               'slot': slot, 'code': glsl or ''})
 
+    # A page that never acks (an old cached preview.js, a lost ack) still
+    # gets a frame this often instead of stalling for good.
+    PREVIEW_ACK_TIMEOUT_S = 1.0
+
+    def _preview_sync_locked(self):
+        """Publish the viewer count and wanted formats for the render loop
+        (Stories_OGL reads them into state). Call with _dict_lock held."""
+        self.control_dict['_preview_subscribers'] = len(self._preview_clients)
+        self.control_dict['_preview_formats'] = tuple(sorted(
+            {c['fmt'] for c in self._preview_clients.values()})) or ('png',)
+
+    def _preview_push(self, now):
+        """Send the newest preview frame to every page that is ready for it.
+
+        Pull-paced instead of broadcast: a page gets frame N+1 only after it
+        acked frame N (or PREVIEW_ACK_TIMEOUT_S passed). A broadcast at 15 Hz
+        queued without limit behind a slow page (a phone on show wifi, a
+        busy laptop tab): latency grew, memory grew, and the socket finally
+        missed its pings and dropped - the preview "cut out". Here a slow
+        page just gets fewer frames, and each frame is sent once per page."""
+        frame = self.control_dict.get('_preview_frame')
+        if not frame:
+            return
+        seq, payloads = frame
+        sends = []
+        with self._dict_lock:
+            for sid, c in self._preview_clients.items():
+                if c['last_seq'] == seq:
+                    continue
+                if not c['ready'] and now - c['sent_t'] < self.PREVIEW_ACK_TIMEOUT_S:
+                    continue
+                data = payloads.get(c['fmt']) or payloads.get('png') \
+                    or next(iter(payloads.values()), None)
+                if data is None:
+                    continue
+                c['ready'] = False
+                c['last_seq'] = seq
+                c['sent_t'] = now
+                sends.append((sid, data))
+        for sid, data in sends:
+            self.socketio.emit('frame', data, to=sid)
+
     def _start_emitter(self):
         """Start the background thread that pushes state updates via WebSocket."""
         self._emitter_running = True
@@ -2146,10 +2212,8 @@ class WebController:
         def emitter_loop():
             state_interval = 0.2    # 200ms for state updates (5 Hz)
             audio_interval = 0.033  # ~33ms for audio updates (30 Hz)
-            frame_interval = 0.066  # ~66ms for frame updates (15 Hz)
             last_state_push = 0
             last_audio_push = 0
-            last_frame_push = 0
             last_weather = None
             last_set = None
 
@@ -2279,18 +2343,12 @@ class WebController:
                     except Exception as e:
                         print(f"[WebController] Emitter audio error: {e}")
 
-                # Push preview frames at 15 Hz to subscribed clients, but
-                # only when the encoder has produced a new PNG since last
-                # broadcast (prevents re-emitting identical bytes).
-                if now - last_frame_push >= frame_interval:
-                    last_frame_push = now
+                # Preview frames: checked every pass (the encoder already
+                # caps new pictures at 15 Hz), sent per page as each one is
+                # ready - see _preview_push.
+                if self._preview_clients:
                     try:
-                        frame_png = self.control_dict.get('_frame_png')
-                        if frame_png is not None:
-                            frame_id = id(frame_png)
-                            if frame_id != getattr(self, '_last_broadcast_frame_id', None):
-                                self._last_broadcast_frame_id = frame_id
-                                self.socketio.emit('frame', frame_png, room='preview')
+                        self._preview_push(now)
                     except Exception as e:
                         print(f"[WebController] Emitter frame error: {e}")
 

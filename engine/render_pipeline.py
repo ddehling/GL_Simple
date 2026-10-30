@@ -49,28 +49,51 @@ class PreviewEncoder:
     so on a thread it costs the render loop only the hand-off.
 
     Single slot, latest wins: if the encoder is still busy when a newer
-    frame arrives, the older pending one is replaced, never queued. The
-    result lands in ``state['_frame_png']`` exactly as before (a bytes
-    assignment, atomic under the GIL), so the web emitter is unchanged.
+    frame arrives, the older pending one is replaced, never queued.
+
+    The result lands in ``state['_preview_frame']`` as one tuple
+    ``(seq, {fmt: bytes})`` (a single assignment, atomic under the GIL).
+    ``seq`` rises by one per NEW picture, so the web emitter can tell new
+    from old without comparing bytes (it used to compare ``id()`` of the
+    bytes object, which CPython reuses). Only the formats some viewer
+    asked for are encoded (``FORMATS``), and a frame identical to the
+    last one is not encoded or re-sent at all (a still scene, a blackout).
     """
+
+    # PNG: lossless; compression 1 + the RLE strategy is ~38 % smaller than
+    # OpenCV's default on real fan frames (52 vs 84 KB) for ~1 ms more,
+    # off the render thread. JPEG: the preview page's "Light" mode, 4:4:4
+    # (no chroma subsampling: one strip is one pixel column) quality 90,
+    # ~16 KB and ~0.3 ms, mean error ~2/255.
+    FORMATS = {
+        'png': ('.png', [cv2.IMWRITE_PNG_COMPRESSION, 1,
+                         cv2.IMWRITE_PNG_STRATEGY, cv2.IMWRITE_PNG_STRATEGY_RLE]),
+        'jpg': ('.jpg', [cv2.IMWRITE_JPEG_QUALITY, 90,
+                         cv2.IMWRITE_JPEG_SAMPLING_FACTOR,
+                         cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444]),
+    }
 
     def __init__(self, state: dict):
         self._state = state
         self._cond = threading.Condition()
         self._pending = None
         self._stop = False
+        self._seq = 0
+        self._last_frame = None
+        self._last_out = {}
         self.encoded = 0
+        self.skipped_same = 0
         self.last_encode_ms = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="preview-encode")
         self._thread.start()
 
-    def submit(self, composite: np.ndarray) -> None:
+    def submit(self, composite: np.ndarray, formats=('png',)) -> None:
         # Copy: a geometry provider may hand back a canvas it reuses.
         # 128x300x3 is ~115 KB, a few microseconds.
         frame = np.array(composite, copy=True)
         with self._cond:
-            self._pending = frame
+            self._pending = (frame, tuple(formats) or ('png',))
             self._cond.notify()
 
     def _run(self):
@@ -80,13 +103,28 @@ class PreviewEncoder:
                     self._cond.wait()
                 if self._stop:
                     return
-                frame, self._pending = self._pending, None
+                (frame, formats), self._pending = self._pending, None
             try:
                 t0 = time.perf_counter()
+                same = (self._last_frame is not None
+                        and frame.shape == self._last_frame.shape
+                        and np.array_equal(frame, self._last_frame))
+                need = [f for f in formats if f in self.FORMATS
+                        and not (same and f in self._last_out)]
+                if not need:
+                    self.skipped_same += 1
+                    continue
                 bgr = np.ascontiguousarray(frame[:, :, ::-1])
-                ok, png_buf = cv2.imencode('.png', bgr)
-                if ok:
-                    self._state['_frame_png'] = png_buf.tobytes()
+                out = dict(self._last_out) if same else {}
+                for fmt in need:
+                    ext, params = self.FORMATS[fmt]
+                    ok, buf = cv2.imencode(ext, bgr, params)
+                    if ok:
+                        out[fmt] = buf.tobytes()
+                if out:
+                    self._last_frame, self._last_out = frame, out
+                    self._seq += 1
+                    self._state['_preview_frame'] = (self._seq, out)
                     self.encoded += 1
                 self.last_encode_ms = (time.perf_counter() - t0) * 1000.0
             except Exception as e:      # a bad frame must not kill the thread
@@ -303,7 +341,8 @@ class RenderPipeline:
                 else:
                     # No provider: pick whatever the first canvas produced.
                     composite = next(iter(frames.values()))
-                self._preview_encoder.submit(composite)
+                self._preview_encoder.submit(
+                    composite, self.state.get('_preview_formats') or ('png',))
                 self.state['_perf_pipeline']['preview'] = (
                     time.perf_counter() - now)
                 self.state['_preview_encode_ms'] = (

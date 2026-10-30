@@ -1104,11 +1104,12 @@ class EnvironmentalSystem:
                           f"to '{req}' ({duration:.1f}s)")
                     self.transition_to_weather(target, duration)
 
-        # Copy PNG frame to web controller for preview streaming
+        # Hand the newest encoded preview frame, (seq, {fmt: bytes}), to the
+        # web controller for streaming (see PreviewEncoder).
         if hasattr(self, 'web_controller'):
-            png = self.scheduler.state.get('_frame_png')
-            if png is not None:
-                self.web_controller.control_dict['_frame_png'] = png
+            frame = self.scheduler.state.get('_preview_frame')
+            if frame is not None:
+                self.web_controller.control_dict['_preview_frame'] = frame
 
         # Per-frame phase timings for the hitch profiler (read by the main
         # loop). 'pipeline' sub-phases come from RenderPipeline.update.
@@ -2494,6 +2495,10 @@ class EnvironmentalSystem:
             state["_preview_active"] = (
                 self.web_controller.control_dict.get('_preview_subscribers', 0) > 0
             )
+            # Which encodings the watching pages asked for ('png' lossless,
+            # 'jpg' the page's Light mode); the encoder makes only these.
+            state["_preview_formats"] = (
+                self.web_controller.control_dict.get('_preview_formats') or ('png',))
         else:
             state["_preview_active"] = False
         state["scale"] = self.scale
