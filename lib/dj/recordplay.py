@@ -64,6 +64,24 @@ TAIL_BARS = 4                     # the record comes down over this after the sw
 TAIL_OUTRO_BARS = 8               # ...or this when the swap is in its outro
 KEY_BLEND = 0.68                  # two records overlap for phrases only when their keys fit this well (the conductor's ENTRY_FIT); under it, the cut
 KEY_LONG = 0.90                   # ...and only a near-perfect fit earns more than the short blend (Inevitable Ending -> Dunes at 0.55 got 36 bars, 2026-10-26)
+# THE PLANNED NIGHT (docs/DJ_SETS.md section 3, 2026-10-28): a pick the set planner hands over is probed like the brain's
+# own (never the relaxed blend your UP NEXT gets), with its own budget - one probe per alternate a slot carries - so the
+# brain's two re-picks are not spent on the plan and a third plan pick is never taken unprobed
+PLAN_PROBES = 3
+# THE CUT LANDS PAST THE SILENCE (the user's pick, 2026-10-29: "past the silence"): a cut brought Prophecy Theme in whole at
+# its landmark 0:00.9, and the room heard 4.3 s of nothing (37 of 897 records land a cut on 1 s or more of near-silence,
+# 34 of them on the first-downbeat fallback). On a cut only - a blend's next record starts under the record, a breakdown
+# swap's lands on a drop - when the record is under CUT_QUIET_DB of its own loud level for CUT_QUIET_S from the landmark,
+# the cut lands on the first downbeat whose first beat reaches it (a median of one bar, no phrase snap). Its phrases still
+# count from the landmark. The landmark stays when the new landing would not leave play_min + RUNWAY_SLACK_S.
+CUT_QUIET_DB = -30.0
+CUT_QUIET_S = 1.0
+CUT_LAND_MAX_BARS = 32
+# THE BRAIN'S PICK IS PRE-CHECKED (2026-10-29): before a decode, the brain's next record is placed by the strict placement
+# against the record playing with the vocal envelope the stems keep on disk (as the plan's pre-check does), walking the
+# brain's ranking up to this many records; the seed 3 gap pick spent the brain's two re-picks on decodes the rules refused
+# and the third came in unprobed on the relaxed blend
+BRAIN_PRECHECKS = 6
 ALLOWED_WHY =("still decoding", "nothing planned yet", "is the record playing", "not on a deck", "no such song", "press START")
 
 
@@ -141,12 +159,14 @@ class Rec:
         self.track = track
         self.state = "decoding"       # decoding | ready | playing | leaving
         self.cue_t = 0.0              # where it starts (the opener's first downbeat; a blend sets it)
+        self.phrase_t = None          # where its phrases count from when that is not cue_t (a cut landed past its silent start)
         self.open_clock = None        # submix clock when it started sounding
-        self.open_bar = None          # its bar index (by its grid) at cue_t: phrases count from here
+        self.open_bar = None          # its bar index (by its grid) at phrase_t / cue_t: phrases count from here
         self.next_pressed = False     # NEXT was pressed while it was the record (the gate's min-play exemption)
         self.rate = 1.0               # the rate it was started at (beat-matched to the record before it)
         self.vox = None               # the VOCAL stem's envelope, one value per half second, 1.0 = its loud level (measured at decode; nothing is played from stems)
         self.mix_env = None           # the mix's own RMS per half second (its quiet passages are not dropouts)
+        self.src = "brain"            # whose pick it is: "user" (UP NEXT), "plan" (the set planner's slot) or "brain"
 
 
 class RecordPlayer:
@@ -180,6 +200,19 @@ class RecordPlayer:
         self._unfit = set()           # track ids found unmixable with the record playing (vocals / keys / tempo): picked again
         self._repicks = 0             # how often the next record was picked again for this record (two at most)
         self._user_ids = set()        # track ids the user asked for (UP NEXT): never picked again, the relaxed blend applies
+        self._plan_repicks = 0        # ...the set planner's picks probed and refused for this record (PLAN_PROBES at most)
+        self._src = {}                # track id -> "user" | "plan" | "brain": who picked it (the hook says; the gate and the tab read it)
+        self._no_probe = set()        # plan picks handed over without the strict probe (the one relaxed seam after a record nothing follows)
+        self.steer = None             # callable -> (energy, bpm, pool ids or None) or None: the planned night steering the brain's gap picks
+        # track ids whose file would not decode tonight (2026-10-29): never picked or offered again - without this a planned
+        # slot with a missing file was handed back every tick, a decode thread each, and the room ran out into silence
+        self._failed = set()
+        # track ids you ejected tonight (2026-10-29): never picked or offered again, and a decode of one still in flight
+        # is dropped where it lands - ejected while it decoded, it used to mount a moment later and play as the next record
+        self._ejected = set()
+        self._reopen = False          # the opener was ejected while it loaded: the room has no record, a new opener is picked
+        self._vox_disk = {}           # track id -> the stems' vocal envelope on disk (the brain's pre-check; _disk_vox)
+        self._vox_top = None          # .stems/vox_top.json, read once
 
     # -- lifecycle -----------------------------------------------------------------------------------------------------
     def prepare(self, first_track=None):
@@ -209,6 +242,7 @@ class RecordPlayer:
         with self._lock:
             self._pending["a"] = (first, samples, vox, menv)
         self.songs["a"] = Rec("a", first)
+        self.songs["a"].src = self._src.get(first.id, "brain")
         self._first = first
         self._move("ready", f"ready before START: {first.title[:30]} is decoded on deck A", to_id=first.id)
         return first
@@ -342,6 +376,40 @@ class RecordPlayer:
             return body
         return max(0.0, track.nearest_downbeat(0.0))
 
+    def cut_landing(self, r):
+        """(landing, landmark): where a CUT brings record `r` in whole. The landmark, unless the record is near-silent
+        there (under CUT_QUIET_DB of its mix envelope's 95th percentile for CUT_QUIET_S): then the first downbeat after it
+        whose first beat reaches that level, while it still leaves play_min + RUNWAY_SLACK_S. No envelope (not measured):
+        the landmark."""
+        t = r.track
+        lm = self.landmark(t)
+        env = getattr(r, "mix_env", None)
+        if env is None or len(env) < 4:
+            return lm, lm
+        import numpy as np
+        e = np.asarray(env, dtype=np.float32)
+        loud = float(np.percentile(e, 95))
+        if loud <= 0.0:
+            return lm, lm
+        thr = loud * 10.0 ** (CUT_QUIET_DB / 20.0)
+        i0 = int(lm * 2)
+        i1 = i0 + int(math.ceil(CUT_QUIET_S * 2))
+        if i1 > len(e) or float(e[i0:i1].max()) >= thr:
+            return lm, lm
+        bar = self.bar_s(t, lm)
+        need = self.play_min_s + RUNWAY_SLACK_S
+        for k in range(1, CUT_LAND_MAX_BARS + 1):
+            dn = max(0.0, float(t.nearest_downbeat(lm + k * bar)))
+            if dn <= lm + 1e-3:
+                continue
+            j0 = int(dn * 2)
+            j1 = max(j0 + 1, int(math.ceil((dn + 0.25 * self.bar_s(t, dn)) * 2)))
+            if j0 >= len(e) or float(t.duration_s) - dn < need:
+                break
+            if float(e[j0:j1].max()) >= thr:
+                return dn, lm
+        return lm, lm
+
     def landmark_has_build(self, track):
         """True when the section before the landmark is a build (the breakdown swap wants a drop to land)."""
         lm = self.landmark(track)
@@ -361,27 +429,69 @@ class RecordPlayer:
 
     # -- picking and decoding --------------------------------------------------------------------------------------------
     def _busy_ids(self):
-        ids = {r.track.id for r in self.songs.values()} | {t.id for t in self._decoding.values()} | {p[0].id for p in self._pending.values()}
+        # (snapshots: the decode thread adds and drops entries while the Director's thread reads them - 2026-10-29)
+        ids = {r.track.id for r in list(self.songs.values())} | {t.id for t in list(self._decoding.values())} | {p[0].id for p in list(self._pending.values())}
         return ids
+
+    @staticmethod
+    def _hook_answer(got):
+        """The pick hook's answer as (track, src, probe): (track, 'user' | 'plan'[, probe]) or a bare track (= 'user',
+        the callers before the set planner), or None."""
+        if got is None:
+            return None, None, True
+        if isinstance(got, tuple):
+            t = got[0] if got else None
+            src = str(got[1]) if len(got) > 1 and got[1] else "user"
+            probe = bool(got[2]) if len(got) > 2 else True
+            return t, (src if src in ("user", "plan") else "user"), probe
+        return got, "user", True
 
     def _pick(self, current):
         busy = self._busy_ids()
         hook = self.pick_hook
         if hook is not None:
             try:
-                t = hook()
+                t, src, probe = self._hook_answer(hook())
             except Exception as e:  # noqa: BLE001
                 self.last_error = f"pick hook: {type(e).__name__}: {e}"
-                t = None
+                t, src, probe = None, None, True
             if t is not None and t.id not in busy:
+                # WHOSE PICK (docs/DJ_SETS.md section 3, the three hook fixes, 2026-10-28): only YOUR record (UP NEXT) is
+                # kept at any cost - it skips the re-pick and gets the relaxed blend. Fed through here unchanged, every
+                # planned record counted as one you asked for, so every awkward pair got the outro-only blend: the
+                # automixer again. A plan pick is probed like the brain's own (its own budget), and it never brings back a
+                # record found unfit with the one playing, avoided, or spent past the plan's probes.
                 why = self.fits_as_record(t)
-                if why is None:
-                    self._user_ids.add(t.id)
+                if why is None and t.id in self._failed:
+                    why = "its file would not decode"
+                if src == "user":
+                    self._ejected.discard(t.id)       # (your record again, by your own hand: UP NEXT outranks your eject)
+                elif why is None and t.id in self._ejected:
+                    why = "you ejected it tonight"
+                if why is None and src == "plan":
+                    if t.id in self._unfit:
+                        why = "found unfit with the record playing"
+                    elif t.id in (self.avoid_ids or ()):
+                        why = "played tonight or skipped"
+                    elif current is not None and self._plan_repicks >= PLAN_PROBES:
+                        why = f"the plan's {PLAN_PROBES} probes are spent on this record"
+                    if why is not None:
+                        self._move("pick", f"{t.title[:30]} is not the plan's pick now ({why}): the DJ picks instead", to_id=t.id)
+                        t = None
+                elif why is not None:
+                    self._move("pick", f"{t.title[:30]} cannot be the record ({why}): the DJ picks instead", to_id=t.id)
+                    t = None
+                if t is not None:
+                    self._src[t.id] = src
+                    if src == "user":
+                        self._user_ids.add(t.id)
+                    elif not probe:
+                        self._no_probe.add(t.id)
                     return t
-                self._move("pick", f"{t.title[:30]} cannot be the record ({why}): the DJ picks instead", to_id=t.id)
         if self.brain is None:
             return None
-        self.brain.veto_ids = set(self.avoid_ids) | busy | set(self._unfit) | {t.id for t in self.library if self.fits_as_record(t) is not None}
+        self.brain.veto_ids = set(self.avoid_ids) | busy | set(self._unfit) | set(self._failed) | set(self._ejected) \
+            | {t.id for t in self.library if self.fits_as_record(t) is not None}
         if current is None:
             cands = [t for t in self.library if t.id not in self.brain.veto_ids]
             if not cands:
@@ -404,33 +514,119 @@ class RecordPlayer:
         cur_bpm = float(current.bpm) * (self._rate_now(self.record) if self.record else 1.0)
         clash = {t.id for t in self.library if t.id not in base_veto
                  and ((self.key_fit(current, t) or 1.0) < KEY_BLEND or abs(cur_bpm / max(float(t.bpm), 1e-6) - 1.0) > MAX_TEMPO_GAP)}
-        pick = None
-        for veto in (base_veto | clash, base_veto):
-            self.brain.veto_ids = veto
+        # A GAP IN A PLANNED NIGHT (docs/DJ_SETS.md section 3, 2026-10-28): the brain fills it steered by the plan's energy
+        # and tempo at this point of the night, from the theme's crate - not the flat 0.6 that made the night go nowhere.
+        # No plan: exactly as before.
+        e_t, b_t, pool = 0.6, None, None
+        if self.steer is not None:
             try:
-                pick, _meta = self.brain.choose_next(current, 0.6, float(current.bpm))
-            except Exception as e:  # noqa: BLE001
-                self.last_error = f"pick: {type(e).__name__}: {e}"
-                pick = None
-            if pick is not None:
-                if veto is not base_veto or not clash:
+                s = self.steer()
+            except Exception:
+                s = None
+            if s:
+                e_t, b_t, pool = float(s[0]), (float(s[1]) if s[1] else None), (set(s[2]) if len(s) > 2 and s[2] else None)
+        old_pool = self.brain.pool_ids
+        # MIXABLE BEFORE THE CRATE (2026-10-29): a record that mixes from outside the theme's crate (your SONGS pool, else the
+        # library) beats a clashing one from inside it - the clashing pick is played to its end or cut, the very thing the
+        # plan exists to avoid, and the plan lands here by design (nothing in the crate follows; its probes spent). So the
+        # passes are: the crate mixable, the pool mixable, and only then the crate / the pool whatever the keys and tempo.
+        passes = ([(pool, base_veto | clash)] if pool else []) + [(old_pool, base_veto | clash)]
+        if clash:
+            passes += ([(pool, base_veto)] if pool else []) + [(old_pool, base_veto)]
+        pick = None
+        refused = []                                  # the mixable picks the pre-check refused, in the brain's order: (track, why)
+        try:
+            for pids, veto in passes:
+                mixable = veto is not base_veto or not clash
+                if not mixable and refused:
+                    break                             # (records that mix by key and tempo are left: never a clashing one)
+                self.brain.pool_ids = pids
+                while True:
+                    self.brain.veto_ids = veto | {t.id for t, _w in refused}
+                    try:
+                        pick, _meta = self.brain.choose_next(current, e_t, float(current.bpm), bpm_target=b_t) if b_t else \
+                            self.brain.choose_next(current, e_t, float(current.bpm))
+                    except Exception as e:  # noqa: BLE001
+                        self.last_error = f"pick: {type(e).__name__}: {e}"
+                        pick = None
+                    if pick is None or not mixable:
+                        break
+                    # THE STRICT PLACEMENT BEFORE THE DECODE (BRAIN_PRECHECKS, 2026-10-29): the brain's ranking is walked
+                    # until a record the rules can place after the record playing, no decode spent on one they refuse
+                    why = self._precheck_pick(current, pick)
+                    if why is None:
+                        break
+                    refused.append((pick, why))
+                    self._unfit.add(pick.id)          # (unfit with the record playing: cleared at the next swap)
+                    pick = None
+                    if len(refused) >= BRAIN_PRECHECKS:
+                        break
+                if pick is not None:
+                    if not mixable:
+                        self._move("pick", f"no record in a key that mixes with {current.title[:24]} ({current.camelot or '?'}) is left tonight: {pick.title[:24]} ({pick.camelot or '?'}) will be a cut", to_id=pick.id)
                     break
-                self._move("pick", f"no record in a key that mixes with {current.title[:24]} ({current.camelot or '?'}) is left tonight: {pick.title[:24]} ({pick.camelot or '?'}) will be a cut", to_id=pick.id)
-                break
-        self.brain.veto_ids = base_veto
+                if len(refused) >= BRAIN_PRECHECKS:
+                    break
+        finally:
+            self.brain.veto_ids = base_veto
+            self.brain.pool_ids = old_pool
+        if pick is None and refused:
+            # nothing the brain offered can be placed by the rules after the record playing: its best record comes in on the
+            # relaxed blend at the record's way out (never a cut nobody pressed), said - and not decoded twice to be told so
+            pick, why = refused[0]
+            self._no_probe.add(pick.id)
+            self._move("pick", f"no record the DJ could pick blends by the rules after {current.title[:24]} ({len(refused)} checked; "
+                               f"{why[:60]}): {pick.title[:24]}, its best, on the relaxed blend at the record's way out", to_id=pick.id)
+        if pick is not None:
+            self._src[pick.id] = "brain"
         return pick
+
+    def _disk_vox(self, t):
+        """The vocal envelope the stems keep on disk (setplanner._vox_measure: env.npz, no decode - the plan's pre-check
+        reads the same), cached per record; None without stems (nothing known, nothing refused)."""
+        cache = self.__dict__.setdefault("_vox_disk", {})
+        if t.id in cache:
+            return cache[t.id]
+        v = None
+        try:
+            from lib.dj import setplanner as SP
+            top = self.__dict__.get("_vox_top")
+            if top is None:
+                top = self._vox_top = SP._load_vox_cache(self.music_root)
+            v, _exact = SP._vox_measure(self.music_root, t, top)
+        except Exception:
+            v = None
+        cache[t.id] = v
+        return v
+
+    def _precheck_pick(self, current, t):
+        """None when the brain's pick `t` can be placed after the record playing by the strict placement (its vocals from
+        the stems' envelope on disk), else why not. Nothing playing to place it after: None."""
+        rec = self.songs.get(self.record) if self.record else None
+        if rec is None or rec.track.id != current.id:
+            return None
+        probe = Rec("q", t)
+        probe.vox, probe.state = self._disk_vox(t), "ready"
+        try:
+            ok = self._find_blend_strict(rec, probe) is not None
+        except Exception:
+            return None
+        return None if ok else (getattr(self, "_no_blend_why", "") or "no placement")
 
     def _decode(self, track, deck, opener=False):
         if deck in self._decoding or deck in self._pending:
             return
         self._decoding[deck] = track
         self.songs[deck] = Rec(deck, track)
+        src = self.songs[deck].src = self._src.get(track.id, "brain")
         self._move("decoding", f"{track.title[:30]} is decoding onto deck {deck.upper()}" + (" (the opener)" if opener else ""), to_id=track.id)
 
         def work():
             try:
                 from lib.dj.stemload import decode_mix
                 samples = decode_mix(self.db.abs(track.path))
+                if track.id in self._ejected:
+                    return                            # ejected while it decoded (eject said so): no envelope, no probe, no landing
                 try:
                     vox = vocal_envelope(self.music_root, track.id, mix_rms=mix_level(samples))
                 except Exception as e:  # noqa: BLE001
@@ -442,25 +638,40 @@ class RecordPlayer:
                     menv = None
                 # THE PICK MUST BLEND (the user, 2026-10-26: never a cut the DJ decided): with its vocal envelope known, a next
                 # record that cannot be placed under the record playing by the rules is picked again, twice at most; a record
-                # the user asked for is kept (the relaxed blend applies)
-                if not opener and self.record in self.songs and track.id not in self._user_ids and self._repicks < 2:
+                # the user asked for is kept (the relaxed blend applies). A plan pick has its own budget (PLAN_PROBES, one per
+                # alternate), and the one plan seam the planner labelled relaxed is handed over unprobed (2026-10-28)
+                if track.id in self._ejected:
+                    return                            # (ejected while its envelopes were measured: no probe of it)
+                budget = (self._plan_repicks < PLAN_PROBES) if src == "plan" else (self._repicks < 2)
+                if not opener and self.record in self.songs and track.id not in self._user_ids and track.id not in self._no_probe and budget:
                     probe = Rec(deck, track)
                     probe.vox, probe.state = vox, "ready"
                     try:
                         feasible = self._find_blend_strict(self.songs[self.record], probe) is not None
                     except Exception:
                         feasible = True
+                    if not feasible and track.id in self._ejected:
+                        return                        # (ejected during the probe: your eject, not a refusal - no budget spent)
                     if not feasible:
                         self._unfit.add(track.id)
-                        self._repicks += 1
+                        if src == "plan":
+                            self._plan_repicks += 1
+                        else:
+                            self._repicks += 1
                         self.songs.pop(deck, None)
                         del samples
                         self._move("pick", f"{track.title[:28]} cannot be blended with {self.songs[self.record].track.title[:22]} by the rules "
                                            f"({getattr(self, '_no_blend_why', 'no placement')}): picked again", to_id=track.id)
                         return
                 with self._lock:
+                    if track.id in self._ejected:     # (under the lock eject takes: it lands, or it is dropped - never both)
+                        return
                     self._pending[deck] = (track, samples, vox, menv)
             except Exception as e:  # noqa: BLE001
+                # (2026-10-29) remembered for the night: the hook and the brain never hand this record over again, and
+                # it leaves the unprobed set so a later pick of it is not waved through
+                self._failed.add(track.id)
+                self._no_probe.discard(track.id)
                 self.last_error = f"decode {track.title}: {type(e).__name__}: {e}"
                 self._move("error", self.last_error, to_id=track.id)
                 self.songs.pop(deck, None)
@@ -469,29 +680,41 @@ class RecordPlayer:
         threading.Thread(target=work, daemon=True, name=f"record-decode-{deck}").start()
 
     def _mount(self, deck):
+        # ONE STEP UNDER THE LOCK (2026-10-29): from the landing's pop to 'ready' - eject reads "still loading" under the
+        # same lock, so it sees the record either not mounted (the decode is dropped) or ready on its deck (the eject
+        # unloads it). Split, an eject between the two dropped a record already loaded: the blend planned on it played it
         with self._lock:
             item = self._pending.pop(deck, None)
-        if item is None:
-            return None
-        track, samples, vox, menv = (tuple(item) + (None, None))[:4]
-        r = self.songs.get(deck)
-        if r is None or r.track.id != track.id:
-            r = self.songs[deck] = Rec(deck, track)
-        r.vox, r.mix_env = vox, menv
-        opener = self.record is None and not any(x.state in ("playing", "leaving") for x in self.songs.values())
-        r.cue_t = max(0.0, track.nearest_downbeat(0.0)) if opener else self.landmark(track)
-        self.submix.post_many([
-            {"cmd": "unload", "deck": deck},
-            {"cmd": "load", "deck": deck, "samples": samples, "grid": track.grid, "track_id": track.id, "gain_db": track.gain_db},
-            {"cmd": "gain", "deck": deck, "value": 0.0, "ramp_s": 0.0},
-            {"cmd": "eq", "deck": deck, "low": 1.0, "mid": 1.0, "high": 1.0, "ramp_s": 0.0},
-            {"cmd": "filter", "deck": deck, "mode": "off"},
-            {"cmd": "echo", "deck": deck, "active": False},
-            {"cmd": "rate", "deck": deck, "value": 1.0},
-            {"cmd": "stretch_hold", "deck": deck, "value": False},      # (a fresh record plays bit-exact until it is synced)
-            {"cmd": "cue", "deck": deck, "time_s": r.cue_t},
-        ])
-        r.state = "ready"
+            if item is not None and item[0].id in self._ejected:
+                item = None                           # (ejected between its landing and this mount: dropped)
+            if item is None:
+                return None
+            track, samples, vox, menv = (tuple(item) + (None, None))[:4]
+            r = self.songs.get(deck)
+            if r is None or r.track.id != track.id:
+                r = self.songs[deck] = Rec(deck, track)
+                r.src = self._src.get(track.id, "brain")
+            r.vox, r.mix_env = vox, menv
+            self._no_probe.discard(track.id)
+            opener = self.record is None and not any(x.state in ("playing", "leaving") for x in self.songs.values())
+            r.cue_t = max(0.0, track.nearest_downbeat(0.0)) if opener else self.landmark(track)
+            r.phrase_t = None
+            self.submix.post_many([
+                {"cmd": "unload", "deck": deck},
+                {"cmd": "load", "deck": deck, "samples": samples, "grid": track.grid, "track_id": track.id, "gain_db": track.gain_db},
+                {"cmd": "gain", "deck": deck, "value": 0.0, "ramp_s": 0.0},
+                {"cmd": "eq", "deck": deck, "low": 1.0, "mid": 1.0, "high": 1.0, "ramp_s": 0.0},
+                {"cmd": "filter", "deck": deck, "mode": "off"},
+                {"cmd": "echo", "deck": deck, "active": False},
+                {"cmd": "rate", "deck": deck, "value": 1.0},
+                {"cmd": "stretch_hold", "deck": deck, "value": False},      # (a fresh record plays bit-exact until it is synced)
+                {"cmd": "cue", "deck": deck, "time_s": r.cue_t},
+            ])
+            r.state = "ready"
+            if track.id in self._ejected:             # (ejected while this mount ran: it leaves again)
+                self.songs.pop(deck, None)
+                self.submix.post({"cmd": "unload", "deck": deck})
+                return None
         self._move("ready", f"{track.title[:30]} is ready on deck {deck.upper()}" + (f", cued to its first downbeat" if opener else f" (its landmark at {_mmss(r.cue_t)})"), to_id=track.id)
         return r
 
@@ -514,8 +737,18 @@ class RecordPlayer:
             ready = [r for r in self.songs.values() if r.state == "ready"]
             if ready:
                 self._open(ready[0], clock + int(LEAD_S * RATE))
-            else:
-                self.wait_why = "the first record is decoding" if self.songs else "nothing to play: no record could be picked"
+                return
+            if self._reopen and not self.songs and not self._decoding and not self._pending:
+                # the opener you ejected while it loaded has let go of its deck: another opener (2026-10-29)
+                first = self._pick(None)
+                if first is not None:
+                    self._reopen = False
+                    self._first = first
+                    self._decode(first, self._free_deck() or "a", opener=True)
+                    return
+            self.wait_why = "the first record is decoding" if self.songs else \
+                ("the record you ejected is still letting go of its deck: another is picked next" if self._reopen and (self._decoding or self._pending)
+                 else "nothing to play: no record could be picked")
             return
         rec = self.songs.get(self.record)
         if rec is None:
@@ -577,10 +810,10 @@ class RecordPlayer:
             self.wait_why = ""
 
     def _has_next(self):
-        return any(d != self.record and r.state in ("decoding", "ready") for d, r in self.songs.items()) or bool(self._decoding) or bool(self._pending)
+        return any(d != self.record and r.state in ("decoding", "ready") for d, r in list(self.songs.items())) or bool(self._decoding) or bool(self._pending)
 
     def _next_rec(self):
-        for d, r in self.songs.items():
+        for d, r in list(self.songs.items()):
             if d != self.record and r.state in ("decoding", "ready"):
                 return r
         return None
@@ -593,12 +826,15 @@ class RecordPlayer:
             {"at": at, "cmd": "start", "deck": r.deck},
         ])
         r.state, r.open_clock = "playing", at
-        r.open_bar = self._bar_index(r.track, r.cue_t)
+        r.open_bar = self._bar_index(r.track, self._phrase0(r))
         self.record = r.deck
         self.cut = None
+        self._reopen = False
         self._next_asap = False
         self._settled_clock = 0
         self._repicks = 0
+        self._plan_repicks = 0
+        self._unfit.clear()                           # (unfit WITH the record before: see _swapped)
         self.wait_why = ""
         if self.brain is not None:
             try:
@@ -608,13 +844,19 @@ class RecordPlayer:
         self._move("open", f"{r.track.title} opens whole at {r.track.bpm:.1f} bpm, key {r.track.camelot or '?'}, from {_mmss(r.cue_t)}", to_id=r.track.id)
 
     # -- the plan's geometry ------------------------------------------------------------------------------------------------
+    @staticmethod
+    def _phrase0(r):
+        """Where record `r`'s phrases count from: its cue, or the landmark a cut landed past (cut_landing, 2026-10-29)."""
+        ph = getattr(r, "phrase_t", None)
+        return r.cue_t if ph is None else ph
+
     def _geometry(self, rec):
         """(track, t_now, bar_s, k_now, open_bar, k_min, k_end): the record's bars as the plan counts them."""
         track = rec.track
         t_now = self._song_time_now(rec.deck)
         bar_s = self.bar_s(track, t_now)
         k_now = self._bar_index(track, t_now)
-        open_bar = self._bar_index(track, rec.cue_t, t_ref=t_now)
+        open_bar = self._bar_index(track, self._phrase0(rec), t_ref=t_now)
         k_min = int(math.ceil((rec.cue_t + self.play_min_s - self._first_down(track, t_now)) / bar_s - 1e-6))
         k_end = int(math.floor((float(track.duration_s) - 0.3 - self._first_down(track, t_now)) / bar_s))
         return track, t_now, bar_s, k_now, open_bar, k_min, k_end
@@ -820,6 +1062,11 @@ class RecordPlayer:
         if self.cut is not None:
             self.submix.post({"cmd": "cancel", "txn": self.cut["txn"]})
 
+    def _still_next(self, nxt):
+        """Under self._lock: the next record is still on its deck and not ejected, so a plan may be posted on it (an
+        eject from another thread takes the same lock: 2026-10-29)."""
+        return self.songs.get(nxt.deck) is nxt and nxt.track.id not in getattr(self, "_ejected", ())
+
     # -- THE BLEND ----------------------------------------------------------------------------------------------------------
     def _plan_blend(self, nxt, why, size=None, asap=False, k_start=None):
         """Decide the blend ONCE (docs/DJ_MIXING.md 5 A). `size`: short | standard | long (None: the largest that fits
@@ -845,6 +1092,8 @@ class RecordPlayer:
                                   at_song_t=float(rec.track.duration_s) - 0.3)
         found = None
         with self._lock:
+            if not self._still_next(nxt):
+                return False                          # (ejected meanwhile: nothing is planned on its deck)
             track, t_now, bar_s, k_now, open_bar, k_min, k_end = self._geometry(rec)
             lm_b = self.landmark(nxt.track)
             bar_b = self.bar_s(nxt.track, lm_b)
@@ -889,6 +1138,8 @@ class RecordPlayer:
                 return self._plan_cut(nxt, why=f"{why} - no phrase of {track.title[:22]} is left for a blend: it plays to its end", at_song_t=float(track.duration_s) - 0.3)
             return self._plan_cut(nxt, why=f"{why} - {track.title[:24]} has no room left for a blend: the cut", phrase=False, min_bars=NEXT_BARS, honor_min=False)
         with self._lock:
+            if not self._still_next(nxt):
+                return False                          # (ejected between the placement and the post)
             L, _T0 = SIZES[chosen]
             S, E = K + L, K + L + T
             T_K = self._clock_of_song_time(rec.deck, self._bar_time(track, K, t_now))
@@ -896,7 +1147,7 @@ class RecordPlayer:
             wall_bar = int(round(bar_s / self._rate_now(rec.deck) * RATE))          # one bar of the record, in frames
             beat = wall_bar // 4
             T_S, T_E = T_K + L * wall_bar, T_K + (L + T) * wall_bar
-            nxt.cue_t, nxt.rate = cue_b, ratio
+            nxt.cue_t, nxt.rate, nxt.phrase_t = cue_b, ratio, None
             self._cancel_plan()
             self._seq += 1
             txn = f"blend{self._seq}"
@@ -934,7 +1185,9 @@ class RecordPlayer:
                         "clock": T_K, "swap_clock": T_S, "end_clock": T_E, "stop_clock": T_E + int(0.4 * RATE),
                         "bar": self.bar_n + (K - k_now), "swap_bar": self.bar_n + (S - k_now), "end_bar": self.bar_n + (E - k_now),
                         "L": L, "T": T, "song_t": self._bar_time(track, K, t_now), "cue_b": cue_b, "ratio": ratio,
-                        "why": why, "state": "planned"}
+                        "why": why, "state": "planned",
+                        # (the planned night's gate counts relaxed blends on plan picks: the target is none)
+                        "relaxed": bool(found and found.get("relaxed")), "src_b": nxt.src}
             self._next_asap = False
             self.wait_why = ""
         in_s = (T_K - self._clock()) / RATE
@@ -986,6 +1239,8 @@ class RecordPlayer:
             return False
         bs, be, D = pick
         with self._lock:
+            if not self._still_next(nxt):
+                return False
             lm = self.landmark(nxt.track)
             bar_b = self.bar_s(nxt.track, lm)
             K = bs - 4
@@ -999,7 +1254,7 @@ class RecordPlayer:
             # record's quiet; a vocal over it is the flag 'clash'); the blend search answers instead
             if self._vox_quiet(nxt, cue_b, lm) is False:
                 return False
-            nxt.cue_t, nxt.rate = cue_b, ratio
+            nxt.cue_t, nxt.rate, nxt.phrase_t = cue_b, ratio, None
             T_K = self._clock_of_song_time(rec.deck, self._bar_time(track, K, t_now))
             T_K = max(T_K, self._clock() + int((LEAD_S + 0.6) * RATE))
             wall_bar = int(round(bar_s / self._rate_now(rec.deck) * RATE))
@@ -1033,7 +1288,7 @@ class RecordPlayer:
                         "clock": T_K, "swap_clock": T_D, "end_clock": T_D + beat, "stop_clock": T_D + int(STOP_AFTER_S * RATE) + int(0.1 * RATE),
                         "bar": self.bar_n + (K - k_now), "swap_bar": self.bar_n + (D - k_now), "end_bar": self.bar_n + (D - k_now),
                         "L": D - K, "T": 0, "song_t": self._bar_time(track, K, t_now), "cue_b": cue_b, "ratio": ratio,
-                        "why": why, "state": "planned"}
+                        "why": why, "state": "planned", "relaxed": False, "src_b": nxt.src}
             self._next_asap = False
             self.wait_why = ""
         in_s = (T_K - self._clock()) / RATE
@@ -1056,6 +1311,8 @@ class RecordPlayer:
         if rec is None or nxt is None or nxt.state != "ready":
             return False
         with self._lock:
+            if not self._still_next(nxt):
+                return False
             track, t_now, bar_s, k_now, open_bar, k_min, k_end = self._geometry(rec)
             if at_song_t is not None:
                 k = max(k_now + 1, int(math.ceil((at_song_t - self._first_down(track, t_now)) / bar_s - 1e-6)))
@@ -1074,8 +1331,9 @@ class RecordPlayer:
                                 k = kj
                                 break
             k = min(k, max(k_now + 1, k_end))
-            lm = self.landmark(nxt.track)
+            lm, lm0 = self.cut_landing(nxt)             # (past a silent start; its phrases count from the landmark)
             nxt.cue_t, nxt.rate = lm, 1.0
+            nxt.phrase_t = lm0 if lm != lm0 else None
             T = self._clock_of_song_time(rec.deck, self._bar_time(track, k, t_now))
             T = max(T, self._clock() + int(LEAD_S * RATE) + int(self.hole_beats * 60.0 / float(track.bpm) * RATE))
             hole = int(self.hole_beats * 60.0 / float(track.bpm) * RATE)
@@ -1097,13 +1355,14 @@ class RecordPlayer:
             self.cut = {"seq": self._seq, "txn": txn, "kind": "cut", "size": "cut", "a": rec.deck, "b": nxt.deck,
                         "clock": T, "swap_clock": T, "end_clock": T, "hole_clock": T - hole, "stop_clock": stop_at + int(0.1 * RATE),
                         "bar": self.bar_n + (k - k_now), "swap_bar": self.bar_n + (k - k_now), "end_bar": self.bar_n + (k - k_now),
-                        "L": 0, "T": 0, "song_t": self._bar_time(track, k, t_now), "cue_b": lm, "ratio": 1.0,
-                        "why": why, "state": "planned"}
+                        "L": 0, "T": 0, "song_t": self._bar_time(track, k, t_now), "cue_b": lm, "lm0": lm0, "ratio": 1.0,
+                        "why": why, "state": "planned", "relaxed": False, "src_b": nxt.src}
             self._next_asap = False
             self.wait_why = ""
         in_s = (T - self._clock()) / RATE
+        where = "at its landmark" if lm == lm0 else f"past its silent start, at {lm:.1f} s (its landmark {lm0:.1f} s is near-silent)"
         self._move("cut_move" if moved else "cut_plan",
-                   f"the cut {'moves' if moved else 'is planned'}: {nxt.track.title[:28]} comes in whole at its landmark in {_mmss(in_s)} ({self.cut['bar'] - self.bar_n} bars) - {why}",
+                   f"the cut {'moves' if moved else 'is planned'}: {nxt.track.title[:28]} comes in whole {where} in {_mmss(in_s)} ({self.cut['bar'] - self.bar_n} bars) - {why}",
                    from_id=rec.track.id, to_id=nxt.track.id)
         return True
 
@@ -1120,7 +1379,7 @@ class RecordPlayer:
             c["state"] = "started"
             if b is not None:
                 b.state, b.open_clock = "playing", c["clock"]
-                b.open_bar = self._bar_index(b.track, b.cue_t)
+                b.open_bar = self._bar_index(b.track, self._phrase0(b))
                 self._move("blend_start", f"{b.track.title[:28]} is in under {a.track.title[:24] if a else 'the record'}: bass out, rising"
                            + (f"; the breakdown swap lands in {c['swap_bar'] - self.bar_n} bars" if c["kind"] == "breakdown" else f"; THE BASS SWAP in {c['swap_bar'] - self.bar_n} bars"),
                            from_id=a.track.id if a else None, to_id=b.track.id)
@@ -1141,9 +1400,13 @@ class RecordPlayer:
         if b is not None:
             if b.state != "playing":
                 b.state, b.open_clock = "playing", c["clock"]
-            b.open_bar = self._bar_index(b.track, b.cue_t)
+            b.open_bar = self._bar_index(b.track, self._phrase0(b))
             self.record = b.deck
             self._repicks = 0
+            self._plan_repicks = 0
+            # a record found unfit was unfit WITH THE RECORD BEFORE (its vocals, its key, its room): a new record, a new
+            # question - one bad pair no longer bans a record for the whole night (docs/DJ_SETS.md section 3, 2026-10-28)
+            self._unfit.clear()
             if self.brain is not None:
                 try:
                     self.brain.note_played(b.track)
@@ -1204,7 +1467,7 @@ class RecordPlayer:
             kind = "blend" if self.cut["kind"] != "cut" else "cut"
             self._move("next", f"NEXT: the {kind} starts in {self.cut['bar'] - self.bar_n} bars")
             return True, f"NEXT: {nxt.track.title[:28]} comes in in {self.cut['bar'] - self.bar_n} bars, the bass swap {self.cut['L']} bars later" if kind == "blend" \
-                else f"NEXT: the cut in {self.cut['bar'] - self.bar_n} bars, {nxt.track.title[:28]} whole at its landmark"
+                else f"NEXT: the cut in {self.cut['bar'] - self.bar_n} bars, {nxt.track.title[:28]} whole {self._cut_where(self.cut)}"
         return False, "still decoding: the blend comes the moment it is ready"
 
     def bad(self):
@@ -1295,7 +1558,7 @@ class RecordPlayer:
         return False, "nothing planned yet: the record plays on"
 
     def deck_of(self, track_id):
-        for d, r in self.songs.items():
+        for d, r in list(self.songs.items()):
             if r.track.id == int(track_id):
                 return d
         return None
@@ -1315,20 +1578,67 @@ class RecordPlayer:
                 return False
         return True if known else None
 
+    def _loading_deck(self, tid):
+        """The deck a record is still loading onto (decoding, or decoded and not mounted yet), else None."""
+        for dk, t in list(self._decoding.items()):
+            if t.id == tid:
+                return dk
+        for dk, item in list(self._pending.items()):
+            if item[0].id == tid:
+                return dk
+        d = self.deck_of(tid)
+        return d if d is not None and self.songs[d].state == "decoding" else None
+
     def eject(self, track_id):
-        d = self.deck_of(track_id)
-        if d is None:
-            return "not on a deck"
-        r = self.songs[d]
-        if d == self.record:
-            return f"{r.track.title[:30]} is the record playing (press NEXT to move on)"
-        if self.cut is not None and self.cut["b"] == d:
-            if self.cut["state"] != "planned":
-                return f"{r.track.title[:30]} is the record coming in (the blend is under way)"
-            self.submix.post({"cmd": "cancel", "txn": self.cut["txn"]})
-            self.cut = None
-        self.songs.pop(d, None)
-        self.submix.post({"cmd": "unload", "deck": d})
+        tid = int(track_id)
+        loading = False
+        with self._lock:
+            # (read under the lock _mount holds from the landing to 'ready', 2026-10-29: a stale "still loading" dropped a
+            # record already loaded and left the blend planned on it - it started at the blend's clock)
+            ld = self._loading_deck(tid)
+            if ld is not None and ld != self.record:
+                r = self.songs.get(ld)
+                # belt and braces: on its deck and ready, or the plan's next record (its _decoding entry outlives the
+                # mount by a moment) - the normal eject below: the planned blend cancelled, the deck unloaded
+                mounted = (r is not None and r.track.id == tid and r.state != "decoding") or \
+                    (self.cut is not None and self.cut.get("b") == ld)
+                if not mounted:
+                    loading = True
+                    self._ejected.add(tid)
+                    item = self._pending.pop(ld, None) if ld in self._pending and self._pending[ld][0].id == tid else None
+                    t = r.track if r is not None and r.track.id == tid else (item[0] if item else self._decoding.get(ld))
+                    if r is not None and r.track.id == tid:
+                        self.songs.pop(ld, None)
+        if loading:
+            # EJECTED WHILE LOADING (2026-10-29): the deck's entry went, but its decode thread ran on - it landed a moment
+            # later and played as the next record. Now the id is remembered (_ejected: the landing, the mount, the hook and
+            # the brain all refuse it), what has landed is dropped, and the deck is free the moment the thread lets go: the
+            # next pick (the plan's next slot, else the brain) follows from there. Nothing was loaded: nothing to unload.
+            title = getattr(t, "title", None) or f"#{tid}"
+            self._no_probe.discard(tid)
+            if self.record is None:
+                self._reopen = True                   # (nothing plays yet - the opener, or the room went quiet: step picks an opener)
+            self._move("eject", f"ejected while loading: {title[:30]} will not play", from_id=tid)
+            return f"ejected while loading: {title[:30]} will not play"
+        # ONE STEP UNDER THE LOCK (2026-10-29): the plans (_plan_blend / _plan_cut / _plan_breakdown) are posted under this
+        # lock on the Director's thread, and the planner tab ejects from the GUI thread. Unlocked, a blend planned between
+        # "no plan on this deck" and the unload stayed queued on the unloaded deck: the record playing faded out and
+        # stopped at its end, and nothing followed. Now the eject sees the plan (and cancels it), or the plan sees the eject
+        with self._lock:
+            d = self.deck_of(track_id)
+            if d is None:
+                return "not on a deck"
+            r = self.songs[d]
+            if d == self.record:
+                return f"{r.track.title[:30]} is the record playing (press NEXT to move on)"
+            if self.cut is not None and self.cut["b"] == d:
+                if self.cut["state"] != "planned":
+                    return f"{r.track.title[:30]} is the record coming in (the blend is under way)"
+                self.submix.post({"cmd": "cancel", "txn": self.cut["txn"]})
+                self.cut = None
+            self._ejected.add(r.track.id)             # (no plan's skips to say so: the brain never picks it again tonight)
+            self.songs.pop(d, None)
+            self.submix.post({"cmd": "unload", "deck": d})
         self._move("eject", f"{r.track.title[:30]} off deck {d.upper()}: another next record is picked", from_id=r.track.id)
         return f"{r.track.title[:30]} off the decks"
 
@@ -1513,13 +1823,21 @@ class RecordPlayer:
         except Exception:
             pass
 
+    @staticmethod
+    def _cut_where(c):
+        """Where a cut brings the next record in, in words (past its silent start: cut_landing)."""
+        lm0, cue = c.get("lm0"), c.get("cue_b")
+        if lm0 is None or cue is None or abs(float(cue) - float(lm0)) < 1e-6:
+            return "at its landmark"
+        return f"past its silent start ({float(cue):.1f} s)"
+
     def plan_words(self, c=None):
         """One line saying what the plan does (the tab's row)."""
         c = c or self.cut
         if c is None:
             return ""
         if c["kind"] == "cut":
-            return "comes in whole at its landmark · the cut on the one, a beat of nothing before it"
+            return f"comes in whole {self._cut_where(c)} · the cut on the one, a beat of nothing before it"
         if c["kind"] == "breakdown":
             return f"starts under the breakdown, bass out · its drop lands at bar {c['swap_bar']} where the breakdown resolves; the record goes out in a beat"
         return (f"starts bass-out at bar {c['bar']}, fader up, highs then mids · THE BASS SWAP at bar {c['swap_bar']} · "
@@ -1541,7 +1859,7 @@ class RecordPlayer:
             nxt = self.songs.get(c["b"])                 # (in under the record, not yet the record)
         if nxt is not None:
             out["next"] = {"title": nxt.track.title, "artist": nxt.track.artist or "", "track_id": nxt.track.id, "state": nxt.state, "deck": nxt.deck,
-                           "landmark_s": nxt.cue_t}
+                           "landmark_s": nxt.cue_t, "src": nxt.src}
         if c is not None:
             in_s = max(0.0, (c["clock"] - self._clock()) / RATE)
             bdeck = c["b"]
@@ -1550,7 +1868,8 @@ class RecordPlayer:
                           "lead_bars": c["L"], "tail_bars": c["T"],
                           "swap_in_s": max(0.0, (c["swap_clock"] - self._clock()) / RATE), "swap_bar": c["swap_bar"], "end_bar": c["end_bar"],
                           "end_in_s": max(0.0, (c["end_clock"] - self._clock()) / RATE),
-                          "ratio": c.get("ratio", 1.0), "words": self.plan_words(c),
+                          "ratio": c.get("ratio", 1.0), "words": self.plan_words(c), "relaxed": bool(c.get("relaxed")), "src_b": c.get("src_b"),
+                          "cue_b": c.get("cue_b"), "clock": c.get("clock"),
                           "a_track_id": self.songs[c["a"]].track.id if c["a"] in self.songs else None,
                           "b_track_id": self.songs[bdeck].track.id if bdeck in self.songs else None}
         elif rec is not None and nxt is not None:

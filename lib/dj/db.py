@@ -13,7 +13,10 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 16              # v16: tracks.key_version (key v2
+SCHEMA_VERSION = 17              # v17: themes (the set planner's saved
+                                 # themes, docs/DJ_SETS.md section 5;
+                                 # the presets stay in code)
+#                                 v16: tracks.key_version (key v2
                                  # reader, 2026-10-28; dj_keys.py
                                  # backfills rows below features.
                                  # KEY_VERSION without a full rescan)
@@ -153,6 +156,13 @@ CREATE TABLE IF NOT EXISTS setlist_entries (
     target_play_s REAL                  -- autofill timing solver's play hint
 );
 CREATE INDEX IF NOT EXISTS idx_setlist_entries ON setlist_entries(setlist_id, position);
+CREATE TABLE IF NOT EXISTS themes (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    theme_json TEXT NOT NULL,           -- v17 the set planner's theme (crate, leans, chapters, keys_mode, night, length)
+    example_ids TEXT,                   -- v17 JSON [track ids]: "a night like these" (re-inferred on load)
+    created_at REAL, updated_at REAL
+);
 """
 
 _JSON_COLS = ("beat_grid", "energy_curve", "band_curve", "mood_hist",
@@ -799,6 +809,55 @@ class LibraryDB:
                 " GROUP BY track_id", (since, min_s)):
             out[r["track_id"]] = int(r["n"])
         return out
+
+    # -- saved themes (v17; lib/dj/themestore.py is the caller) -------------
+    def list_themes(self):
+        """[{id, name, example_ids, created_at, updated_at}] by name."""
+        out = []
+        for r in self.conn.execute(
+                "SELECT id, name, example_ids, created_at, updated_at"
+                " FROM themes ORDER BY name COLLATE NOCASE"):
+            d = dict(r)
+            d["example_ids"] = json.loads(d["example_ids"]) \
+                if d.get("example_ids") else []
+            out.append(d)
+        return out
+
+    def load_theme(self, name):
+        """{id, name, theme, example_ids, created_at, updated_at} or None."""
+        r = self.conn.execute("SELECT * FROM themes WHERE name = ?",
+                              (str(name),)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        try:
+            d["theme"] = json.loads(d.pop("theme_json"))
+        except (TypeError, ValueError):
+            return None
+        d["example_ids"] = json.loads(d["example_ids"]) \
+            if d.get("example_ids") else []
+        return d
+
+    def save_theme(self, name, theme, example_ids=None):
+        """Insert or replace the theme called `name`; returns its id."""
+        now = time.time()
+        ex = json.dumps([int(i) for i in example_ids]) if example_ids \
+            else None
+        self.conn.execute(
+            "INSERT INTO themes (name, theme_json, example_ids, created_at,"
+            " updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(name) DO UPDATE"
+            " SET theme_json = excluded.theme_json, example_ids ="
+            " excluded.example_ids, updated_at = excluded.updated_at",
+            (str(name), json.dumps(theme), ex, now, now))
+        self.conn.commit()
+        return self.conn.execute("SELECT id FROM themes WHERE name = ?",
+                                 (str(name),)).fetchone()[0]
+
+    def delete_theme(self, name):
+        cur = self.conn.execute("DELETE FROM themes WHERE name = ?",
+                                (str(name),))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def recent_plays(self, hours=12.0):
         return [dict(r) for r in self.conn.execute(

@@ -8,6 +8,7 @@ BRIDGE: press = arm with a countdown, again = go now, right-click = cancel), GOO
 in tooltips. No lanes, no clips, no stems, no levels: the engines (lib/dj/system.py, lib/dj/remix.py) do
 that under lib/dj/director.py.
 """
+import json
 import os
 import time
 
@@ -26,7 +27,8 @@ DIAL_LABELS = {
                "(bass out, highs then mids, THE BASS SWAP on the phrase, the record out over a phrase), or the breakdown swap when the record offers one (docs/DJ_MIXING.md) · "
                "one song at a time (the autoDJ as it is) · parts of two songs together · parts of three · MASHUP: three songs taken apart, a new combination every few bars (the MASHUP tab has the pads); the playing song is carried across"),
     "energy": ("ENERGY", {"cool": "cool", "hold": "hold", "amp": "amp"},
-               "a lean on the night's arc; amped, the clock may also travel with it when layered"),
+               "a lean on the night's arc; amped, the clock may also travel with it when layered. On a planned night every STORY "
+               "chapter's energy course is moved by −0.25 / 0 / +0.25 (clamped to 0..1): the strip and the STORY rows show the result"),
     "tempo": ("TEMPO", {"slower": "slower", "hold": "hold", "faster": "faster"},
               "lean the tempo journey: picks aim 6 bpm lower / higher; layered, the clock travels 3 % that way"),
     "pace": ("PACE", {"short": "short", "normal": "normal", "long": "long"},
@@ -64,6 +66,19 @@ DIAL_ORDER = ("layers", "mixing", "arc", "length", "energy", "tempo", "pace", "s
               "moments", "bass", "tone", "level")
 # the composed moments, in the order they sit on the row: key -> (label, one-song label or None)
 MOMENT_ROW = (("slam", "SLAM"), ("break", "BREAK"), ("sing", "SING"), ("takeover", "TAKEOVER"), ("bridge", "BRIDGE"), ("build", "BUILD"), ("again", "AGAIN"))
+
+
+class _AutoLabel(QLabel):
+    """A status line that takes no room while it has nothing to say (the NIGHT tab's editor gets the height)."""
+
+    def __init__(self, text=""):
+        super().__init__(text)
+        self.setVisible(bool(text))
+
+    def setText(self, text):
+        super().setText(text)
+        if self.isHidden() == bool(text):
+            self.setVisible(bool(text))
 
 
 class SongMap(QWidget):
@@ -413,20 +428,40 @@ class ArcStrip(QWidget):
     as dots at their energy, the playhead. Click = 'we are here' (both engines' set clocks move); drag up
     or down = bend the curve there (the ARC dial becomes 'yours')."""
     PAD = 10
+    NIGHT_H = 116                        # the night strip's height: the energy steps and the chapter bands read at a glance
+
+    ARC_TIP = ("the night's arc: the plan (curve), what played (dots at each song's energy), where we are (line)\n"
+               "click = we are here on the arc · drag up / down = bend the plan there (ARC becomes 'yours')")
 
     def __init__(self, tab):
         super().__init__(tab)
         self.tab = tab
         self.arc = None
+        self.night = None                # a planned night's status (NightPlan.status()): the strip draws the night instead
+        self.night_rows = {}
         self._press = None
         self.setMinimumHeight(48)
         self.setMaximumHeight(48)
-        self.setToolTip("the night's arc: the plan (curve), what played (dots at each song's energy), where we are (line)\n"
-                        "click = we are here on the arc · drag up / down = bend the plan there (ARC becomes 'yours')")
+        self.setToolTip(self.ARC_TIP)
         self.setCursor(Qt.CursorShape.CrossCursor)
+        self.setMouseTracking(True)
 
     def set_arc(self, arc):
         self.arc = arc
+        self.update()
+
+    def set_night(self, sp, rows=None):
+        """THE NIGHT STRIP (docs/DJ_SETS.md section 4): with a plan, the chapters as bands, each record a block at its
+        energy (solid played, hollow ahead), the playhead, a chapter's warning as an amber / red mark; None = the arc."""
+        sp = sp if (sp and sp.get("chapters")) else None
+        was = self.night is not None
+        self.night, self.night_rows = sp, (rows or {})
+        if (sp is not None) != was:
+            h = self.NIGHT_H if sp is not None else 48
+            self.setMinimumHeight(h)
+            self.setMaximumHeight(h)
+            self.setToolTip("" if sp is not None else self.ARC_TIP)
+            self.setCursor(Qt.CursorShape.ArrowCursor if sp is not None else Qt.CursorShape.CrossCursor)
         self.update()
 
     def _xy(self, p, e):
@@ -444,6 +479,10 @@ class ArcStrip(QWidget):
         qp = QPainter(self)
         qp.setRenderHint(QPainter.RenderHint.Antialiasing)
         qp.fillRect(self.rect(), QColor(20, 20, 26))
+        if self.night is not None:
+            from tools.dj.planner.nighttab import paint_night
+            paint_night(self, qp, self.night, self.PAD)
+            return
         a = self.arc or {}
         curve = a.get("curve") or []
         qp.setPen(QColor(154, 154, 166))
@@ -500,11 +539,27 @@ class ArcStrip(QWidget):
         qp.setPen(QColor(230, 230, 236))
         qp.drawText(self.PAD, 13, txt)
 
+    def _planned(self):
+        """A planned night is wanted (drawn or still being planned): the chapters are the arc - nothing to bend or jump."""
+        return self.night is not None or getattr(self.tab, "_nsel", {}).get("kind") == "plan"
+
     def mousePressEvent(self, ev):
+        if self._planned():
+            self._press = None
+            return
         self._press = (ev.position().x(), ev.position().y(), False)
 
     def mouseMoveEvent(self, ev):
-        if self._press is None or self.tab.director is None:
+        if self.night is not None:
+            from PyQt6.QtWidgets import QToolTip
+            from tools.dj.planner.nighttab import night_tip
+            tip = night_tip(self, self.night, self.night_rows, ev.position(), self.PAD)
+            if tip:
+                QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
+            else:
+                QToolTip.hideText()
+            return
+        if self._press is None or self.tab.director is None or self._planned():
             return
         x0, y0, moved = self._press
         if moved or abs(ev.position().y() - y0) > 4:
@@ -518,7 +573,7 @@ class ArcStrip(QWidget):
             return
         x0, y0, moved = self._press
         self._press = None
-        if not moved and self.tab.director is not None:
+        if not moved and self.tab.director is not None and not self._planned():
             p, _ = self._pe(ev.position().x(), ev.position().y())
             self.tab.director.arc_jump(p)
             self.set_arc(self.tab.director.arc_status())
@@ -528,7 +583,8 @@ class DirectorTab(QWidget):
     # every command the operator gives is logged as "ui: ..." BEFORE it acts, in the Director's event trail and
     # the night's log - twice a direction was "ignored" and the log held no trace of the click at all
     _LOGGED = ("_next", "_hold", "_moment", "_moment_cancel", "_bad", "_flag", "_dial", "_stem", "_program",
-               "_queue", "_queue_selected", "_unqueue", "_queue_top", "_toggle")
+               "_queue", "_queue_selected", "_unqueue", "_queue_top", "_toggle",
+               "_night_picked", "_night_length", "_night_build", "_night_save", "_night_delete", "_night_infer")
 
     def _wrap_ui(self, fn, name):
         import inspect
@@ -590,13 +646,51 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.start_btn.clicked.connect(self._toggle)
         top.addWidget(self.start_btn)
         top.addSpacing(12)
-        self.theme_box = QComboBox()
-        from lib.dj.themes import PICKER_THEMES
-        self.theme_box.addItems(list(PICKER_THEMES))
-        self.theme_box.setCurrentText("groove")
-        self.theme_box.setToolTip("theme: what kind of songs, and the shape of the night")
-        self.theme_box.currentTextChanged.connect(lambda n: self.director and self.director.set_theme(n))
-        top.addWidget(self.theme_box)
+        # ONE PICKER (docs/DJ_SETS.md section 4, 2026-10-29) in place of the brain's theme box and the night box: the planned
+        # nights first (the presets, then your saved themes), then "no plan, the DJ picks: <the brain's theme>" - today's
+        # behaviour exactly. Applies on pick: before START the whole night is planned, during it the rest from slot +2.
+        # A planned night's theme is shaped in the NIGHT tab (right column, RECORD mode).
+        self._brain_theme = "groove"                 # (the brain's theme: its gap picks in a planned night, every pick without one)
+        self._nsel = {"kind": "brain", "name": "groove", "theme": None, "src": None, "edited": False}
+        self._nseed = 2 + int(time.time()) % 9973
+        self._nlen = 90.0
+        self._nsent = {}                             # id(Director) -> the night signature it was sent
+        self._nbox = {}                              # answers from the planner's process (worker threads write, the timer reads)
+        self.night_pick = QComboBox()
+        self.night_pick.setMinimumWidth(210)
+        # (the box grows to its longest entry - "✎ <name> (unsaved)" included: the suffix is the part that says so)
+        self.night_pick.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.NIGHT_PICK_TIP = ("the night: a planned night (the presets, then the themes you saved - right-click one to delete it), "
+                               "or no plan, the DJ picks record by record from one of its themes; applies on pick")
+        self.night_pick.setToolTip(self.NIGHT_PICK_TIP)
+        self.night_pick.activated.connect(self._night_picked)
+        self.night_pick.view().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.night_pick.view().customContextMenuRequested.connect(self._night_pick_menu)
+        self.night_pick.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.night_pick.customContextMenuRequested.connect(lambda _p: self._night_pick_menu(None))
+        top.addWidget(self.night_pick)
+        self.len_box = QComboBox()
+        for m in (45, 60, 90, 120, 180, 240, 360):
+            self.len_box.addItem(f"{m} min" if m < 120 else f"{m // 60} h", float(m))
+        self.len_box.setCurrentIndex(2)
+        self.len_box.setToolTip("LENGTH of the planned night; applies on pick (during the night the rest is planned again)")
+        self.len_box.activated.connect(self._night_length)
+        top.addWidget(self.len_box)
+        self.build_btn = QPushButton("BUILD")
+        self.build_btn.setProperty("kind", "small")
+        self.build_btn.setMinimumHeight(24)
+        self.build_btn.setCheckable(True)
+        self.build_btn.setToolTip("BUILD: the same theme with a new night seed - the near-ties fall another way (lit while it plans)")
+        self.build_btn.clicked.connect(self._night_build)
+        top.addWidget(self.build_btn)
+        self.save_btn = QPushButton("SAVE")
+        self.save_btn.setProperty("kind", "small")
+        self.save_btn.setMinimumHeight(24)
+        self.save_btn.setCheckable(True)
+        self.save_btn.setToolTip("SAVE this theme (with its seed and length) under a name, into the library's themes")
+        self.save_btn.clicked.connect(lambda _c: self._night_save())
+        top.addWidget(self.save_btn)
+        self._night_fill_picker()
         # OUTPUTS (user 2026-09-20): where the floor plays and where the cue (the PAIRS preview) plays - two devices
         self.outputs_btn = QPushButton("OUTPUTS")
         self.outputs_btn.setToolTip("choose the MAIN output (the floor) and the CUE output (the headphone preview of PAIRS); "
@@ -605,7 +699,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         top.addWidget(self.outputs_btn)
         self.songs_box = SetlistBox(self)
         self.songs_box.setMinimumWidth(220)
-        self.songs_box.setToolTip("a playlist (the Set tab's saved lists) as the pool of songs; whole library lifts it")
+        self.SONGS_TIP = "a playlist (the Set tab's saved lists) as the pool of songs; whole library lifts it"
+        self.SONGS_TIP_PLAN = ("a planned night's records come from its crate (NIGHT › CRATE › from: the library or a playlist); "
+                               "this box only feeds the DJ's gap picks and the SONGS list")
+        self.songs_box.setToolTip(self.SONGS_TIP)
         self.songs_box.currentIndexChanged.connect(self._pool_changed)
         top.addWidget(self.songs_box)
         self.state_lbl = QLabel("")
@@ -753,6 +850,18 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.search.setToolTip("empty = the whole pool, ranked by fit to what is playing; ✓ fits from here, ✗ would be rejected (the reason follows); double-click = UP NEXT")
         self.search.textChanged.connect(self._fill_search)
         srow.addWidget(self.search, 1)
+        # A NIGHT LIKE THESE (docs/DJ_SETS.md section 2, item 3): 2 to 5 records selected (Ctrl / Shift + click) plan a
+        # night inferred from them - the crate around them, leans by lift, the story from their energy spread
+        self.like_btn = QPushButton("≈ LIKE THESE")
+        self.like_btn.setProperty("kind", "small")
+        self.like_btn.setCheckable(True)
+        self.like_btn.setMinimumHeight(20)
+        self.like_btn.setMaximumHeight(24)
+        self.like_btn.setToolTip("plan a night like the selected records (2 to 5, Ctrl / Shift + click): the crate around them widened to "
+                                 "about twice the night's need, leans by how much rarer a word is in the library, vocals from their "
+                                 "stems, one flat chapter or a rise (lit while it is inferred)")
+        self.like_btn.clicked.connect(lambda _c: self._like_selected())
+        srow.addWidget(self.like_btn)
         left.addLayout(srow)
         # STEERING the list: what kind of song, relative to the reference (the last queued song, else the
         # playing one), and how to sort it
@@ -760,28 +869,39 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         frow.setSpacing(4)
         self.filter_groups = {}
 
+        # (the row fits a 1280 window: short faces, the whole word in the tooltip; no "any" buttons - a lit option
+        # pressed again goes dark, and none lit = any)
         def fgroup(name, opts, tips):
             grp = QButtonGroup(self)
-            grp.setExclusive(True)
-            for opt, tip in zip(opts, tips):
-                b = QPushButton(opt)
+            grp.setExclusive(False)
+
+            def pressed(b, g=grp):
+                if b.isChecked():
+                    for o in g.buttons():
+                        if o is not b and o.isChecked():
+                            o.setChecked(False)
+                self._found_sig = None
+                self._fill_search()
+            for (opt, face), tip in zip(opts, tips):
+                b = QPushButton(face)
                 b.setCheckable(True)
                 b.setProperty("kind", "small")
+                b.setProperty("opt", opt)
                 b.setMinimumHeight(20)
                 b.setMaximumHeight(22)
-                b.setToolTip(tip)
-                b.setChecked(opt == opts[0])
-                b.clicked.connect(lambda _c: (setattr(self, "_found_sig", None), self._fill_search()))
+                b.setToolTip(tip + " (press again: any)")
+                b.clicked.connect(lambda _c, bb=b: pressed(bb))
                 grp.addButton(b)
                 frow.addWidget(b)
             self.filter_groups[name] = grp
-            frow.addSpacing(8)
-        fgroup("voice", ("any", "inst", "vocal"), ("any song", "instrumentals only", "songs that sing"))
-        fgroup("energy", ("any", "calmer", "same", "hotter"),
-               ("any energy", "a step calmer than the reference (the last queued song, else the playing one): 0.04-0.30 below",
-                "about the same energy as the reference", "a step hotter than the reference: 0.04-0.30 above (a chain of these is a build; "
+            frow.addSpacing(6)
+        fgroup("voice", (("inst", "inst"), ("vocal", "vox")), ("instrumentals only", "vocal: songs that sing"))
+        fgroup("energy", (("calmer", "calm"), ("same", "E="), ("hotter", "hot")),
+               ("calmer: a step calmer than the reference (the last queued song, else the playing one): 0.04-0.30 below",
+                "the same energy: about the same energy as the reference", "hotter: a step hotter than the reference: 0.04-0.30 above (a chain of these is a build; "
                 "when nothing hotter fits, the list falls back to the same energy and says so)"))
-        fgroup("tempo", ("any", "slower", "same", "faster"), ("any tempo", "slower than the reference", "within 2 bpm of the reference", "faster than the reference"))
+        fgroup("tempo", (("slower", "slow"), ("same", "bpm="), ("faster", "fast")),
+               ("slower: slower than the reference", "the same tempo: within 2 bpm of the reference", "faster: faster than the reference"))
         self.f_hook = QPushButton("hook")
         self.f_hook.setCheckable(True)
         self.f_hook.setProperty("kind", "small")
@@ -790,20 +910,21 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.f_hook.setToolTip("only songs with a measured hook (a sung chorus that repeats)")
         self.f_hook.clicked.connect(lambda _c: (setattr(self, "_found_sig", None), self._fill_search()))
         frow.addWidget(self.f_hook)
-        self.f_unplayed = QPushButton("unheard")
+        self.f_unplayed = QPushButton("new")
         self.f_unplayed.setCheckable(True)
         self.f_unplayed.setChecked(True)
         self.f_unplayed.setProperty("kind", "small")
         self.f_unplayed.setMinimumHeight(20)
         self.f_unplayed.setMaximumHeight(22)
-        self.f_unplayed.setToolTip("hide what already played tonight")
+        self.f_unplayed.setToolTip("unheard: hide what already played tonight")
         self.f_unplayed.clicked.connect(lambda _c: (setattr(self, "_found_sig", None), self._fill_search()))
         frow.addWidget(self.f_unplayed)
-        frow.addSpacing(8)
+        frow.addSpacing(6)
         self.sort_box = QComboBox()
-        for label, key in (("by fit", "fit"), ("calm → hot", "energy"), ("hot → calm", "energy_desc"), ("by bpm", "bpm"), ("by title", "title"), ("by hook", "hook")):
+        for label, key in (("fit", "fit"), ("calm→hot", "energy"), ("hot→calm", "energy_desc"), ("bpm", "bpm"), ("title", "title"), ("hook", "hook")):
             self.sort_box.addItem(label, key)
-        self.sort_box.setToolTip("how the list is ordered; ✓ always above ✗")
+        self.sort_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.sort_box.setToolTip("the order of the list: by fit, calm → hot, hot → calm, by bpm, by title, by hook; ✓ always above ✗")
         self.sort_box.currentIndexChanged.connect(lambda _i: (setattr(self, "_found_sig", None), self._fill_search()))
         frow.addWidget(self.sort_box)
         frow.addStretch(1)
@@ -831,6 +952,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         lists = QHBoxLayout()
         self.found = QListWidget()
         self.found.setMinimumHeight(80)
+        self.found.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)   # (several records: "a night like these")
         # (the item can be None: Enter on an empty list, or a row the refill replaced between the key and the signal)
         self.found.itemDoubleClicked.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)
         self.found.itemActivated.connect(lambda it: self._queue(it.data(Qt.ItemDataRole.UserRole)) if it is not None else None)   # Enter
@@ -909,6 +1031,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(3)
         self.dial_groups, self._dial_labels = {}, {}
+        self._dial_cells, self._dial_pos = {}, {}     # (the NIGHT tab borrows the cells that act in RECORD mode)
+        self.dial_grid = grid
         for i, name in enumerate(DIAL_ORDER):
             options = DIALS[name]
             title, labels, tip = DIAL_LABELS[name]
@@ -940,6 +1064,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             grid.addWidget(cell, i // 2, i % 2)
             self.dial_groups[name] = group
             self._dial_labels[name] = head
+            self._dial_cells[name], self._dial_pos[name] = cell, (i // 2, i % 2)
         right.addLayout(grid)
         # MOOD: the library's own tags as toggles - only songs carrying a lit tag may play (none lit = all)
         mood_h = QLabel("MOOD")
@@ -947,11 +1072,20 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         mood_h.setToolTip("the tags of the songs in play (the chosen playlist, else the whole library); light one or more and only songs "
                           "carrying at least one of them may play (none lit = everything); the chips follow the playlist box")
         self.mood_h = mood_h
-        right.addWidget(mood_h)
+        # (MOOD, and the moments below, are boxes the NIGHT tab borrows in RECORD mode: MOOD while no night is planned)
+        self.mood_box = QWidget()
+        mbl = QVBoxLayout(self.mood_box)
+        mbl.setContentsMargins(0, 0, 0, 0)
+        mbl.setSpacing(4)
+        mbl.addWidget(mood_h)
         self.mood_row = QGridLayout()
         self.mood_row.setSpacing(4)
         self.mood_chips = {}
-        right.addLayout(self.mood_row)
+        mbl.addLayout(self.mood_row)
+        self._dials_mood_slot = QVBoxLayout()
+        self._dials_mood_slot.setContentsMargins(0, 0, 0, 0)
+        self._dials_mood_slot.addWidget(self.mood_box)
+        right.addLayout(self._dials_mood_slot)
         QTimer.singleShot(1500, self._fill_tags)
         # OVER THE NEXT SONGS: one PROGRAM box (the 2×4 grid of programs left the surface), a song count, stop
         from lib.dj.director import PROGRAMS
@@ -1003,6 +1137,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         right.addWidget(self.prog_lbl)
         # THE MOMENTS: NEXT / STAY, then the five composed moments (press = arm: the picture draws the choreography
         # in gold and the button counts down to the one; press again = go now; right-click = cancel), GOOD / BAD
+        self.moments_box = QWidget()
+        mvl = QVBoxLayout(self.moments_box)
+        mvl.setContentsMargins(0, 0, 0, 0)
+        mvl.setSpacing(6)
         mom = QGridLayout()
         mom.setSpacing(6)
         self.buttons = {}
@@ -1048,35 +1186,85 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                                             "(songs, positions, lanes, gains, the plan, the moment, the last moves) and marked in the story row; "
                                             "nothing is learned and nothing moves - unlike BAD, which punishes a move and a song's tags. "
                                             "Review: python tools/dj/dj_flags.py --bad")
-        right.addLayout(mom)
+        mvl.addLayout(mom)
         self.moment_lbl = QLabel("")
         self.moment_lbl.setProperty("dim", "true")
         self.moment_lbl.setWordWrap(True)
         self.moment_lbl.setMaximumHeight(34)
         self.moment_lbl.setToolTip("the armed moment: whose, where it lands, and what refused the last one")
-        right.addWidget(self.moment_lbl)
-        self.verdict_lbl = QLabel("")
+        mvl.addWidget(self.moment_lbl)
+        self.verdict_lbl = _AutoLabel("")
         self.verdict_lbl.setProperty("dim", "true")
         self.verdict_lbl.setWordWrap(True)
         self.verdict_lbl.setMaximumHeight(54)
         self.verdict_lbl.setToolTip("what your last GOOD / BAD rated, what the DJ learned from it, and what it did about it")
-        right.addWidget(self.verdict_lbl)
-        self.err_lbl = QLabel("")
+        mvl.addWidget(self.verdict_lbl)
+        self.err_lbl = _AutoLabel("")
         self.err_lbl.setProperty("dim", "true")
         self.err_lbl.setWordWrap(True)
-        right.addWidget(self.err_lbl)
+        self.err_lbl.setMaximumHeight(34)
+        mvl.addWidget(self.err_lbl)
+        self._dials_moments_slot = QVBoxLayout()
+        self._dials_moments_slot.setContentsMargins(0, 0, 0, 0)
+        self._dials_moments_slot.addWidget(self.moments_box)
+        right.addLayout(self._dials_moments_slot)
         right.addStretch(1)
         rw = QWidget()
         rw.setLayout(right)
+        self.dials_tab = rw
+        # THE NIGHT TAB (docs/DJ_SETS.md section 4, 2026-10-29): first in RECORD mode, in place of DIALS - the planned
+        # night's theme edited in place (CRATE | LEANS | STORY, KEYS), then the dials that act in RECORD mode (LAYERS,
+        # PACE, ENERGY, BASS, TONE, LEVEL - the others do nothing there) and the moments. Every edit applies on its own
+        # (debounced 600 ms) and plans again: before START the whole night, during it from slot +2.
+        from tools.dj.planner.nighttab import NightEditor
+        self.night_tab = QWidget()
+        nv = QVBoxLayout(self.night_tab)
+        nv.setContentsMargins(6, 6, 6, 6)
+        nv.setSpacing(6)
+        self.night_editor = NightEditor(self.night_tab)
+        self.night_editor.changed.connect(self._night_edited)
+        nv.addWidget(self.night_editor, 1)
+        self.night_hint = QLabel("no plan: the DJ picks record by record (pick a planned night above to plan and shape the whole night)")
+        self.night_hint.setProperty("dim", "true")
+        self.night_hint.setWordWrap(True)
+        self.night_hint.setMaximumHeight(34)
+        nv.addWidget(self.night_hint)
+        self.night_fill = QWidget()                  # (the editor's room when no night is planned)
+        nv.addWidget(self.night_fill, 1)
+        self._night_mood_slot = QVBoxLayout()
+        self._night_mood_slot.setContentsMargins(0, 0, 0, 0)
+        nv.addLayout(self._night_mood_slot)
+        self.night_grid = QGridLayout()
+        self.night_grid.setHorizontalSpacing(14)
+        self.night_grid.setVerticalSpacing(3)
+        nv.addLayout(self.night_grid)
+        self._night_moments_slot = QVBoxLayout()
+        self._night_moments_slot.setContentsMargins(0, 0, 0, 0)
+        nv.addLayout(self._night_moments_slot)
+        self._night_debounce = QTimer(self)
+        self._night_debounce.setSingleShot(True)
+        self._night_debounce.setInterval(600)
+        self._night_debounce.timeout.connect(self._night_commit)
+        self._save_flash = QTimer(self)
+        self._save_flash.setSingleShot(True)
+        self._save_flash.setInterval(500)
+        self._save_flash.timeout.connect(lambda: self.save_btn.setChecked(False))
+        self._say_timer = QTimer(self)
+        self._say_timer.setSingleShot(True)
+        self._say_timer.timeout.connect(self._night_unsay)
+        self._night_last = None                      # the last plan status that had chapters: drawn dimmed while a re-plan runs
+        self._placed = None
         # the right column is TWO TABS: the dials and the moments, and the Song parts (the highlighted song's
         # four stems over time with the words) - swappable, the same width (user 2026-09-17)
         self.right_tabs = QTabWidget()
+        self.right_tabs.addTab(self.night_tab, "NIGHT")
         self.right_tabs.addTab(rw, "DIALS")
         self.right_tabs.addTab(self.viewer, "PARTS")
         self.right_tabs.addTab(self.plan_tab, "PLAN")
         self.right_tabs.addTab(self.pairs_tab, "PAIRS")
         self.right_tabs.addTab(self._build_mash_tab(), "MASHUP")
-        self.right_tabs.setToolTip("DIALS: how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves; "
+        self.right_tabs.setToolTip("NIGHT (record mode): the planned night's crate, leans, story and keys, the dials that act, the moments; "
+                                   "DIALS (the other modes): how it plays; PARTS: the highlighted song's stems, sections, hook, singing and grooves; "
                                    "PLAN: what will happen next, in order, with the time from now")
         self.right_tabs.currentChanged.connect(self._right_tab_changed)
         self.right_tabs.setMinimumWidth(540)
@@ -1084,10 +1272,18 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         body.addWidget(self.right_tabs, 4)
         root.addLayout(body, 1)
         self._label_moments("one")
+        self._place_controls()
         self._timer = QTimer(self)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._tick)
+        # the night's own timer runs before START too: it applies the prepared Director's plan answers, sends a night
+        # that changed, and reads the planner's counts and inferences off the worker threads
+        self._night_timer = QTimer(self)
+        self._night_timer.setInterval(250)
+        self._night_timer.timeout.connect(self._night_poll)
+        self._night_timer.start()
         QTimer.singleShot(1200, self._fill_search)
+        QTimer.singleShot(1300, self._night_vocab)
 
     # -- what the canvas asks of its tab ------------------------------------------------------------------------
     @property
@@ -1452,21 +1648,636 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         import threading
         if self.director is not None or self._prep_busy or self._prep is not None:
             return
-        music, theme = self.planner.music_dir, self.theme_box.currentText()
+        music, theme = self.planner.music_dir, self._brain_theme
+        want = self._night_want()
+        # the dials as the tab shows them (read here, on the Qt thread): the night is planned with them, not the defaults
+        # (only the dials a plan reads: the others are copied at START as before)
+        dials = {n: self._checked_dial(n) for n in ("pace", "energy", "arc")}
+        if want is not None:
+            dials["arc"] = "theme"                    # (a planned night: the chapters are the arc)
         self._prep_busy = True
 
         def work():
+            d = None
             try:
                 from lib.dj.director import Director
                 d = Director(music, engine=None, theme=theme)
+                d.dials.update({k: v for k, v in dials.items() if v})
+                if want is not None:
+                    d.set_theme_plan(want[0], length_min=want[1])   # (a planned night: its first record is the opener decoded here)
+                    d.plan_wait(90.0)
                 first = d.prepare()
                 if first is not None and self.director is None:
+                    self._nsent[id(d)] = self._night_sig(want, theme)
                     self._prep = d
+                else:
+                    d.close_planner()                 # (not used: its planner process is closed with it)
             except Exception as e:  # noqa: BLE001
                 self._prep_err = f"{type(e).__name__}: {e}"
+                if d is not None:
+                    try:
+                        d.close_planner()             # (a failed preparation never leaves its ~400 MB planner process behind)
+                    except Exception:
+                        pass
             finally:
                 self._prep_busy = False
         threading.Thread(target=work, daemon=True, name="director-prepare").start()
+
+    # -- THE NIGHT: the picker, LENGTH, BUILD, SAVE, the NIGHT tab's edits (docs/DJ_SETS.md section 4) -------------------
+    # The tab keeps the night it WANTS (self._nsel + seed + length) and a signature of what each Director was sent; the
+    # night timer and every edit send the difference - set_theme_plan before START, night_async (the Director's own
+    # thread) while it runs. The planning itself is the planner's process: nothing here waits for it.
+    def _night_dir(self):
+        """The Director the night goes to: the running one, else the one prepared before START (None while it loads)."""
+        return self.director if self.director is not None else (self._prep if not self._prep_busy else None)
+
+    def _night_name(self):
+        sel = self._nsel
+        nm = str(sel.get("name") or (sel.get("theme") or {}).get("name") or "a night")
+        if sel.get("edited"):
+            return nm + " (edited)"
+        if sel.get("src") in ("like", "deleted"):
+            return nm + " (unsaved)"
+        return nm
+
+    def _night_want(self):
+        """(theme dict with the seed and the length, minutes) or None (no plan: the DJ picks)."""
+        sel = self._nsel
+        if sel.get("kind") != "plan" or not sel.get("theme") or sel.get("waiting"):
+            return None
+        th = json.loads(json.dumps(sel["theme"]))
+        th["name"] = self._night_name()
+        th["night"] = int(self._nseed)
+        th["length"] = float(self._nlen)
+        return th, float(self._nlen)
+
+    @staticmethod
+    def _night_sig(want, brain):
+        """What was sent, as one string - the cosmetic parts left out (a SAVE renames, it does not plan again)."""
+        if want is None:
+            return f"none:{brain}"
+        th = {k: v for k, v in want[0].items() if k not in ("name", "blurb", "inferred")}
+        return json.dumps([th, want[1], brain], sort_keys=True)
+
+    def _night_send(self):
+        if self._nsel.get("waiting"):
+            return                                    # (a saved "like these" theme is being inferred again first)
+        want = self._night_want()
+        sig = self._night_sig(want, self._brain_theme)
+        for d in (self.director, self._prep if not self._prep_busy else None):
+            if d is None or self._nsent.get(id(d)) == sig:
+                continue
+            self._nsent[id(d)] = sig
+            try:
+                if d.theme != self._brain_theme:
+                    d.set_theme(self._brain_theme)
+                if want is None:
+                    if d.plan is not None:
+                        if d.running:
+                            d.night_async("clear")
+                        else:
+                            d.set_theme_plan(None)
+                    continue
+                th, L = want
+                self._night_arc_theme(d)              # (the chapters are the arc: a hidden ARC must not rewrite the STORY)
+                if d.running:
+                    d.night_async("plan", th, L)      # (done on the Director's thread at its next step: from slot +2)
+                else:
+                    d.set_theme_plan(th, length_min=L)
+                self._night_count(d, th)
+            except Exception as e:  # noqa: BLE001
+                self.err_lbl.setText(f"night: {type(e).__name__}: {e}")
+
+    def _night_arc_theme(self, d, replan=False):
+        """A planned night's ARC is 'theme' (NightPlan.effective_theme replaces every chapter's energy with the ARC
+        curve otherwise: a strip drag before a theme was picked, a hidden DIALS button, the controller). Set directly
+        when a plan is about to be sent (no second re-plan); `replan`: through set_dial, so the night is planned again
+        (only the rest of it: slot +2 on)."""
+        if d.dials.get("arc") != "theme":
+            if replan:
+                d.set_dial("arc", "theme")
+            else:
+                d.dials["arc"] = "theme"
+            try:
+                d._event("arc: theme (a planned night: the chapters are the arc)")
+            except Exception:
+                pass
+        for b in self.dial_groups["arc"].buttons():
+            if b.text() == DIAL_LABELS["arc"][1]["theme"] and not b.isChecked():
+                b.setChecked(True)
+
+    def _night_count(self, d, th):
+        """The crate's live count, from the planner's own pair table (asked once per crate and pace)."""
+        from lib.dj.director import PLAY_MIN_S
+        pm = PLAY_MIN_S.get(d.dials.get("pace"), 210.0)
+        key = json.dumps([th.get("crate"), pm], sort_keys=True)
+        if self._nbox.get("crate_key") == key:
+            return
+        self._nbox["crate_key"] = key
+        self.night_editor.set_count("counting the crate…")
+        box = self._nbox
+        # (an answer for a crate the tab has since left is dropped right here, on the worker thread: a late answer can
+        # never overwrite the newer one in the single slot - the poll's own key check stays as the second guard)
+        d._planner_proc().submit({"op": "crate", "theme": th, "play_min_s": pm},
+                                 lambda resp, k=key: box.get("crate_key") == k and box.__setitem__("crate", (k, resp)))
+
+    def _night_fill_picker(self):
+        from lib.dj import themestore as TS
+        from lib.dj.themes import PICKER_THEMES
+        from PyQt6.QtGui import QFont
+        m = self.night_pick
+        sel = self._nsel
+        m.blockSignals(True)
+        m.clear()
+        cur = None
+
+        def head(text):
+            m.addItem(text, None)
+            it = m.model().item(m.count() - 1)
+            it.setEnabled(False)
+            f = QFont(m.font())
+            f.setBold(True)
+            it.setFont(f)
+        if sel.get("kind") == "plan" and (sel.get("edited") or sel.get("src") in ("like", "deleted")):
+            m.addItem("✎ " + self._night_name(), ("edited", None))
+            m.setItemData(0, f"{self._night_name()}: this night as you shaped it (not saved) - SAVE keeps it", Qt.ItemDataRole.ToolTipRole)
+            cur = 0
+        head("planned nights")
+        for nm in TS.preset_names():
+            m.addItem("   " + nm, ("preset", nm))
+            th = TS.get_preset(nm) or {}
+            m.setItemData(m.count() - 1, f"{nm}: {th.get('blurb', '')}\n(a preset: it stays as it is; SAVE an edited copy)", Qt.ItemDataRole.ToolTipRole)
+            if cur is None and sel.get("src") == "preset" and sel.get("name") == nm:
+                cur = m.count() - 1
+        saved = TS.saved(self._db())
+        if saved:
+            head("your themes")
+            for r in saved:
+                m.addItem("   ★ " + r["name"] + ("  ≈" if r.get("example_ids") else ""), ("saved", r["name"]))
+                m.setItemData(m.count() - 1, f"{r['name']}" + (f": a night like {len(r['example_ids'])} records (inferred again on load)" if r.get("example_ids") else "")
+                              + "\nright-click: delete", Qt.ItemDataRole.ToolTipRole)
+                if cur is None and sel.get("src") == "saved" and sel.get("name") == r["name"]:
+                    cur = m.count() - 1
+        head("no plan, the DJ picks:")
+        for nm in PICKER_THEMES:
+            m.addItem("   the DJ picks: " + nm, ("brain", nm))
+            if cur is None and sel.get("kind") == "brain" and sel.get("name") == nm:
+                cur = m.count() - 1
+        m.setCurrentIndex(cur if cur is not None else 0)
+        m.blockSignals(False)
+        m.setToolTip(f"{m.currentText().strip()}\n\n{self.NIGHT_PICK_TIP}")   # (the whole name on the closed box too)
+        plan = sel.get("kind") == "plan"
+        for b in (self.build_btn, self.save_btn):
+            b.setEnabled(plan)
+        self.len_box.setEnabled(plan)
+        # in a planned night the crate decides where the records come from: the songs box only feeds the DJ's gap picks
+        if hasattr(self, "songs_box"):
+            self.songs_box.setToolTip(self.SONGS_TIP_PLAN if plan else self.SONGS_TIP)
+
+    def _night_new_seed(self):
+        old = self._nseed
+        while self._nseed == old:
+            self._nseed = 2 + (int(time.time() * 1000) + old * 7919) % 9973
+        return self._nseed
+
+    def _night_picked(self, i):
+        """The picker, applied on pick: a preset, a saved theme (a "like these" one inferred again first), or no plan."""
+        from lib.dj import themestore as TS
+        data = self.night_pick.itemData(i)
+        if not data or data[0] == "edited":
+            return
+        kind, name = data
+        self._night_debounce.stop()
+        self._night_drop_infer()                      # (a newer choice: a "like these" answer still out is dropped)
+        if kind == "brain":
+            self._brain_theme = name
+            self._nsel = {"kind": "brain", "name": name, "theme": None, "src": None, "edited": False}
+            self.night_editor.set_theme(None)
+        elif kind == "preset":
+            th = TS.get_preset(name)
+            self._night_new_seed()
+            self._nsel = {"kind": "plan", "name": name, "theme": th, "src": "preset", "edited": False}
+            self.night_editor.set_theme(th)
+        else:
+            th = TS.load(self._db(), name)
+            if th is None:
+                self._night_say(f"the saved theme {name} could not be read")
+                self._night_fill_picker()
+                return
+            self._nseed = int(th.get("night") or self._night_new_seed())
+            self._night_set_len(th.get("length"))
+            self._nsel = {"kind": "plan", "name": name, "theme": th, "src": "saved", "edited": False}
+            self.night_editor.set_theme(th)
+            if TS.needs_reinfer(th):
+                self._nsel["waiting"] = True
+                self._night_infer(th["examples"], keep=th)
+        self._night_last = None                       # (another night: its own chapters are drawn while it is planned)
+        self._night_fill_picker()
+        self._place_controls()
+        self._night_send()
+
+    def _night_set_len(self, minutes):
+        if not minutes:
+            return
+        self._nlen = float(minutes)
+        i = self.len_box.findData(float(minutes))
+        if i < 0:
+            self.len_box.addItem(f"{float(minutes):.0f} min", float(minutes))
+            i = self.len_box.count() - 1
+        self.len_box.setCurrentIndex(i)
+
+    def _night_length(self, i):
+        self._nlen = float(self.len_box.itemData(i) or 90.0)
+        self._night_send()
+
+    def _night_build(self):
+        """BUILD: the same theme, a new seed (lit until the new night is planned)."""
+        if self._nsel.get("kind") != "plan":
+            self.build_btn.setChecked(False)
+            return
+        self._night_drop_infer()
+        self._night_new_seed()
+        d = self._night_dir()
+        self._build_wait = (time.time(), id(getattr(d, "plan", None)) if d is not None else None)
+        self.build_btn.setChecked(True)
+        self._night_commit()
+
+    def _night_save(self, name=None):
+        """SAVE: the theme as it is (its seed and length with it) under a name; a preset stays as it is."""
+        from lib.dj import themestore as TS
+        sel = self._nsel
+        if sel.get("kind") != "plan" or not sel.get("theme"):
+            self.save_btn.setChecked(False)
+            return False
+        self.save_btn.setChecked(True)
+        ok = False
+        try:
+            db = self._db()
+            base = str(sel.get("name") or "my night")
+            mine = sel.get("src") == "saved"
+            # the default never silently replaces an older theme: "<theme> (mine)", else "(mine 2)", ...
+            default = base if mine else TS.free_name(db, base + " (mine)")
+            if name is None:
+                from PyQt6.QtWidgets import QInputDialog, QMessageBox
+                name, ok_ = QInputDialog.getText(self, "SAVE", "save this night's theme as", text=default)
+                if not ok_:
+                    return False
+                name = str(name).strip()
+                if TS.exists(db, name) and not (mine and name == sel.get("name")):
+                    # typed the name of another saved theme: replace it only on a yes (KEEP BOTH saves under a free name)
+                    box = QMessageBox(self)
+                    box.setWindowTitle("SAVE")
+                    box.setText(f"A saved theme is already called “{name}”.")
+                    rep = box.addButton("REPLACE", QMessageBox.ButtonRole.DestructiveRole)
+                    both = box.addButton("KEEP BOTH", QMessageBox.ButtonRole.AcceptRole)
+                    box.addButton("CANCEL", QMessageBox.ButtonRole.RejectRole)
+                    box.exec()
+                    if box.clickedButton() is both:
+                        name = TS.free_name(db, name)
+                    elif box.clickedButton() is not rep:
+                        return False
+            if self._nsel.get("waiting"):
+                self._night_drop_infer()              # (saved as it stands: a re-inference still out would replace it)
+            if self._night_debounce.isActive():
+                self._night_debounce.stop()
+                self._night_commit()                  # (an edit still waiting is part of what is saved)
+            sel = self._nsel
+            th = json.loads(json.dumps(sel["theme"]))
+            th["night"], th["length"] = int(self._nseed), float(self._nlen)
+            ok, words = TS.save(db, name, th)
+            self._night_say(words)
+            if ok:
+                th["name"] = str(name).strip()
+                self._nsel = {"kind": "plan", "name": th["name"], "theme": th, "src": "saved", "edited": False}
+                d = self._night_dir()
+                if d is not None and d.plan is not None:
+                    d.plan.name = self._night_name()  # (the live night takes the new name; nothing is planned again)
+                self._night_fill_picker()
+            return ok
+        except Exception as e:  # noqa: BLE001
+            # (never out of a slot: PyQt6 aborts the whole app - and the night playing in it - on an unhandled exception)
+            self._night_say(f"not saved: {type(e).__name__}: {e}", 15.0)
+            return False
+        finally:
+            self._save_flash.start()                  # (a timer the tab owns: it dies with the tab, a lambda would not)
+
+    def _night_delete(self, name):
+        from lib.dj import themestore as TS
+        if not TS.delete(self._db(), name):
+            self._night_say(f"{name} could not be deleted")
+            return False
+        if self._nsel.get("src") == "saved" and self._nsel.get("name") == name:
+            self._nsel["src"] = "deleted"             # (the night plays on, as an unsaved theme)
+        self._night_say(f"deleted the saved theme {name}")
+        self._night_fill_picker()
+        return True
+
+    def _night_pick_menu(self, pos):
+        """Right-click a saved theme (in the open list, or the picker itself): delete it. The presets stay."""
+        if pos is None:
+            i = self.night_pick.currentIndex()
+        else:
+            i = self.night_pick.view().indexAt(pos).row()
+        data = self.night_pick.itemData(i) if i >= 0 else None
+        if not data or data[0] != "saved":
+            return
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QCursor
+        m = QMenu(self)
+        a = m.addAction(f"delete the saved theme {data[1]}")
+        a.triggered.connect(lambda _c, n=data[1]: (self.night_pick.hidePopup(), self._night_delete(n)))
+        m.exec(QCursor.pos())
+
+    def _night_edited(self):
+        """An edit in the NIGHT tab: the theme is yours now ("(edited)" until SAVE), planned again 600 ms after the last one."""
+        if self._nsel.get("kind") != "plan":
+            return
+        self._night_drop_infer()                      # (your edit wins over an inference still out; a waiting theme plans now)
+        if not self._nsel.get("edited"):
+            self._nsel["edited"] = True
+            self._night_fill_picker()
+        self._night_debounce.start()
+
+    def _night_drop_infer(self):
+        """Every newer choice (a pick, an edit, BUILD, SAVE) invalidates a "like these" answer still out: it would
+        otherwise land later and replace what you chose since."""
+        for k in ("infer_tok", "infer_retry", "infer"):
+            self._nbox.pop(k, None)
+        self._nsel.pop("waiting", None)
+        if self.like_btn.isChecked():
+            self.like_btn.setChecked(False)
+
+    def _night_say(self, text, secs=8.0):
+        """A night action's words in the status line, gone after `secs` (unless something else wrote there since)."""
+        self.moment_lbl.setText(text)
+        self._said = text
+        self._say_timer.start(int(secs * 1000))
+
+    def _night_unsay(self):
+        if self.moment_lbl.text() == getattr(self, "_said", None):
+            self.moment_lbl.setText("")
+        self._said = None
+
+    def _night_commit(self):
+        if self._nsel.get("kind") == "plan" and self._nsel.get("edited"):
+            th = self.night_editor.theme()
+            if th.get("inferred"):
+                th["inferred"]["edited"] = True       # (your edits are the theme now: no re-inference on load)
+            self._nsel["theme"] = th
+            self.night_editor.normalise_shares()
+        self._night_send()
+
+    def _night_vocab(self):
+        """The CRATE chips are the library's own words: genres, ML moods, tags (by how many records carry each)."""
+        try:
+            lib = self._library()
+        except Exception:
+            return
+        g, mo, tg = {}, {}, {}
+        for t in lib:
+            gs = {x.lower() for x in (getattr(t, "genre_set", None) or ())}
+            ms = {x.lower() for x in (getattr(t, "ml_moods", None) or ())}
+            for x in gs:
+                g[x] = g.get(x, 0) + 1
+            for x in ms:
+                mo[x] = mo.get(x, 0) + 1
+            for x in (getattr(t, "all_tags", None) or ()):
+                x = x.lower()
+                if x not in gs and x not in ms:
+                    tg[x] = tg.get(x, 0) + 1
+        rank = lambda d, k: sorted(((w, n) for w, n in d.items() if n >= k), key=lambda wn: (-wn[1], wn[0]))  # noqa: E731
+        sig = (len(lib), len(g), len(mo), len(tg))
+        if sig != getattr(self, "_vocab_sig", None):
+            self._vocab_sig = sig
+            self.night_editor.set_vocab(rank(g, 3), rank(mo, 3), rank(tg, 5))
+
+    def _like_ids(self):
+        ids = []
+        for it in self.found.selectedItems():
+            tid = it.data(Qt.ItemDataRole.UserRole)
+            if tid is not None and tid not in ids:
+                ids.append(int(tid))
+        return ids
+
+    def _like_selected(self):
+        ids = self._like_ids()
+        if not ids:
+            self.like_btn.setChecked(bool(self._nbox.get("infer_tok")))   # (lit only while an inference is really out)
+            self._night_say("select 2 to 5 records in SONGS (Ctrl / Shift + click), then ≈ LIKE THESE")
+            return
+        self._night_infer(ids[:5])
+
+    def _night_infer(self, ids, keep=None):
+        """A night like these (lib/dj/themestore.infer, in the planner's process): the theme comes back to the timer."""
+        d = self._night_dir()
+        if d is None:
+            self._night_say("a moment: the library is still loading")
+            if keep is not None:
+                self._nbox["infer_retry"] = (list(ids), keep)   # (the night timer asks again once the Director is there)
+            else:
+                self.like_btn.setChecked(bool(self._nbox.get("infer_tok")))   # (nothing started: not lit)
+            return
+        from lib.dj.director import PLAY_MIN_S
+        tok = time.time()
+        self._nbox["infer_tok"] = tok
+        self.night_editor.set_count("inferring a night like these…")
+        box = self._nbox
+        req = {"op": "infer", "example_ids": [int(i) for i in ids], "length_min": float((keep or {}).get("length") or self._nlen),
+               "play_min_s": PLAY_MIN_S.get(d.dials.get("pace"), 210.0)}
+        if keep is not None:
+            req["name"] = keep.get("name")
+        d._planner_proc().submit(req, lambda resp: box.__setitem__("infer", (tok, resp, keep)))
+        self.like_btn.setChecked(True)
+
+    def _night_inferred(self, resp, keep):
+        self.like_btn.setChecked(False)
+        self._nbox.pop("infer_tok", None)             # (answered: nothing is out any more)
+        if keep is not None and not (self._nsel.get("src") == "saved" and self._nsel.get("name") == keep.get("name")
+                                     and self._nsel.get("waiting")):
+            return                                    # (the saved theme is no longer the one waiting for it)
+        th = resp.get("theme") if resp.get("ok") else None
+        if th is None:
+            self._night_say(f"like these: {resp.get('error') or 'no theme'}")
+            if keep is not None:
+                self._nsel.pop("waiting", None)       # (the stored theme plays as it was saved)
+                self._night_send()
+            return
+        if keep is not None:
+            for k in ("name", "keys_mode", "night", "length"):
+                if keep.get(k) is not None:
+                    th[k] = keep[k]
+            self._nsel = {"kind": "plan", "name": keep["name"], "theme": th, "src": "saved", "edited": False}
+        else:
+            self._night_new_seed()
+            th["length"] = float(self._nlen)
+            self._nsel = {"kind": "plan", "name": th["name"], "theme": th, "src": "like", "edited": False}
+            wid = resp.get("widened") or []
+            self._night_say(f"a night like these: {resp.get('crate')} records" + (f", widened {len(wid)}×" if wid else "")
+                            + (f"; no crate holds {', '.join(resp['missing'])}" if resp.get("missing") else ""), 15.0)
+        self.night_editor.set_theme(th)
+        if keep is None:
+            self._night_last = None                   # (a new night like these: its own chapters while it is planned)
+        self._night_fill_picker()
+        self._place_controls()
+        if self._placed and self._placed[0]:
+            self.right_tabs.setCurrentWidget(self.night_tab)
+        self._night_send()
+
+    def _night_poll(self):
+        """(the night timer, before START too) answers in, the night sent, the strip and the warnings drawn."""
+        try:
+            self._night_poll_inner()
+        except Exception as e:  # noqa: BLE001
+            self.err_lbl.setText(f"night: {type(e).__name__}: {e}")
+
+    def _night_poll_inner(self):
+        from tools.dj.planner.nighttab import warning_words
+        d = self._night_dir()
+        if d is not None and not d.running and d.plan is not None:
+            d.plan.poll()                             # (a prepared Director has no thread of its own: its answers are applied here)
+        if d is not None and self._nbox.get("infer_retry"):
+            ids, keep = self._nbox.pop("infer_retry")
+            self._night_infer(ids, keep=keep)
+        planned = self._nsel.get("kind") == "plan"
+        if d is not None and not d.running:
+            # PACE / ENERGY turned while the prepared Director was loading (the tab could not reach it then): replayed
+            # through set_dial, so its plan is asked again with them (before START nothing plays: no cut is added)
+            for n in ("pace", "energy"):
+                opt = self._checked_dial(n)
+                if opt and d.dials.get(n) != opt:
+                    d.set_dial(n, opt)
+        if d is not None and planned and self._night_want() is not None and d.plan is not None and d.dials.get("arc") != "theme":
+            self._night_arc_theme(d, replan=True)    # (ARC turned from outside - the web page - on a planned night)
+        self._night_send()
+        want = self._night_want()
+        if d is not None and want is not None:
+            self._night_count(d, want[0])             # (asked again only when the crate or PACE changed: the key says)
+        cr = self._nbox.pop("crate", None)
+        if cr is not None and cr[0] == self._nbox.get("crate_key"):
+            r = cr[1]
+            if r.get("ok"):
+                self.night_editor.set_count(
+                    f"{r['crate']} records · about {r['per_record']:.0f} blendable pairs each",
+                    f"the crate holds {r['crate']} records; {r['pairs']} pairs among them blend by the player's rules "
+                    f"(tempo, the key veto, the vocal room) - about {r['per_record']:.0f} per record"
+                    + (f"\ntempo {r['bpm'][0]:.0f}-{r['bpm'][1]:.0f} bpm" if r.get("bpm") else ""))
+            else:
+                self._nbox.pop("crate_key", None)
+                self.night_editor.set_count("the crate could not be counted", str(r.get("error") or ""))
+        inf = self._nbox.pop("infer", None)
+        if inf is not None and inf[0] == self._nbox.get("infer_tok"):
+            self._night_inferred(inf[1], inf[2])
+        pl = d.plan if d is not None else None
+        sp, rows = None, {}
+        if pl is not None:
+            sp = pl.status()
+            rows = {r["id"]: r for r in list(pl.rows)}
+        if not planned:
+            self._night_last = None                   # (no plan: the strip is the arc again)
+        elif sp is not None and sp.get("chapters"):
+            self._night_last = (sp, rows)
+        else:
+            # A RE-PLAN RUNS (a new NightPlan has no chapters until the child answers), or no Director yet: the last plan
+            # stays drawn, dimmed, "planning…" - the strip never falls back to the arc while a night is wanted
+            last = self._night_last
+            if last is not None:
+                sp, rows = dict(last[0], planning=True), last[1]
+            else:
+                sp, rows = self._night_placeholder(), {}
+        self.arc_strip.set_night(sp, rows)
+        if sp is not None:
+            self.night_editor.set_warnings(warning_words(sp.get("warnings"), sp.get("chapters") or []))
+            if not sp.get("planning"):
+                self.night_editor.set_effective(sp.get("chapters"), d.dials.get("energy") if d is not None else self._checked_dial("energy"))
+        else:
+            self.night_editor.set_warnings([])
+        self._night_sources()
+        bw = getattr(self, "_build_wait", None)
+        if bw is not None:
+            busy = pl is None or id(pl) == bw[1] or pl.pending is not None or bool(pl.want) or (d is not None and d.night_posted())
+            if not busy or time.time() - bw[0] > 60.0:
+                self._build_wait = None
+                self.build_btn.setChecked(False)
+
+    def _night_placeholder(self):
+        """The wanted night before any plan of it exists (the first plan still out, the Director still loading): its
+        chapters as bands from the theme's shares, no records yet, "planning…"."""
+        th = self._nsel.get("theme") or {}
+        chs = th.get("chapters") or []
+        if not chs:
+            return None
+        L = float(self._nlen) * 60.0
+        tot = sum(float(c.get("share") or 0.0) for c in chs) or 1.0
+        acc, out = 0.0, []
+        for c in chs:
+            sh = float(c.get("share") or 0.0)
+            out.append({"name": c.get("name") or "", "start_s": L * acc / tot, "end_s": L * (acc + sh) / tot,
+                        "energy": list(c.get("energy") or [0.5, 0.5]), "leans": list(c.get("leans") or [])})
+            acc += sh
+        return {"theme": self._night_name(), "length_s": L, "elapsed_s": 0.0, "chapters": out, "slots": [], "warnings": [],
+                "seed": int(self._nseed), "planning": True}
+
+    def _night_sources(self):
+        """The CRATE's source list (the Set tab's saved playlists), refreshed every 10 s - a playlist made meanwhile shows."""
+        self._src_tick = getattr(self, "_src_tick", 0) + 1
+        if self._src_tick % 40 != 1:
+            return
+        try:
+            from lib.dj import setlist as SL
+            names = [(f"{r['name']} ({r['n_tracks']})", r["name"]) for r in SL.list_setlists(self._db())]
+        except Exception:
+            names = []
+        self.night_editor.set_sources(names)
+
+    def _checked_dial(self, name):
+        from lib.dj.director import DIALS
+        b = self.dial_groups[name].checkedButton()
+        if b is None:
+            return None
+        return next((o for o in DIALS[name] if DIAL_LABELS[name][1][o] == b.text()), None)
+
+    def _place_controls(self, layers=None):
+        """RECORD mode: the NIGHT tab first, holding the dials that act there and the moments (MOOD too while no night is
+        planned); DIALS hidden. The other LAYERS modes: DIALS as today, NIGHT hidden. One set of widgets, moved."""
+        from tools.dj.planner.nighttab import NIGHT_DIALS
+        if layers is None:
+            layers = self.director.dials.get("layers") if self.director is not None else self._checked_dial("layers")
+        record = layers == "record"
+        plan = self._nsel.get("kind") == "plan"
+        if (record, plan) == self._placed:
+            return
+        was, self._placed = self._placed, (record, plan)
+        # (read BEFORE the tabs are hidden and shown: hiding the current tab moves Qt to the next visible one - PARTS)
+        on_pair = self.right_tabs.currentWidget() in (self.night_tab, self.dials_tab)
+        if was is None or was[0] != record:
+            # RECORD: the four lanes all draw the one record (its stems, the planned seam as a ghost) - kept, but thin,
+            # so the night strip and the NIGHT tab get the room; the other modes: the lanes as they were
+            self.canvas.set_compact(record, lane_h=16, full_lane_h=34)
+            for k, name in enumerate(NIGHT_DIALS):
+                cell = self._dial_cells[name]
+                (self.dial_grid if record else self.night_grid).removeWidget(cell)
+                if record:
+                    self.night_grid.addWidget(cell, k // 2, k % 2)
+                else:
+                    self.dial_grid.addWidget(cell, *self._dial_pos[name])
+            kc = self.night_editor.keys_cell
+            if self.night_grid.indexOf(kc) < 0:
+                self.night_grid.addWidget(kc, (len(NIGHT_DIALS) + 1) // 2, 0)
+            kc.setVisible(record)
+            for b in self.moment_btns.values():
+                b.setVisible(not record)              # (the composed moments answer "not in RECORD mode yet": the row goes, as the dead dials do)
+            (self._dials_moments_slot if record else self._night_moments_slot).removeWidget(self.moments_box)
+            (self._night_moments_slot if record else self._dials_moments_slot).addWidget(self.moments_box)
+            self.right_tabs.setTabVisible(self.right_tabs.indexOf(self.night_tab), record)
+            self.right_tabs.setTabVisible(self.right_tabs.indexOf(self.dials_tab), not record)
+            if was is None or on_pair:
+                self.right_tabs.setCurrentWidget(self.night_tab if record else self.dials_tab)
+        mood_night = record and not plan
+        (self._dials_mood_slot if mood_night else self._night_mood_slot).removeWidget(self.mood_box)
+        (self._night_mood_slot if mood_night else self._dials_mood_slot).addWidget(self.mood_box)
+        self.night_editor.setVisible(plan)
+        self.night_hint.setVisible(not plan)
+        self.night_fill.setVisible(not plan)
 
     def _start(self):
         from lib.audio_engine import AudioEngine
@@ -1488,20 +2299,34 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if prep is not None and prep.music_root == self.planner.music_dir:
             # READY BEFORE START: the prepared Director, the engine attached now; a theme changed since re-picks
             prep.engine, prep._attach = self.engine, self.engine.attach_track
-            if prep.theme != self.theme_box.currentText():
-                prep.set_theme(self.theme_box.currentText())
+            if prep.theme != self._brain_theme:
+                prep.set_theme(self._brain_theme)
             self.director = prep
         else:
-            self.director = Director(self.planner.music_dir, engine=self.engine, theme=self.theme_box.currentText())
+            if prep is not None:
+                prep.close_planner()                  # (another music folder: the prepared one is dropped, its planner too)
+            self.director = Director(self.planner.music_dir, engine=self.engine, theme=self._brain_theme)
+        planned = self._night_want() is not None
         for name, group in self.dial_groups.items():
             for b in group.buttons():
                 if b.isChecked():
                     label = b.text()
                     opt = next(o for o in DIALS[name] if DIAL_LABELS[name][1][o] == label)
-                    self.director.dials[name] = opt
+                    if planned and name in ("arc", "length"):
+                        continue                      # (a planned night: the chapters are the arc, LENGTH is the night's box)
+                    if name in ("pace", "energy") and self.director.dials.get(name) != opt:
+                        self.director.set_dial(name, opt)   # (a turn the prepared night missed: its plan is asked again with it)
+                    else:
+                        self.director.dials[name] = opt
+        if planned:
+            self._night_arc_theme(self.director)
         if self.songs_box.currentData():
             self.director.pool_name = self.songs_box.currentData()
         self.director.tags = [tag for tag, b in self.mood_chips.items() if b.isChecked()]
+        if self._night_debounce.isActive():
+            self._night_debounce.stop()
+            self._night_commit()                      # (an edit still waiting goes with START)
+        self._night_send()                            # (a night picked before the Director existed: planned now)
         if not self.director.start(threaded=True):
             self.err_lbl.setText(self.director.last_error or "could not start")
             self.close()
@@ -1513,6 +2338,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.start_btn.style().polish(self.start_btn)
         self._found_sig = None
         self._fill_tags()                             # the Director's library is the one in play now
+        self._night_vocab()
         self._fill_search()
         self._midi_open()
         self._timer.start()
@@ -2147,6 +2973,16 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         def pick(name, val):
             opts = DIALS[name]
             opt = opts[min(len(opts) - 1, int(float(val) * len(opts)))]
+            if self._nsel.get("kind") == "plan" and name in ("arc", "length"):
+                # a planned night: the chapters are the arc (knob 7 does nothing), and knob 8 is the LENGTH box - so the
+                # box, a later SAVE and later edits all keep the length the night really has
+                if name == "length":
+                    from lib.dj.director import ARC_LEN_S
+                    minutes = ARC_LEN_S[opt] / 60.0
+                    if abs(minutes - self._nlen) > 1e-6:
+                        self._night_set_len(minutes)
+                        self._night_send()
+                return
             if d.dials.get(name) != opt:
                 d.set_dial(name, opt)
         for name, val in changes.items():
@@ -2202,7 +3038,13 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
                 time.sleep(1.7)
             except Exception:
                 pass
+            try:
+                self.director.close_planner()         # (its planner process goes with it, not when the GC gets round to it)
+            except Exception:
+                pass
             self.director = None
+        self._nsent.clear()                           # (a new Director may reuse a freed one's id: it is sent its night afresh)
+        self._nbox.pop("crate_key", None)
         if self.engine is not None:
             try:
                 self.engine.stop()
@@ -2234,6 +3076,10 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
     def _dial(self, name, opt):
         if self.director is not None:
             self.director.set_dial(name, opt)
+        elif name in ("pace", "energy") and self._night_dir() is not None:
+            self._night_dir().set_dial(name, opt)     # (before START: a planned night is planned again with the dial)
+        if name == "layers":
+            self._place_controls(opt)                 # (RECORD: the NIGHT tab; the other modes: DIALS)
 
     def _stem(self, tid, lane, held):
         if self.director is None:
@@ -2247,9 +3093,25 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
 
     def _song_menu(self, pos):
         it = self.found.itemAt(pos)
-        if it is None or self.director is None:
+        if it is None:
             return
-        self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=False).exec(self.found.mapToGlobal(pos))
+        if not it.isSelected():
+            self.found.clearSelection()
+            it.setSelected(True)
+        ids = self._like_ids()[:5]
+        if self.director is None:
+            from PyQt6.QtWidgets import QMenu
+            m = QMenu(self)
+        else:
+            m = self._song_actions(it.data(Qt.ItemDataRole.UserRole), from_queue=False)
+        first = m.actions()[0] if m.actions() else None
+        like = m.addAction(f"≈ plan a night like {'these ' + str(len(ids)) + ' records' if len(ids) > 1 else 'this one'}")
+        like.triggered.connect(lambda _c, x=list(ids): self._night_infer(x))
+        if first is not None:
+            m.removeAction(like)
+            m.insertAction(first, like)
+            m.insertSeparator(first)
+        m.exec(self.found.mapToGlobal(pos))
 
     def _queue_menu(self, pos):
         it = self.queue.itemAt(pos)
@@ -2584,7 +3446,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
 
     def _toggle_viewer(self, on):
         """PARTS (the button) = the PARTS tab of the right column; off = back to the dials."""
-        self.right_tabs.setCurrentWidget(self.viewer if on else self.right_tabs.widget(0))
+        self.right_tabs.setCurrentWidget(self.viewer if on else (self.night_tab if (self._placed and self._placed[0]) else self.dials_tab))
         if on:
             cur = self.decks.currentItem() or self.found.currentItem() or self.queue.currentItem()
             if cur is not None:
@@ -2708,9 +3570,9 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         filters = {}
         try:
             for name, grp in self.filter_groups.items():
-                b = grp.checkedButton()
-                if b is not None and b.text() != "any":
-                    filters[name] = b.text()
+                b = next((x for x in grp.buttons() if x.isChecked()), None)
+                if b is not None and b.property("opt") not in (None, "any"):
+                    filters[name] = b.property("opt")
             if self.f_hook.isChecked():
                 filters["hook"] = True
             if self.f_unplayed.isChecked():
@@ -3169,6 +4031,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
             for b in group.buttons():
                 if b.text() == want and not b.isChecked():
                     b.setChecked(True)
+        if (st.get("dials") or {}).get("layers"):
+            self._place_controls(st["dials"]["layers"])   # (LAYERS turned from outside: the controller, the web)
         for line in st.get("in_effect") or []:
             name = line.split(" ", 1)[0]
             head = self._dial_labels.get(name)

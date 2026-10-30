@@ -254,6 +254,16 @@ class Director:
         # THE SET (docs/DJ_THE_SET.md): the chain of records after the queue, the songs you said "not tonight"
         # to, the intermediates of a route ("via"), and the floor's requests (a song being made playable)
         self.horizon = []                # hops from lib/dj/setplan.chain, in order
+        # THE NIGHT AS A PLAN (docs/DJ_SETS.md, phase 1, 2026-10-28): RECORD mode with a theme picked - the whole night
+        # planned by the set planner (its own process), followed record by record (lib/dj/nightplan.py). horizon's rule 2
+        # holds: a slot changes only when it becomes impossible or you change something. None = no theme: as before
+        self.plan = None
+        self.plan_log_dir = None         # set_plan / set_skip rows go here instead of the night log (a gate's own folder)
+        self._planner = None             # the planner's process (lib/dj/setplanner.PlannerProcess), started on first use
+        self._planner_closed = False     # close_planner() ran: final - no planner is started again for this Director
+        self._planner_lock = threading.Lock()
+        self._night_posted = []          # the web page's night presses, waiting for the Director's thread (night_async)
+        self._night_lock = threading.Lock()
         self.set_skips = set()           # track ids: not tonight
         self.via_ids = set()             # UP NEXT entries that are a route's intermediates
         self._hz_sig = None              # the triggers' signature at the last plan
@@ -290,6 +300,8 @@ class Director:
         if self.dials["layers"] == "record":
             # RECORD: the player is built now and its opener decoded onto deck A; START reuses it while the
             # theme, the pool and the moods are the same (the signature), else builds a fresh one
+            if self.plan is not None:
+                self.plan.poll()                      # (a planned night's answer: its first record is the opener)
             p = self._build_player()
             first = p.prepare()
             if first is None:
@@ -313,6 +325,8 @@ class Director:
         want = "record" if layers == "record" else ("one" if layers == "one" else "layered")
         try:
             if want == "record":
+                if self.plan is not None:
+                    self.plan.poll()                  # (the planned night's answer, if it has come: the opener is its first record)
                 self.player = self._new_player()
             elif want == "one":
                 self.system = self._new_system()
@@ -358,6 +372,11 @@ class Director:
                 self.player.stop(fade_s=fade_s)
             except Exception:
                 pass
+            if self.plan is not None:
+                try:
+                    self.plan.on_stop()               # (the night's clock is kept; what was on a deck goes back to the plan)
+                except Exception:
+                    pass
             self.player = None
             self._pstat, self._rec_tid = None, None
         if self.system is not None:
@@ -419,7 +438,10 @@ class Director:
         return rc
 
     def _player_signature(self):
-        return (self.theme, self.pool_name, tuple(sorted(self.tags)), "record")
+        # (a planned night: an opener decoded before its answer came is the brain's, not the plan's - built afresh)
+        pl = self.plan
+        return (self.theme, self.pool_name, tuple(sorted(self.tags)), "record",
+                (id(pl), bool(pl.changes)) if pl is not None else None)
 
     def _build_player(self):
         """The record player with the dials' settings, not attached, not started."""
@@ -447,6 +469,8 @@ class Director:
                     ready.stop(fade_s=0.0)
                 except Exception:
                     pass
+                if self.plan is not None:
+                    self.plan.on_stop()               # (its opener goes back to the plan)
             p = self._build_player()
         self._attach("dj_record", p.submix)
         if not p.start(threaded=False):
@@ -460,7 +484,8 @@ class Director:
         bus (_apply_bus). Nothing else applies in RECORD mode."""
         p.play_min_s = PLAY_MIN_S[self.dials["pace"]]
         p.avoid_ids = self._played_ids()
-        p.pick_hook = self._record_pick
+        p.pick_hook = lambda *_a, **_k: self._record_pick(p)
+        p.steer = self._plan_steer
         br = getattr(p, "brain", None)
         if br is None:
             return
@@ -484,11 +509,177 @@ class Director:
         except Exception:
             pass
 
-    def _record_pick(self, *_a, **_k):
-        """The record player's pick hook: the UP NEXT head (popped once it is on a deck), else None (the brain picks)."""
-        if not self.up_next:
+    def _record_pick(self, p=None, *_a, **_k):
+        """The record player's pick hook, saying WHOSE pick it is (docs/DJ_SETS.md section 3, 2026-10-28): the UP NEXT
+        head as (track, 'user') - popped once it is on a deck; else the planned night's next slot as (track, 'plan'),
+        pre-checked against the record playing; else None (the brain picks - steered by the plan when there is one)."""
+        if self.up_next:
+            t = self.track(self.up_next[0])
+            if t is not None:
+                return (t, "user")
+        if self.plan is not None:
+            try:
+                return self.plan.pick(p)
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"plan pick: {type(e).__name__}: {e}"
+        return None
+
+    def _plan_steer(self):
+        """The brain's gap pick in a planned night: (energy, bpm, crate ids) at this point of the story; None = as before."""
+        pl = self.plan
+        if pl is None or not pl.chapters:
             return None
-        return self.track(self.up_next[0])
+        try:
+            return pl.steer()
+        except Exception:
+            return None
+
+    # -- THE NIGHT AS A PLAN (docs/DJ_SETS.md, phase 1) ---------------------------------------------------------------
+    def _planner_proc(self):
+        if getattr(self, "_planner_closed", False):
+            # THE CLOSE IS FINAL (2026-10-29): STOP closes the planner while a step may still be in flight on the Director's
+            # thread (a night press posted just before, or a trigger waiting in `want`) - its request spawned a new ~400 MB
+            # child that only the GC reclaimed. NightPlan.request turns this into a failed request and one line
+            raise RuntimeError("the Director is closed")
+        with self._planner_lock:                      # (check + create against close_planner's flag + swap on STOP's thread)
+            if self._planner_closed:
+                raise RuntimeError("the Director is closed")
+            if self._planner is None:
+                import weakref
+                from lib.dj.setplanner import PlannerProcess
+                me = weakref.ref(self)                # (no Director <-> planner cycle: a dropped one frees its child)
+
+                def log(s):
+                    d = me()
+                    if d is not None:
+                        d._event(str(s)[:160])
+                self._planner = PlannerProcess(self.music_root, log=log)
+            return self._planner
+
+    def close_planner(self):
+        """The planner's process closed NOW (about 400 MB; 2026-10-29): whoever drops a Director calls this - the planner
+        tab's close, a prepared Director that is not used, the show's STOP. stop() does not: a LAYERS switch stops and
+        starts the same Director, and the child keeps its library and pair table for the next re-plan. Final: no planner
+        is started again for this Director (_planner_proc refuses)."""
+        with self._planner_lock:
+            self._planner_closed = True
+            pp, self._planner = self._planner, None
+        if pp is not None:
+            try:
+                pp.close()
+            except Exception:
+                pass
+
+    def set_theme_plan(self, theme, length_min=None, seed=None):
+        """START WITH A THEME: the whole night planned (a preset's name, a theme JSON file in the builder's shape, or the
+        theme dict). Before START the plan is made now, off-thread, and START opens on its first record when the answer
+        has come (else the brain's opener, and the plan carries on from it); while a record plays the rest is re-planned
+        from slot +2. None / "" = no theme: START plays exactly as before. `length_min`: the night's length (default the
+        theme's, else the LENGTH dial). Returns (ok, words)."""
+        if theme is None or (isinstance(theme, str) and not theme.strip()):
+            self.plan = None
+            if self.player is not None:
+                self.player.steer = self._plan_steer
+            self._event("night: no theme - the DJ picks record by record")
+            return True, "no theme"
+        from lib.dj.nightplan import NightPlan, resolve_theme
+        th, src = resolve_theme(theme)
+        if th is None:
+            self._event(f"night refused: {src}")
+            return False, src
+        if length_min is None:
+            length_min = th.get("length") or (ARC_LEN_S[self.dials["length"]] / 60.0)
+        old = self.plan
+        pl = NightPlan(self, th, length_min, seed=seed, source=src)
+        if old is not None:
+            # (a theme picked during the night: the night's clock, what it skipped and what BAD said carry on)
+            pl.offset_s, pl.clock0 = old.offset_s, old.clock0
+            pl.skips, pl.neg_leans = set(old.skips), dict(old.neg_leans)
+            pl._skip_why, pl.skipped_for_user, pl._failed_ids = dict(old._skip_why), set(old.skipped_for_user), set(old._failed_ids)
+            pl.rows = [r for r in old.rows if r["state"] in ("played", "now", "next")]
+            pl.played, pl._now_id, pl._next_kept = list(old.played), old._now_id, old._next_kept
+        elif self.player is not None and self.player.record is not None:
+            # a theme picked while records play: its night starts with the record playing
+            rec = self.player.songs.get(self.player.record)
+            if rec is not None and rec.open_clock is not None:
+                pl.clock0 = int(rec.open_clock)
+        # (the plan is the Director's only once its request went out: a request that raised - the decks read mid-change -
+        # leaves the night before in place, not an empty plan until something asks again; 2026-10-29)
+        pl.request(f"theme: {pl.name}, {pl.length_min:.0f} min" + (" (from slot +2)" if self.player is not None else ""), user=True)
+        self.plan = pl
+        self._event(f"night: {pl.name} ({pl.length_min:.0f} min) - planning")
+        return True, f"{pl.name}: planning {pl.length_min:.0f} min"
+
+    # THE NIGHT FROM THE SHOW'S WEB PAGE (2026-10-29): a press arrives on the show's render thread, where set_theme_plan
+    # would read the player's decks (committed()) under the Director's own thread and start the request there. So a press
+    # while the Director runs is POSTED and done at its next step, on its own thread; the caller returns at once. Not
+    # running (a prepared Director, a test): done now.
+    NIGHT_LENGTH_DIAL = {round(v / 60.0): k for k, v in ARC_LEN_S.items()}   # minutes -> the LENGTH dial's value
+
+    def night_async(self, op="plan", theme=None, length_min=None):
+        """op "plan" (theme = a preset's name, length_min), "clear", or "length" (length_min: the night on now re-planned
+        to it from slot +2). Never blocks."""
+        item = (str(op), theme, length_min)
+        if self.running:
+            with self._night_lock:
+                self._night_posted.append(item)
+            return True
+        self._night_do(*item)
+        return True
+
+    def night_posted(self):
+        """A press waiting for the Director's thread (the page shows it as planning)."""
+        return bool(self._night_posted)
+
+    def _night_step(self):
+        with self._night_lock:
+            items, self._night_posted = self._night_posted, []
+        if getattr(self, "_planner_closed", False):
+            return                                    # (closed: a press posted just before STOP is dropped)
+        for it in items:
+            try:
+                self._night_do(*it)
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"night: {type(e).__name__}: {e}"
+
+    def _night_do(self, op, theme, length_min):
+        if getattr(self, "_planner_closed", False):
+            return
+        pl = self.plan
+        if op == "clear":
+            if pl is not None:
+                self.set_theme_plan(None)
+            return
+        L = float(length_min) if length_min else None
+        if op == "length":
+            if pl is None or L is None or abs(pl.length_min - L) < 0.5:
+                return
+            key = self.NIGHT_LENGTH_DIAL.get(int(round(L)))
+            if key is not None and self.player is not None and self.dials.get("length") != key:
+                self.set_dial("length", key)          # the dial path: the plan re-planned from slot +2 (NightPlan.on_dial)
+            else:
+                # (a length the dial has no button for, or the dial already there): the same re-plan, the minutes direct
+                pl.length_min = L
+                pl.dead_end = False
+                pl.request(f"length: {L:.0f} min", user=True)
+            return
+        if pl is not None and str(pl.source or "").lower() == str(theme or "").lower() and (L is None or abs(pl.length_min - L) < 0.5):
+            return                                    # (that night is the plan already: a press replayed after START)
+        self.set_theme_plan(theme, length_min=L)
+
+    def plan_wait(self, timeout=120.0):
+        """Block until the plan's request in flight is answered and applied (tests and tools; never the show's threads)."""
+        pl = self.plan
+        if pl is None:
+            return False
+        t_end = time.time() + float(timeout)
+        while time.time() < t_end:
+            if not self.running:
+                pl.poll()
+            if pl.pending is None and not pl._inbox and not pl.want:
+                return True
+            time.sleep(0.05)
+        return False
 
     def _send(self, eng, name, value, fn):
         """Hand a steering value to an engine ONLY when it changed since the last time this engine got it.
@@ -827,7 +1018,13 @@ class Director:
                 self.player.play_min_s = PLAY_MIN_S[value]
             elif name in ("bass", "tone", "level"):
                 self._apply_bus(self.player.submix)
+            if self.plan is not None and name in ("length", "energy", "arc", "pace"):
+                # a planned night: these dials are the plan's controls - nothing changes for the record playing or the
+                # next one, the rest is re-planned (docs/DJ_SETS.md section 3)
+                self.plan.post(self.plan.on_dial, name, value)
             return True                               # (every other dial is a no-op in RECORD mode)
+        if self.plan is not None and name in ("length", "energy", "arc", "pace") and not self.running:
+            self.plan.on_dial(name, value)            # (before START: the night is planned again with the dial)
         if self.system is not None:
             self._apply_to_system(self.system)
         if self.rc is not None:
@@ -979,6 +1176,10 @@ class Director:
                 self._event(f"to reach {t.title[:24]} ({float(t.bpm):.0f} bpm, {pct:+.0f} %): via " + ", ".join(f"{h['title'][:20]} ({h['bpm']:.0f})" for h in hops))
         self.up_next.append(tid)
         self._event(f"up next: {self.title(tid)}")
+        if self.plan is not None and rc is None:
+            # a planned night: your record goes first, and the plan REJOINS at the earliest slot that connects from it
+            # (decision 3 of docs/DJ_SETS.md); the slots between are skipped for your record
+            self.plan.post(self.plan.on_queue, tid)
         if rc is not None:
             rc.mark_next(tid)                         # (a song whose part is in becomes the next record only when you say so)
         return True, "up next"
@@ -1302,6 +1503,8 @@ class Director:
         self.horizon = [h for h in self.horizon if h["id"] != tid]
         self._hz_sig = None
         self._event(f"not tonight: {self.title(tid)[:30]}")
+        if self.plan is not None:
+            self.plan.post(self.plan.on_skip, tid)    # (a planned slot leaves the night; a set_skip row is written)
         return True
 
     # -- THE PAIRS: the mashup finder (docs/DJ_MORE_THAN_A_MIXER.md 1) ---------------------------------------------
@@ -1649,6 +1852,8 @@ class Director:
         if self.player is not None:
             ok, msg = self.player.next()
             self._event(self._said("NEXT", ok, msg))
+            if self.plan is not None:
+                self.plan.on_order("NEXT")            # (the plan re-times on the player's clock: the order stands)
             return ok, msg
         if self.system is not None:
             self.system.request_skip()
@@ -1660,6 +1865,8 @@ class Director:
         if self.player is not None:
             ok, msg = self.player.stay()
             self._event(self._said("STAY", ok, msg))
+            if self.plan is not None:
+                self.plan.on_order("STAY")
             return ok, msg
         if self.system is not None:
             self.system.request_hold()
@@ -1923,8 +2130,21 @@ class Director:
         if self.player is not None:
             tid = int(track_id)
             self.unqueue(tid)
+            pl = self.plan
+            # THE SKIP FIRST (2026-10-29): player.eject frees the deck at once, and the Director's next tick asks the hook
+            # before it runs anything posted - so the id joins the plan's skips BEFORE the record leaves (taken back if
+            # the eject is refused), or the hook hands the same record straight back (docs/DJ_SETS.md section 3)
+            was = pl.skip_now(tid, "ejected") if pl is not None else True
             msg = str(self.player.eject(tid))
-            self._event(f"eject {self.title(tid)[:24]}: {msg}")
+            # EJECTED WHILE LOADING (2026-10-29): the player drops the decode where it lands (it never becomes the next
+            # record), so the skip stands like any eject - taken back here, the record landed and played as slot +1
+            loading = msg.startswith("ejected while loading")
+            self._event(msg if loading else f"eject {self.title(tid)[:24]}: {msg}")
+            if pl is not None:
+                if loading or msg.endswith("off the decks"):
+                    pl.post(pl.on_eject, tid)         # (the set_skip row, the row out, slots +2 re-searched once the next is kept)
+                elif not was:
+                    pl.unskip(tid)
             return msg
         if self.rc is None or self.rc.master is None:
             return "not layered"
@@ -2081,6 +2301,11 @@ class Director:
                     info["did"] = msg if ok else f"could not move on: {msg}"
                 except Exception as e:  # noqa: BLE001
                     info["did"] = f"could not move on: {type(e).__name__}: {e}"
+                if self.plan is not None:
+                    # a planned night: the record's tags lean the rest away and slots +2 on are re-scored (off-thread);
+                    # the record playing and the next one stand (docs/DJ_SETS.md section 3)
+                    self.plan.post(self.plan.on_bad, song_id, list(tags or []))
+                    info["did"] = (info["did"] or "") + "; the rest of the night is re-scored"
             try:
                 br = getattr(self.player, "brain", None)
                 if br is not None:
@@ -2258,6 +2483,8 @@ class Director:
             return
         if not self.running:
             return
+        if self._night_posted:
+            self._night_step()                        # (the web page's night presses, before the plan's own tick)
         if self.player is not None:
             try:
                 self._player_step()
@@ -2340,6 +2567,11 @@ class Director:
             self._note_played(tid)
             if not first:
                 self._song_changed()
+        if self.plan is not None:
+            try:
+                self.plan.step()                      # (the planner's answers, the rows' states, the re-anchor on the player's clock)
+            except Exception as e:  # noqa: BLE001
+                self.last_error = f"plan: {type(e).__name__}: {e}"
 
     # -- the decks drawn: what each record IS (its structure, its energy, its bands), for the web page's strips ------------
     def _lib_by_id(self):
@@ -3739,6 +3971,20 @@ class Director:
             if self.up_next:
                 row(None, "UP NEXT", ", ".join(self.title(t)[:24] for t in self.up_next[:4]) + (" …" if len(self.up_next) > 4 else ""),
                     "your queue, in order", key=("upnext-r", tuple(self.up_next[:4])))
+            if self.plan is not None:
+                # THE PLANNED NIGHT after UP NEXT (docs/DJ_SETS.md section 4): THEN rows - the night's clock, the record,
+                # its chapter, tempo against the record playing, energy; a row that moved says why
+                pl = self.plan
+                try:
+                    sp_ns = pl.night_s()
+                    ci = pl.chapter_at(sp_ns)
+                    head = f"{pl.name} · {pl.chapters[ci]['name'] if ci is not None and pl.chapters else ''} · {_mmss(sp_ns)} of {_mmss(pl.length_s())}"
+                    row(None, "NIGHT", head, (f"planning: {pl.pending['trigger'][:60]}" if pl.pending else "")
+                        + (f" · {pl.error[:60]}" if pl.error else ""), key=("night", pl.name, ci, bool(pl.pending)))
+                    for t_s, text, sub, key, tid in pl.then_rows(float(rec.get("bpm") or 0.0) if rec else None):
+                        row(t_s, "THEN", text, sub, key=key, tid=tid)
+                except Exception as e:  # noqa: BLE001
+                    row(None, "NIGHT", f"(the plan could not be read: {type(e).__name__}: {e})", "", key=("night-err",))
             if not rec and not nxt:
                 row(None, "PLAN", wait or "nothing playing yet", "" if self.running else "press START", key=("rwait", wait[:40]))
             elif rec and not nxt and wait:
@@ -4137,6 +4383,18 @@ class Director:
             out["plan_rows"] = [{"t": None, "kind": "PLAN", "text": f"(the plan could not be read: {type(e).__name__}: {e})", "sub": "", "key": "err"}]
         out["horizon"] = [{"id": h["id"], "title": h["title"], "bpm": h["bpm"], "t": h.get("t"), "why": list(h.get("why") or [])} for h in self.horizon]
         out["set_why"] = self._hz_why
+        # THE NIGHT AS A PLAN: its own block ('plan' is the record player's blend, the page's deck strips), and at the top
+        # level plan_progress (elapsed / length, the player's clock) and plan_heat (the chapter's energy now), which
+        # Stories_OGL publishes as dj_arc_phase / dj_arc_heat for the club's lights (docs/DJ_SETS.md section 3)
+        out["set_plan"], out["plan_progress"], out["plan_heat"] = None, None, None
+        if self.plan is not None:
+            try:
+                if not self.running:
+                    self.plan.poll()
+                sp = self.plan.status()
+                out["set_plan"], out["plan_progress"], out["plan_heat"] = sp, sp.get("plan_progress"), sp.get("plan_heat")
+            except Exception as e:  # noqa: BLE001
+                out["set_plan"] = {"error": f"{type(e).__name__}: {e}"}
         out["requests"] = {k: dict(v) for k, v in self.requests.items()}
         # DOUBLED: the same stem from two songs audible at once (a crossfade in flight, or the autoDJ's blend)
         doubled = []

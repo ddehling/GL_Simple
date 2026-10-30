@@ -64,6 +64,21 @@
         .dr-deck .lamp { width:38px; text-align:center; font-size:.7em; padding:1px 0; border-radius:4px; background:#262626; color:#666; }
         .dr-deck .lamp.on { background:#f0a05a; color:#1a1a1a; font-weight:bold; }
         .dr-deck .lamp.half { background:#5a4a30; color:#ddd; }
+        /* THE NIGHT (a planned night, RECORD mode): one small button per planner preset, the LENGTH select, the strip's
+           THEN lines (docs/DJ_SETS.md section 4) */
+        .night-row { display:flex; gap:5px; flex-wrap:wrap; align-items:stretch; }
+        .night-btn { flex:1 1 96px; min-width:0; padding:7px 4px; font-size:.8em; border-radius:6px; border:1px solid #555;
+                     background:#26262e; color:#ccc; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .night-btn.on { border-color:#f0c85a; background:#3a3016; color:#ffe08a; font-weight:bold; }
+        .night-btn.pending { border-color:#9fc0ff; animation: drpulse .9s ease-in-out infinite; }
+        .night-btn.err { border-color:#f0a05a; box-shadow: inset 0 -3px 0 #f0a05a; }
+        .night-len { flex:0 1 88px; min-width:72px; padding:6px 4px; background:#1c1c24; color:#9fc0ff; border:1px solid #445;
+                     border-radius:6px; font-size:.8em; }
+        .night-then { font-size:.8em; line-height:1.45; margin:2px 0 4px 0; }
+        .night-then div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:.85; }
+        .night-then .t { color:#9fc0ff; font-variant-numeric:tabular-nums; }
+        .night-then .w { color:#f0c85a; }
+        .night-note { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#c9b37a; }
         .now-sub { font-size: 0.85em; opacity: 0.7; }
         .kv { display: flex; justify-content: space-between; font-size: 0.85em;
               padding: 2px 0; }
@@ -143,6 +158,8 @@
             .btn { min-height: 46px; }
             .theme-btn { min-height: 42px; }
             .setrow select { min-height: 44px; }
+            .night-btn { min-height: 38px; font-size: 13px; }
+            .night-len { min-height: 38px; font-size: 16px; }   /* (under 16px iOS zooms the page on focus) */
             /* A select sharing its row with buttons (setlist: IN ORDER /
                STEER POOL) was squeezed to an unreadable sliver - wrap the
                row so the select gets the full width and the buttons drop
@@ -331,6 +348,10 @@
             <div class="now-sub" id="dj-dr-state"></div>
             <canvas id="dj-dr-arc" height="56" title="the night's arc: the plan, what played, where we are - tap = we are here"
                     style="width:100%;display:block;border-radius:8px;background:#15151c;margin:6px 0"></canvas>
+            <!-- RECORD mode with a planned night: the canvas above is THE NIGHT STRIP; the next THEN records under it, and
+                 the record a tap on the strip picked (phones have no hover) -->
+            <div class="now-sub hidden" id="dj-dr-night-tip" style="white-space:pre-line;opacity:.9;margin:-2px 0 4px 0"></div>
+            <div class="night-then hidden" id="dj-dr-then"></div>
             <div id="dj-dr-now" style="font-weight:bold;font-size:1.1em"></div>
             <div class="now-sub" id="dj-dr-next"></div>
             <div class="now-sub" id="dj-dr-intent" style="margin-top:4px"></div>
@@ -373,6 +394,11 @@
             <div id="dj-dr-programs" class="transport" style="margin-top:8px;flex-wrap:wrap"></div>
             <div class="now-sub" id="dj-dr-program"></div>
             <div id="dj-dr-dials" style="margin-top:8px"></div>
+            <!-- RECORD mode: THE NIGHT - a planner preset plans the whole night (lit = on; press the lit one = off), its length -->
+            <div id="dj-dr-night" class="hidden" style="margin-top:10px">
+                <div class="now-sub" title="a planned night: chapters, each record placed where its chapter asks for it and checked to blend with its neighbours. Press = plan that night (the record playing and the next one stay); press the lit one = the DJ picks record by record again">Night</div>
+                <div class="night-row" id="dj-night-btns" data-where="director"></div>
+            </div>
             <!-- RECORD mode: the SONGS pool the records are picked from, and the theme (its brain reads the theme at the next START) -->
             <div id="dj-dr-songs" class="hidden" style="margin-top:10px">
                 <div class="now-sub">Songs <span style="opacity:.5;font-size:11px">(the pool the next records are picked from)</span></div>
@@ -388,7 +414,8 @@
 
         <!-- The night (active) -->
         <div class="section-panel hidden" id="dj-nightcard">
-            <div class="section-header"><h3>The Night</h3></div>
+            <!-- (2026-10-29: "The DJ's arc", not "The Night" - the planned night is Night ★ under Prepare, with its own LENGTH) -->
+            <div class="section-header"><h3 title="the classic DJ's energy arc (▶ START): valley → peak → comedown over the set length. A planned night (Night ★, for ★ DIRECTOR) uses its own LENGTH">The DJ's arc</h3></div>
             <canvas id="dj-arc-canvas" height="110"
                     style="width:100%;display:block;border-radius:8px;
                            background:#15151c"></canvas>
@@ -396,8 +423,8 @@
             <div class="bias-labels"><span id="dj-arc-hint">drag to steer
                     energy</span>
                 <span>
-                    <select id="dj-setlen" title="Set length: the energy arc
-                        (valley → peak → comedown) paces itself over this"
+                    <select id="dj-setlen" title="the classic DJ's set length (▶ START): its energy arc
+                        (valley → peak → comedown) paces itself over this - a planned night (Night ★) uses its own LENGTH"
                         style="background:#15151c;color:#8cf;border:1px solid
                         #333;border-radius:6px;padding:4px 6px">
                         <option value="5400">90 min set</option>
@@ -428,6 +455,10 @@
         <!-- Prep / steer (always when available) -->
         <div class="section-panel hidden" id="dj-steer">
             <div class="section-header"><h3 id="dj-steer-h">Prepare</h3></div>
+            <div id="dj-night-idle">
+                <div class="now-sub" title="a planned night for ★ DIRECTOR (RECORD mode): pick it now and the night is planned before its first record, which is the plan's first. Press the lit one = no plan">Night ★</div>
+                <div class="night-row" id="dj-night-btns-idle" data-where="idle" style="margin-bottom:12px"></div>
+            </div>
             <div class="now-sub">Theme</div>
             <div class="theme-row" id="dj-themes"></div>
             <div class="now-sub" style="margin-top:12px">Persona
@@ -896,6 +927,8 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             if (rx) renderRemix(dj.remix || {});
             show($("dj-director"), dr);
             if (dr) renderDirector(dj.director || {}, dj);
+            else renderNight($("dj-night-btns-idle"), dj, false);   // (a night armed for ★ DIRECTOR)
+            show($("dj-night-idle"), !on && !rx && !dr);
 
             // Transport buttons.
             const starting = !!dj.director_starting || !!dj.dj_starting;
@@ -921,7 +954,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
                        ? ` · tonight: ${dj.persona.replace(/_/g, " ")}` : "");
             } else if (dj.director_starting || dj.dj_starting) {
                 banner.className = "dj-banner on";
-                banner.textContent = (dj.director_starting ? "THE DIRECTOR" : "The DJ") + " is starting… (the library loads off the render thread; a few seconds)";
+                banner.textContent = (dj.director_starting ? "THE DIRECTOR" : "The DJ") + " is starting… "
+                    + (dj.director_starting && dj.night_armed ? "(planning the night - the room keeps its sound until the first record)"
+                       : "(the library loads off the render thread; a few seconds)");
             } else {
                 banner.className = "dj-banner";
                 banner.textContent = "DJ idle. Pick a theme/setlist, then START. "
@@ -973,6 +1008,8 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             // Set-length select: reflect the engine's current cycle
             // unless the operator is mid-interaction with it.
             const slSel = $("dj-setlen");
+            // (a night armed for ★ DIRECTOR: this length is not the one it plays - dimmed, the tooltip says whose it is)
+            if (slSel) slSel.style.opacity = (dj.night_armed && !on) ? "0.45" : "";
             if (slSel && dj.arc_cycle_s
                     && document.activeElement !== slSel) {
                 const cur = String(Math.round(dj.arc_cycle_s));
@@ -1371,14 +1408,23 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         $("dj-dr-good").onclick = () => emit("director_rate", true);
         $("dj-dr-bad").onclick = () => emit("director_rate", false);
         $("dj-dr-arc").onclick = (ev) => {
+            // RECORD mode: the canvas is THE NIGHT STRIP - a tap shows that record; director_arc is the layered engines' arc
+            if (drMode === "record") { nightTap(ev); return; }
             const c = $("dj-dr-arc"), r = c.getBoundingClientRect();
             emit("director_arc", Math.max(0, Math.min(0.999, (ev.clientX - r.left - 10) / Math.max(1, r.width - 20))));
+        };
+        $("dj-dr-arc").onmousemove = (ev) => {
+            if (drMode !== "record" || !nightGeo) return;
+            const hit = nightBusy() ? null : nightHit(ev);
+            $("dj-dr-arc").title = hit ? hit.tip : NIGHT_STRIP_TIP;
         };
         let drDialsSig = "", drTouched = 0;
         const RECORD_DIALS = ["layers", "pace", "bass", "tone", "level"];   // the dials that act in RECORD mode (the rest are the layered engines')
         function mmss(s) { s = Math.max(0, Math.round(s || 0)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+        let drMode = null;
         function renderDirector(d, dj) {
             const record = d.mode === "record";
+            drMode = d.mode || null;
             const dials = d.dials || {};
             const menuAll = d.dials_menu || {};
             const menu = record ? Object.fromEntries(Object.entries(menuAll).filter(([k]) => RECORD_DIALS.includes(k))) : menuAll;
@@ -1391,7 +1437,13 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             // EVERY mode is a picture, not a page of text: the decks drawn, the chip and the countdown, the dials that
             // act, the songs pool, two story lines. The arc, the moments and the programs belong to the layered engines
             // and show only there; the plan rows, the intent sentence and the why paragraph stay off everywhere.
-            $("dj-dr-arc").style.display = record ? "none" : "block";
+            // (RECORD mode with a planned night: the arc canvas is the night strip; without one it stays hidden)
+            const nightOn = record && !!(dj && dj.dj_night && dj.night_tick && dj.night_tick.planned);
+            $("dj-dr-arc").style.display = (!record || nightOn) ? "block" : "none";
+            show($("dj-dr-night"), record);
+            show($("dj-dr-then"), nightOn);
+            if (!nightOn) show($("dj-dr-night-tip"), false);
+            if (record) renderNight($("dj-night-btns"), dj, true);
             show($("dj-dr-moments"), !record);
             show($("dj-dr-moment"), !record);
             show($("dj-dr-programs"), !record);
@@ -1404,7 +1456,10 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             show($("dj-dr-why"), false);
             drPic = {at: Date.now(), rec: d.record || null, plan: d.plan || null, decks: d.decks || {}, next: d.next || null, maps: (dj && dj.deck_maps) || {}, mode: d.mode};
             drawRecordPicture();
-            $("dj-dr-recent").innerHTML = (d.recent || []).slice(-2).map((x) => `<div>${x.length > 110 ? x.slice(0, 110) + "…" : x}</div>`).join("");
+            // the story lines: the player's last two moves, then the night's re-routes (the whole text in the tooltip)
+            const notes = (record && dj && dj.night_tick && dj.night_tick.notes) || [];
+            setHtml($("dj-dr-recent"), (d.recent || []).slice(-2).map((x) => `<div>${x.length > 110 ? x.slice(0, 110) + "…" : x}</div>`).join("")
+                + notes.map((n) => `<div class="night-note" title="${esc(n.tip)}">▸ ${esc(n.text)}</div>`).join(""));
             if (dj) {
                 // the SONGS pool select (the setlist names) and the theme buttons, rebuilt only when the lists change
                 const sel = $("dj-dr-pool");
@@ -1485,9 +1540,229 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             for (const b of document.querySelectorAll("#dj-dr-programs [data-prog]"))
                 b.classList.toggle("on", !!pr && pr.key === b.dataset.prog);
             $("dj-dr-program").textContent = pr ? `${pr.label} over ${pr.n} songs: ` + (pr.steps || []).map((s) => (s.now ? "▶ " : (s.done ? "✓ " : "")) + `song ${s.i + 1}: ${s.text}`).join("  →  ") : "";
-            drawDirectorArc(d.arc || {});
+            if (nightOn) { drawNightStrip(dj.dj_night, dj.night_tick); renderThen(dj.dj_night, dj.night_tick); }
+            else if (!record) { nightGeo = null; $("dj-dr-arc").title = ARC_TIP; $("dj-dr-arc").style.height = ""; $("dj-dr-arc").height = 56; drawDirectorArc(d.arc || {}); }
+            else nightGeo = null;
         }
         let drProgSig = "", drProgN = 3;
+
+        // ---- THE NIGHT (docs/DJ_SETS.md section 4): preset buttons, LENGTH, the strip, THEN lines ----
+        const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        const hm = (s) => { s = Math.max(0, Math.round(s || 0)); return `${Math.floor(s / 3600)}:${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}`; };
+        const ARC_TIP = $("dj-dr-arc").title;
+        const NIGHT_STRIP_TIP = "the night: its chapters, each record a block at its energy (height) and length (width) - dim = played, gold = now, "
+            + "blue = next, outlined = planned, hatched under the line = skipped; the white line is now; an amber mark = a chapter with a "
+            + "warning (red: most of its records miss) · hover or tap a record for its details";
+        let nightPending = null;          // {theme (null = clear), at}: the press until the server's plan answers it
+        let nightLenTouched = 0;
+        // what the server says: the night on (the Director's plan, or the one armed for START), planning, its error
+        function nightServer(dj, director) {
+            const tk = dj.night_tick || null, armed = dj.night_armed || null;
+            const on = director ? (tk && tk.planned ? (tk.source || tk.theme) : null) : (armed ? armed.theme : null);
+            const err = director && tk ? (tk.planner_down ? `the planner is down: the DJ picks record by record${tk.error ? " (" + tk.error + ")" : ""}`
+                : (tk.error && !tk.pending ? `the plan could not be made: ${tk.error}` : null)) : null;
+            const lenMin = director && tk && tk.planned && tk.length_s ? Math.round(tk.length_s / 60) : (armed && armed.length_min) || dj.night_len || 90;
+            return {on, pending: !!(director && tk && tk.pending), err, lenMin};
+        }
+        function renderNight(box, dj, director) {
+            if (!box || !dj) return;
+            const presets = dj.night_presets || [], lens = dj.night_lengths || [45, 60, 90, 120, 180, 240, 360];
+            const key = presets.map((p) => p.name).join("|") + "#" + lens.join(",");
+            if (box.dataset.have !== key) {
+                box.dataset.have = key;
+                box.innerHTML = presets.map((p) => `<button class="night-btn" data-night="${esc(p.name)}">${esc(p.name)}</button>`).join("")
+                    + `<select class="night-len" title="the night's length - with a night on it is planned again to this (the record playing and the next one stay); with none, the next press plans this long">`
+                    + lens.map((m) => `<option value="${m}">${m < 120 ? m + " min" : (m / 60) + " h"}</option>`).join("") + `</select>`;
+                for (const b of box.querySelectorAll(".night-btn"))
+                    b.onclick = () => {
+                        const S = nightServer(lastFullDj || {}, !!(lastFullDj && lastFullDj.director_active));
+                        const shown = nightPending ? nightPending.theme : S.on;
+                        const len = parseInt(box.querySelector(".night-len").value, 10) || 90;
+                        const lit = shown && shown.toLowerCase() === b.dataset.night.toLowerCase();
+                        nightPending = {theme: lit ? null : b.dataset.night, at: Date.now()};
+                        emit("director_night", lit ? {op: "clear"} : {op: "plan", theme: b.dataset.night, length_min: len});
+                        flash(b);
+                        for (const x of document.querySelectorAll(".night-row")) paintNight(x, lastFullDj || {}, x.dataset.where === "director");
+                    };
+                box.querySelector(".night-len").onchange = (ev) => {
+                    nightLenTouched = Date.now();
+                    for (const s of document.querySelectorAll(".night-len")) s.value = ev.target.value;
+                    emit("director_night", {op: "length", length_min: parseInt(ev.target.value, 10)});
+                };
+            }
+            paintNight(box, dj, director);
+        }
+        function paintNight(box, dj, director) {
+            const S = nightServer(dj, director);
+            if (nightPending) {
+                const done = nightPending.theme === null ? !S.on : (S.on && S.on.toLowerCase() === nightPending.theme.toLowerCase() && !S.pending);
+                if (done || (S.err && Date.now() - nightPending.at > 1500) || Date.now() - nightPending.at > 120000) nightPending = null;
+            }
+            const shown = nightPending ? nightPending.theme : S.on;
+            const byName = Object.fromEntries((dj.night_presets || []).map((p) => [p.name, p]));
+            for (const b of box.querySelectorAll(".night-btn")) {
+                const name = b.dataset.night, lit = !!shown && shown.toLowerCase() === name.toLowerCase();
+                const planning = lit && director && (S.pending || (nightPending && nightPending.theme !== null));
+                b.classList.toggle("on", lit);
+                b.classList.toggle("pending", !!planning);
+                b.classList.toggle("err", lit && !!S.err && !planning);
+                const p = byName[name] || {};
+                b.title = `${name}: ${p.blurb || ""}\n` + (p.chapters || []).map(([c, pct]) => `${c} ${pct} %`).join(" · ")
+                    + (planning ? "\nplanning…" : "") + (lit && S.err && !planning ? `\n⚠ ${S.err}` : "")
+                    + (lit ? (director ? "\npress again: no plan (the DJ picks record by record)" : "\n★ DIRECTOR plans it before its first record · press again: no plan")
+                           : (director ? "\npress: plan this night from the record after next" : "\npress: ★ DIRECTOR starts on this night"));
+            }
+            const sel = box.querySelector(".night-len");
+            if (sel && document.activeElement !== sel && Date.now() - nightLenTouched > 2500) {
+                const want = String((dj.night_lengths || [S.lenMin]).reduce((a, m) => Math.abs(m - S.lenMin) < Math.abs(a - S.lenMin) ? m : a, S.lenMin));
+                if (sel.value !== want) sel.value = want;
+            }
+        }
+        // the strip's geometry, for hover / tap
+        let nightGeo = null;
+        function nightBusy() {
+            // a re-plan on its way (pending), or the night before shown until a new pick's first answer (stale): the strip
+            // keeps the last plan dimmed and ignores taps (section 4, 2026-10-29)
+            const T = (lastFullDj && lastFullDj.night_tick) || {};
+            return !!(T.pending || T.stale);
+        }
+        function drawNightStrip(N, T) {
+            const c = $("dj-dr-arc"), ctx = c.getContext("2d");
+            if (!c.title || c.title === ARC_TIP) c.title = NIGHT_STRIP_TIP;
+            // drawn in CSS pixels on a backing store at the screen's density (a phone's DPR 2-3 blurred the 10 px names)
+            const dpr = window.devicePixelRatio || 1, W = c.clientWidth || 600, H = 84, pad = 8;
+            c.style.height = H + "px";
+            c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            const busy = !!(T && (T.pending || T.stale));
+            ctx.globalAlpha = busy ? 0.4 : 1;
+            const top = 16, skipH = 6, base = H - skipH - 6, areaH = base - top - 3;
+            const slots = N.slots || [], chs = N.chapters || [];
+            const ends = slots.filter((s) => s.start_s != null).map((s) => s.start_s + (s.play_s || 0));
+            const total = Math.max(N.length_s || 0, ends.length ? Math.max(...ends) : 0, (T && T.elapsed_s) || 0, 1);
+            const x = (t) => pad + Math.max(0, Math.min(1, t / total)) * (W - 2 * pad);
+            ctx.clearRect(0, 0, W, H);
+            const geo = {blocks: [], bands: [], skipped: [], top, base, H};
+            // the chapters: bands with their names, the energy course they ask for (dashed), a mark when one has a warning
+            const warnOf = {}, offIds = new Set();
+            for (const w of (N.warnings || [])) {
+                if (w.chapter != null) (warnOf[w.chapter] = warnOf[w.chapter] || []).push(w);
+                for (const i of (w.off_ids || [])) offIds.add(i);
+            }
+            chs.forEach((ch, i) => {
+                const x0 = x(ch.start_s), x1 = x(ch.end_s), cur = T && T.chapter_i === i;
+                ctx.fillStyle = cur ? "rgba(240,200,90,0.07)" : (i % 2 ? "rgba(255,255,255,0.045)" : "rgba(255,255,255,0.02)");
+                ctx.fillRect(x0, 0, x1 - x0, base);
+                ctx.fillStyle = "#33333d"; if (i) ctx.fillRect(x0, 0, 1, base);
+                const ws = warnOf[i] || [];
+                const red = ws.some((w) => w.bad), mark = ws.length ? (red ? "#ef4444" : "#f0a05a") : null;
+                if (mark) { ctx.fillStyle = mark; ctx.fillRect(x0 + 1, 0, Math.max(2, x1 - x0 - 2), 3); }
+                ctx.font = (cur ? "bold " : "") + "10px sans-serif"; ctx.textAlign = "left";
+                const room = x1 - x0 - 6;
+                // (the chapter mark's word: "Orbit 2/5 off" when it fits, else "! Orbit")
+                const wo = ws.find((w) => w.off != null && w.of);
+                let label = wo ? `${ch.name || ""} ${wo.off}/${wo.of} off` : (mark ? "! " : "") + (ch.name || "");
+                if (wo && ctx.measureText(label).width > room) label = "! " + (ch.name || "");
+                while (label.length > 1 && ctx.measureText(label).width > room) label = label.slice(0, -2) + "…";
+                if (room > 8) { ctx.fillStyle = mark || (cur ? "#ffe08a" : "#b8b8c4"); ctx.fillText(label, x0 + 3, 13); }
+                if (ch.energy && ch.energy.length === 2) {
+                    ctx.save(); ctx.setLineDash([3, 3]); ctx.strokeStyle = "rgba(160,190,255,0.45)"; ctx.lineWidth = 1; ctx.beginPath();
+                    ctx.moveTo(x0, base - ch.energy[0] * areaH); ctx.lineTo(x1, base - ch.energy[1] * areaH); ctx.stroke(); ctx.restore();
+                }
+                geo.bands.push({x0, x1, ch, ws});
+            });
+            // the records: a block each, at its energy and length
+            const COL = {played: ["#4b5568", null], now: ["#f0c85a", "#ffffff"], next: ["#7da2e3", "#cfe0ff"], planned: ["rgba(125,162,227,0.30)", "#7da2e3"]};
+            for (const s of slots) {
+                if (s.start_s == null) continue;
+                // (the record playing at least 4 px wide: the playhead's 2 px sits on it)
+                const x0 = x(s.start_s), x1 = Math.max(x0 + (s.state === "now" ? 4 : 1.5), x(s.start_s + (s.play_s || 60)) - 1);
+                const h = Math.max(3, (s.energy != null ? s.energy : 0.5) * areaH), y = base - h;
+                const [fill, stroke] = COL[s.state] || COL.planned;
+                ctx.fillStyle = fill; ctx.fillRect(x0, y, x1 - x0, h);
+                if (s.user) { ctx.strokeStyle = "#2ee6d6"; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + 0.75, y + 0.75, Math.max(0.5, x1 - x0 - 1.5), h - 1.5); }
+                else if (offIds.has(s.id)) { ctx.strokeStyle = "#f0a05a"; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + 0.75, y + 0.75, Math.max(0.5, x1 - x0 - 1.5), h - 1.5); }
+                else if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.strokeRect(x0 + 0.5, y + 0.5, Math.max(0.5, x1 - x0 - 1), h - 1); }
+                geo.blocks.push({x0, x1, y0: y, y1: base, s});
+            }
+            // the base line, and under it the slots that left the plan, hatched where they were
+            ctx.fillStyle = "#3a3a46"; ctx.fillRect(pad, base + 1, W - 2 * pad, 1);
+            for (const s of (N.skipped || [])) {
+                if (s.start_s == null) continue;
+                const x0 = x(s.start_s), x1 = Math.max(x0 + 3, x(s.start_s + (s.play_s || 60)) - 1), y0 = base + 3;
+                ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, skipH); ctx.clip();
+                ctx.fillStyle = "rgba(150,150,160,0.18)"; ctx.fillRect(x0, y0, x1 - x0, skipH);
+                ctx.strokeStyle = "rgba(190,190,200,0.75)"; ctx.lineWidth = 1;
+                for (let k = x0 - skipH; k < x1; k += 4) { ctx.beginPath(); ctx.moveTo(k, y0 + skipH); ctx.lineTo(k + skipH, y0); ctx.stroke(); }
+                ctx.restore();
+                geo.skipped.push({x0, x1, y0, y1: y0 + skipH, s});
+            }
+            // the playhead: the night's clock
+            if (T && T.elapsed_s != null) {
+                const px = x(T.elapsed_s);
+                ctx.fillStyle = "#fff"; ctx.fillRect(px - 1, 0, 2, H);
+                ctx.beginPath(); ctx.moveTo(px - 4, 0); ctx.lineTo(px + 4, 0); ctx.lineTo(px, 5); ctx.closePath(); ctx.fill();
+            }
+            ctx.globalAlpha = 1;
+            if (busy) {
+                // "planning…" in the name row, right-aligned, on its own patch (the last band's name runs under it)
+                ctx.font = "10px sans-serif";
+                const word = "planning…", tw = ctx.measureText(word).width;
+                ctx.fillStyle = "#15151c"; ctx.fillRect(W - pad - tw - 8, 2, tw + 8, 14);
+                ctx.fillStyle = "#ffe08a"; ctx.textAlign = "right"; ctx.fillText(word, W - pad - 2, 13);
+            }
+            nightGeo = geo;
+        }
+        function slotTip(s, skipped) {
+            const len = s.play_s ? ` (${mmss(s.play_s)})` : "";
+            return `${s.title || "?"}${s.artist ? " — " + s.artist : ""}\n`
+                + (skipped ? "skipped" : ({played: "played", now: "playing now", next: "next", planned: "planned"}[s.state] || s.state || ""))
+                + (s.user ? " · your record" : (s.src === "brain" ? " · the DJ's pick" : ""))
+                + (s.start_s != null ? ` · ${hm(s.start_s)}${len}` : "")
+                + (s.bpm ? ` · ${Math.round(s.bpm)} bpm` : "") + (s.key ? ` · ${s.key}` : "") + (s.energy != null ? ` · energy ${s.energy.toFixed(2)}` : "")
+                + (s.why ? `\n${s.why}` : "");
+        }
+        function nightHit(ev) {
+            const g = nightGeo; if (!g) return null;
+            // (CSS pixels: the strip is drawn in them, whatever the backing store's density)
+            const c = $("dj-dr-arc"), r = c.getBoundingClientRect();
+            const X = ev.clientX - r.left, Y = ev.clientY - r.top;
+            if (Y > g.base + 1) {
+                const k = g.skipped.find((b) => X >= b.x0 - 2 && X <= b.x1 + 2);
+                if (k) return {tip: slotTip(k.s, true)};
+            }
+            // a record answers only near its block; the empty space above it falls through to its chapter (and its warning)
+            const b = g.blocks.find((q) => X >= q.x0 - 1 && X <= q.x1 + 1 && Y >= q.y0 - 4 && Y <= q.y1 + 1);
+            if (b) return {tip: slotTip(b.s, false)};
+            const band = g.bands.find((q) => X >= q.x0 && X <= q.x1);
+            if (band) {
+                const e = band.ch.energy || [];
+                return {tip: `${band.ch.name}: ${hm(band.ch.start_s)}–${hm(band.ch.end_s)}` + (e.length === 2 ? ` · energy ${e[0].toFixed(2)} → ${e[1].toFixed(2)}` : "")
+                    + band.ws.map((w) => `\n${w.bad ? "⛔" : "⚠"} ${w.text}`).join("")};
+            }
+            return null;
+        }
+        let nightTipTimer = null;
+        function nightTap(ev) {
+            const el = $("dj-dr-night-tip");
+            clearTimeout(nightTipTimer);
+            const hit = nightBusy() ? null : nightHit(ev);   // (planning: the strip is the last plan, dimmed - no tap answers)
+            if (!hit) { show(el, false); return; }
+            el.textContent = hit.tip.length > 300 ? hit.tip.slice(0, 300) + "…" : hit.tip;
+            show(el, true);
+            nightTipTimer = setTimeout(() => show(el, false), 8000);
+        }
+        // THEN: the next planned records as compact lines (time · title · why when it moved), the rest in the tooltip
+        function renderThen(N, T) {
+            const el = $("dj-dr-then"), el2 = T && T.elapsed_s != null ? T.elapsed_s : 0;
+            if (T && T.stale) { setHtml(el, `<div style="opacity:.6">planning…</div>`); return; }   // (the night before's records are not this night's)
+            const rows = (N.slots || []).filter((s) => s.state === "planned").slice(0, 3);
+            setHtml(el, rows.map((s) => {
+                const inMin = s.start_s != null ? Math.max(0, Math.round((s.start_s - el2) / 60)) : null;
+                return `<div title="${esc(slotTip(s, false))}"><span class="t">${inMin != null ? `in ${inMin} min` : "later"}</span> · ${esc(s.title)}`
+                    + `<span style="opacity:.6"> — ${esc(s.artist || "")}</span>` + (s.why ? ` · <span class="w">${esc(s.why)}</span>` : "") + `</div>`;
+            }).join("") || (T && T.pending ? `<div style="opacity:.6">planning…</div>` : ""));
+        }
 
         // ---- RECORD mode's picture: redrawn 10x a second from the last status plus the time since it arrived ----
         let drPic = null;

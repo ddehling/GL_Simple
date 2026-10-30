@@ -2834,6 +2834,8 @@ class EnvironmentalSystem:
                     self._remix_start()
                 elif action == 'director_start':
                     self._director_start()
+                elif action == 'director_night':
+                    self._director_night(arg)
                 elif action.startswith('director_'):
                     d = getattr(self, '_director', None)
                     if d is None:
@@ -2991,9 +2993,40 @@ class EnvironmentalSystem:
             _dj_detail["dj_mirror"] = round(
                 (time.perf_counter() - _mirror_t0) * 1000.0, 1)
 
+    @staticmethod
+    def _dj_arc_outstate(d, dst):
+        """The night's arc for the lights, from the Director `d` and its status() `dst`: {'dj_arc_phase': float or
+        None, 'dj_arc_heat': float}. A None phase means the key is REMOVED from outstate (tools/tests/_dj_lights_arc.py)."""
+        arc = dst.get("arc") or {}
+        prog, heat = arc.get("progress"), arc.get("target")
+        if getattr(d, "player", None) is not None:
+            # RECORD mode (2026-10-28, DJ_SETS.md section 3 "The lights get the night too"): the Director's arc clock
+            # is the layered engines', so here it read 0.0 all night and club_director held the club's lights at
+            # "Doors" for the whole night. Only a planned night knows where the night is: the set planner publishes
+            # plan_progress (elapsed / length, on the player's clock) and plan_heat (the chapter's energy), both
+            # 0..1, in the status 'plan' block or at its top level. Until it does there is no phase.
+            pl = dst.get("plan") if isinstance(dst.get("plan"), dict) else {}
+            prog = pl.get("plan_progress", dst.get("plan_progress"))
+            heat = pl.get("plan_heat", dst.get("plan_heat"))
+            if prog is not None:
+                # held short of 1.0: club_director reads the phase mod 1, so a night run long by STAYs (elapsed
+                # past its length) would wrap the lights back to "Doors"
+                prog = max(0.0, min(0.999, float(prog)))
+            # (no plan: None. A MISSING phase is club_director's "no lean" - it blends only toward a phase that is
+            # not None - and the key is removed, so a value an earlier engine left does not linger)
+            if heat is not None:
+                heat = max(0.0, min(1.0, float(heat)))
+        elif prog is None:
+            prog = 0.0                                 # (the layered engines: as before)
+        # the heat stays a NUMBER in every mode (0.5 = no lean): a None here once killed the render loop (the club
+        # director did float(outstate.get('dj_arc_heat', 0.5)), 2026-10-24)
+        return {"dj_arc_phase": (float(prog) if prog is not None else None),
+                "dj_arc_heat": (float(heat) if heat is not None else 0.5)}
+
     def _dj_mirror_status(self):
         """The 5 Hz DJ status mirror (split out of _apply_dj_controls so its
         cost is timed apart from the actions')."""
+        _night_ms = 0.0                       # (the night's own part of this tick: /api/perf web_detail "dj_night")
         # Mirror into the web snapshot + scheduler outstate.
         if getattr(self, '_director', None) is not None:
             # THE DIRECTOR: the page's Director panel renders from `director`
@@ -3004,6 +3037,9 @@ class EnvironmentalSystem:
                 dst = d.status()
             except Exception as e:
                 dst = {"error": f"status: {e}"}
+            # THE NIGHT's block (up to ~80 slots for 6 h) is not sent inside every tick's `director`: the page gets it as
+            # dj_night (only when it changes) and night_tick (small, every tick) - _dj_night_info below
+            sp = dst.pop("set_plan", None)
             pool = getattr(d, "pool_name", None)
             info = {"available": True, "active": False, "state": "idle",
                     "director_active": True, "director": dst,
@@ -3018,13 +3054,18 @@ class EnvironmentalSystem:
                 info["deck_maps"] = {}
                 info["error"] = info["error"] or f"deck maps: {e}"
             info.update(self._dj_idle_steer_info())
+            _night_t0 = time.perf_counter()
             try:
-                arc = dst.get("arc") or {}
-                # RECORD mode has no arc target: publish numbers, never None (the club director does
-                # float(outstate.get('dj_arc_heat', 0.5)) - a None here killed the render loop, 2026-10-24)
-                prog, heat = arc.get("progress"), arc.get("target")
-                self.scheduler.state["dj_arc_phase"] = float(prog) if prog is not None else 0.0
-                self.scheduler.state["dj_arc_heat"] = float(heat) if heat is not None else 0.5
+                info.update(self._dj_night_info(d, sp))
+            except Exception as e:
+                info["night_tick"] = {"error": f"night: {e}"}
+            _night_ms = (time.perf_counter() - _night_t0) * 1000.0
+            try:
+                for k, v in self._dj_arc_outstate(d, dst).items():
+                    if v is None:
+                        self.scheduler.state.pop(k, None)
+                    else:
+                        self.scheduler.state[k] = v
                 # the playing engine's outstate (the record player's, the conductor's or the autoDJ's)
                 for k, v in d.outstate_keys().items():
                     self.scheduler.state[k] = v
@@ -3079,6 +3120,10 @@ class EnvironmentalSystem:
             # vocab straight from the DB), and a draggable arc, all armed
             # and applied the moment the DJ starts.
             info.update(self._dj_idle_steer_info())
+            try:
+                info.update(self._dj_night_info(None, None))   # (the night armed for ★ DIRECTOR)
+            except Exception as e:
+                print(f"[DJ] night info: {e}")
             self.scheduler.state['dj_active'] = False
         # DELTA payloads: heavy blobs ship only when they change (weak
         # venue Wi-Fi shouldn't carry an identical arc curve at 5 Hz).
@@ -3093,20 +3138,43 @@ class EnvironmentalSystem:
         self._dj_sent_n += 1
         if self._dj_sent_n % 15 == 0:
             self._dj_sent = {}
-        if getattr(self, '_director_starting', False):
-            info["director_starting"] = True      # the page says "starting…" instead of idle while the worker builds it
-            info["state"] = "starting"
-        if getattr(self, '_dj_starting', False):
-            info["dj_starting"] = True
+        # (sent false too: the page merges each tick over the last, so a key that only ever said true kept the banner
+        # on "starting…" after the start, 2026-10-29)
+        info["director_starting"] = bool(getattr(self, '_director_starting', False))
+        info["dj_starting"] = bool(getattr(self, '_dj_starting', False))
+        if info["director_starting"]:
+            info["state"] = "starting"            # the page says "starting…" instead of idle while the worker builds it
+        if info["dj_starting"]:
             info["state"] = "starting"
         for k in ('arc_curve', 'track_map', 'next_map', 'horizon',
-                  'history', 'tags', 'themes', 'setlists', 'deck_maps'):
+                  'history', 'tags', 'themes', 'setlists', 'deck_maps',
+                  'night_presets', 'night_lengths'):
             if k in info:
                 h = hash(_json.dumps(info[k], sort_keys=True, default=str))
                 if self._dj_sent.get(k) == h:
                     del info[k]
                 else:
                     self._dj_sent[k] = h
+        if 'dj_night' in info:
+            # THE NIGHT's strip: sent when it changes, and once more on the next tick - this mirror and the web emitter
+            # both run at 5 Hz unsynchronised, so a key sent in one tick only can fall between two of the emitter's reads
+            # (the 3 s full refresh above would be the only rescue)
+            _nt0 = time.perf_counter()
+            h = hash(_json.dumps(info['dj_night'], separators=(',', ':'), default=str))
+            if getattr(self, '_dj_night_h', None) != h:
+                self._dj_night_h = h                 # (a real change: sent now and on the next tick)
+                self._dj_night_again = 1
+            elif getattr(self, '_dj_night_again', 0) > 0:
+                self._dj_night_again -= 1
+            elif self._dj_sent.get('dj_night') == h:
+                del info['dj_night']                 # (unchanged; the full refresh above clears this and sends it once)
+            self._dj_sent['dj_night'] = h
+            if isinstance(info.get('night_tick'), dict):
+                info['night_tick']['sig'] = h    # (the page knows which strip the tick belongs to)
+            _night_ms += (time.perf_counter() - _nt0) * 1000.0
+            det = getattr(self, '_perf_dj_detail', None)
+            if isinstance(det, dict):
+                det["dj_night"] = round(_night_ms, 3)
         self.web_controller.set('dj_info', info)
 
     def _dj_refresh_idle_vocab(self):
@@ -3509,11 +3577,20 @@ class EnvironmentalSystem:
         print("[DJ] REMIX live on the show's engine")
 
     # -- THE DIRECTOR on the show (lib/dj/director.py) ----------------------------
+    NIGHT_START_WAIT_S = 60.0         # a night picked before START: its first plan is waited for this long (the worker)
+    NIGHT_LENGTHS = (45, 60, 90, 120, 180, 240, 360)   # the page's LENGTH select, minutes
+
     def _director_start(self):
         """The Director on the show's engine: the autoDJ as it is, the stem
         conductor when LAYERS asks for it, both submixes on the engine, the
         same soundtrack takeover as the automixer."""
-        if getattr(self, '_director', None) is not None or getattr(self, '_director_starting', False):
+        if getattr(self, '_director', None) is not None:
+            return
+        if getattr(self, '_director_starting', False):
+            if getattr(self, '_director_cancel', False):
+                # ★ DIRECTOR again after a STOP while it was still being built (2026-10-29): the same build is re-armed - it
+                # used to return here, and the cancel then dropped the build, so the press did nothing
+                self._director_cancel = False
             return
         self._dj_stop()
         self._remix_stop()
@@ -3525,12 +3602,6 @@ class EnvironmentalSystem:
             self._dj_last_error = f"the Director needs a 44100 Hz engine ({eng_rate} Hz)"
             print(f"[DJ] {self._dj_last_error}")
             return
-        if engine is not None:
-            try:
-                engine.stop_all(duration=1.5)
-                engine.oneshots_muted = True
-            except Exception:
-                pass
         music = resolve_music_dir(self.dj_cfg.get("music_dir", ""))
         # BUILT OFF THE RENDER THREAD: loading the library and starting the engine held the render thread for
         # 1.2 s (the perf profile, 2026-10-25) - a visible LED freeze on every START. The Director is built and
@@ -3538,20 +3609,68 @@ class EnvironmentalSystem:
         self._director_starting = True
         self._director_cancel = False
         self._director_pending = None
+        self._director_building = None
+        self._director_room_taken = False
         self._director_queued = []
         self._dj_last_error = ""
+        self._dj_night_last, self._dj_night_h, self._dj_night_pos = None, None, {}
         attach = engine.attach_track if engine is not None else None
         theme = self.dj_cfg.get("theme", "groove")
 
         def work():
+            d = None
             try:
                 d = Director(music, engine=None, theme=theme, attach=attach)
+                self._director_building = d   # (shutdown reaches it here: its planner process)
+                night = getattr(self, '_dj_night', None)
+                if night and not self._director_cancel:
+                    # A NIGHT PICKED BEFORE START (2026-10-29): planned here, in the worker, and waited for - the opener is
+                    # then the plan's first record, as the planner tab's prepared Director does it. An answer slower than
+                    # this starts on the brain's opener and the plan carries on from it. Waited in slices: a STOP meanwhile
+                    # ends the wait (it used to wait the minute out, then start the opener on the engine)
+                    d.set_theme_plan(night["theme"], length_min=night.get("length_min"))
+                    t_end = time.time() + self.NIGHT_START_WAIT_S
+                    while time.time() < t_end and not self._director_cancel:
+                        if d.plan_wait(0.2):
+                            break
+                if self._director_cancel:
+                    d.close_planner()
+                    self._director_building = None
+                    self._director_pending = (None, self._DIRECTOR_CANCELLED)
+                    return
+                # THE SOUNDTRACK TAKEOVER, NOW (2026-10-29): it was the press's, so an armed night's plan wait (a cold
+                # planner 10-20 s) was dead air in the room. Muted first, then the fade, both before the attach the start
+                # posts (the engine runs its commands in order: a stop_all after it would fade the Director out too)
+                if engine is not None:
+                    try:
+                        self._director_room_taken = True
+                        engine.oneshots_muted = True
+                        engine.stop_all(duration=1.5)
+                    except Exception:
+                        pass
                 ok = d.start(threaded=True)
                 err = None if ok else (d.last_error or "the Director failed to start")
             except Exception as e:  # noqa: BLE001
-                d, ok, err = None, False, f"director start failed: {e}"
+                ok, err = False, f"director start failed: {e}"
+            if not ok and d is not None:
+                d.close_planner()             # (a Director that did not start: its planner process goes with it)
+            self._director_building = None
             self._director_pending = (d if ok else None, err)
         threading.Thread(target=work, daemon=True, name="director-start").start()
+
+    _DIRECTOR_CANCELLED = "(stopped while it was being built)"
+
+    def _director_give_room_back(self, engine):
+        """The soundtrack back to the show (the state ambient, the oneshots) - only when the start took it."""
+        if not getattr(self, '_director_room_taken', False):
+            return
+        self._director_room_taken = False
+        if engine is not None:
+            try:
+                engine.oneshots_muted = False
+                self._restore_state_ambient(engine)
+            except Exception:
+                pass
 
     def _director_adopt(self):
         """The render thread takes over a Director the worker finished building (see _director_start): the
@@ -3566,22 +3685,30 @@ class EnvironmentalSystem:
         self._director_pending = None
         d, err = pend
         engine = self.scheduler.state.get("soundengine")
+        if err == self._DIRECTOR_CANCELLED:
+            # the worker gave up on a STOP; a ★ DIRECTOR pressed after it gave up (the cancel re-armed): a fresh build
+            if not getattr(self, '_director_cancel', False):
+                self._director_start()
+            else:
+                self._director_give_room_back(engine)
+            return
         if d is None or getattr(self, '_director_cancel', False):
             if d is not None:
                 try:
                     d.stop(fade_s=0.5)
                 except Exception:
                     pass
+                self._director_close_planner(d)
             self._dj_last_error = err or ("" if getattr(self, '_director_cancel', False) else "the Director failed to start")
             if err:
                 print(f"[DJ] {err}")
-            if engine is not None:
-                engine.oneshots_muted = False
-                self._restore_state_ambient(engine)
+            self._director_give_room_back(engine)
             return
         self._director = d
         self._dj_last_error = ""
+        self._director_room_taken = True      # (the room is the Director's now, whatever a STOP and a re-press did meanwhile)
         try:
+            engine.oneshots_muted = True
             engine.stop_ambient()
         except Exception:
             pass
@@ -3602,8 +3729,13 @@ class EnvironmentalSystem:
                 self.web_controller.control_dict['request_dj_actions'] = queued + list(q)
 
     def _director_stop(self):
+        # (the night strip of this session goes with it: a next START whose plan is still unanswered shows no strip, not
+        # this one's, marked stale - 2026-10-29)
+        self._dj_night_last, self._dj_night_h, self._dj_night_pos = None, None, {}
+        engine = self.scheduler.state.get("soundengine")
         if getattr(self, '_director_starting', False):
             self._director_cancel = True      # (a STOP while it is still being built: dropped when it arrives)
+            self._director_give_room_back(engine)   # (the room back now, not at the adopt a plan wait may hold off)
         d = getattr(self, '_director', None)
         if d is None:
             return
@@ -3611,18 +3743,171 @@ class EnvironmentalSystem:
             d.stop(fade_s=1.5)
         except Exception as e:
             print(f"[DJ] director stop: {e}")
+        self._director_close_planner(d)   # (a planned night's planner process goes with the Director)
         self._director = None
         if self.analyzer is not None and self._dj_prev_source:
             self.set_audio_source(self._dj_prev_source)
             self._dj_prev_source = None
         self.scheduler.state['dj_active'] = False
-        engine = self.scheduler.state.get("soundengine")
-        if engine is not None:
-            try:
-                engine.oneshots_muted = False
-                self._restore_state_ambient(engine)
-            except Exception:
-                pass
+        self._director_room_taken = True      # (a Director that ran had the room: always given back)
+        self._director_give_room_back(engine)
+
+    @staticmethod
+    def _director_close_planner(d):
+        """The planner's process closed OFF the render thread (2026-10-29): close() waits up to 3 s for a child busy in a
+        search to read its quit, and STOP is pressed here."""
+        if d is None or getattr(d, "_planner", None) is None:
+            return
+        threading.Thread(target=d.close_planner, daemon=True, name="planner-close").start()
+
+    # -- THE NIGHT on the web page (docs/DJ_SETS.md section 4, "Web /dj page (phone)"; 2026-10-29) ---------------
+    def _director_night(self, arg):
+        """THE NIGHT BUTTONS: {op: plan | clear | length, theme, length_min}. Never blocks the render thread: with a
+        Director the press is posted to its own thread (Director.night_async); without one the night is ARMED, and
+        ★ DIRECTOR plans it before its first record (the start worker waits for the plan: the opener is its first
+        record). LENGTH with no night on only sets the length of the next press."""
+        arg = arg or {}
+        op = arg.get("op") or "plan"
+        L = arg.get("length_min")
+        if L:
+            self._dj_night_len = int(L)
+        if op == "clear":
+            self._dj_night = None
+        elif op == "length":
+            if getattr(self, "_dj_night", None):
+                self._dj_night = dict(self._dj_night, length_min=int(L or self._dj_night_len))
+        else:
+            self._dj_night = {"theme": str(arg.get("theme") or ""), "length_min": int(L or getattr(self, "_dj_night_len", 90))}
+        d = getattr(self, "_director", None)
+        if d is not None:
+            d.night_async(op, arg.get("theme"), L or (getattr(self, "_dj_night", None) or {}).get("length_min"))
+        elif getattr(self, "_director_starting", False):
+            # pressed while the Director is being built: the worker may have read the armed night already - replayed on
+            # adopt (a press that is the plan already is a no-op there)
+            self._director_queued = (getattr(self, "_director_queued", None) or []) + [("director_night", arg)]
+
+    _NIGHT_REROUTE = ("picked again", "the DJ filled a gap", "your record", "cannot be the record")
+
+    @staticmethod
+    def _dj_night_payload(sp, pos=None):
+        """The planned night for the page, from Director.status()'s set_plan block `sp`: (night, tick). NIGHT is the strip
+        (chapters, every slot at its time / length / energy and state, the warnings, the skipped slots at their last
+        known place) - sent only when it changes; TICK is small and goes every tick (the playhead, the chapter, planning /
+        error, the re-route notes). `pos`: {id: (start_s, play_s, energy)}, the slots' last known places (a skipped slot
+        leaves the plan's rows without one), kept by the caller. Pure: no DB, no Director."""
+        if not sp or sp.get("error") and not sp.get("slots") and not sp.get("theme"):
+            return None, ({"error": sp.get("error")} if sp else None)
+        pos = pos if pos is not None else {}
+        rows = [s for s in (sp.get("slots") or []) if s.get("state") != "skipped" or s.get("start_s") is not None]
+        gone = [s for s in (sp.get("slots") or []) if s.get("state") == "skipped" and s.get("start_s") is None]
+        slots = []
+        for s in rows:
+            st = s.get("actual_start_s") if s.get("state") in ("played", "now") and s.get("actual_start_s") is not None else s.get("start_s")
+            slots.append({"id": s.get("id"), "title": str(s.get("title") or "")[:60], "artist": str(s.get("artist") or "")[:40],
+                          "bpm": round(float(s["bpm"]), 1) if s.get("bpm") else None, "key": s.get("camelot") or "",
+                          "energy": round(float(s["energy"]), 2) if s.get("energy") is not None else None,
+                          "start_s": int(round(float(st))) if st is not None else None,
+                          "play_s": int(round(float(s["play_s"]))) if s.get("play_s") is not None else None,
+                          "state": s.get("state"), "why": str(s.get("why") or "")[:160] or None, "user": bool(s.get("user")),
+                          "src": s.get("src"), "chapter": s.get("chapter")})
+        # a record that played: its length is where the next one really started
+        for a, b in zip(slots, slots[1:]):
+            if a["state"] in ("played", "now") and a["start_s"] is not None and b["start_s"] is not None and b["state"] != "planned":
+                a["play_s"] = max(1, b["start_s"] - a["start_s"])
+        for s in slots:
+            if s["start_s"] is not None:
+                pos[s["id"]] = (s["start_s"], s["play_s"], s["energy"])
+        skipped = []
+        for s in gone:
+            p = pos.get(s.get("id")) or (None, None, None)
+            skipped.append({"id": s.get("id"), "title": str(s.get("title") or "")[:60], "why": str(s.get("why") or "")[:160],
+                            "start_s": p[0], "play_s": p[1], "energy": p[2]})
+        night = {"theme": sp.get("theme"), "source": sp.get("source"), "length_s": int(round(float(sp.get("length_s") or 0))),
+                 "chapters": [{"name": c.get("name"), "start_s": round(float(c.get("start_s") or 0)), "end_s": round(float(c.get("end_s") or 0)),
+                               "energy": [round(float(e), 2) for e in (c.get("energy") or [])][:2]} for c in (sp.get("chapters") or [])],
+                 # (off / of / off_ids: the band reads "Orbit 2/5 off" and the records that miss are outlined - section 4's
+                 # chapter marks, 2026-10-29)
+                 "warnings": [{"bad": bool(w.get("bad")), "chapter": w.get("chapter"), "text": str(w.get("text") or "")[:400],
+                               "off": w.get("off"), "of": w.get("of"), "off_ids": [int(x) for x in (w.get("off_ids") or [])][:40]}
+                              for w in (sp.get("warnings") or [])][:8],
+                 "slots": slots, "skipped": skipped[-12:], "crate": sp.get("crate")}
+        # THE STORY LINES' night part: the re-plans (with their trigger), the record that moved (picked again, a gap the DJ
+        # filled, your record), the slots that left, the planner's own trouble - short text, the whole of it as a tooltip
+        notes = []
+        ch = list(sp.get("changes") or [])
+        for c in ch[-2:]:
+            trig = str(c.get("trigger") or "")
+            if trig.startswith("theme:"):
+                continue                             # (the night's own plan: the lit button says it - picture over text)
+            notes.append("re-planned · " + trig)
+        for s in slots:
+            if s["state"] in ("now", "next") and s["why"] and s["why"].startswith(EnvironmentalSystem._NIGHT_REROUTE):
+                notes.append(f"{s['title']}: {s['why']}")
+        by_why = {}
+        for s in skipped[-6:]:
+            by_why.setdefault(s["why"] or "skipped", []).append(s["title"])
+        for why, titles in list(by_why.items())[-2:]:
+            notes.append(f"{why}: {', '.join(titles)}")
+        if sp.get("planner_down"):
+            notes.append(f"the planner is down: the DJ picks record by record ({sp.get('error') or ''})")
+        elif sp.get("error") and not sp.get("pending"):
+            notes.append(f"the plan could not be made: {sp['error']}")
+        bad = [w["text"] for w in night["warnings"] if w["chapter"] is None and w["bad"]]
+        if bad:
+            notes.append(bad[0])
+        # TWO LINES AT MOST (2026-10-29: with a 6 h night they reached six, three THEN lines above the title): the newest
+        # two; the rest go in the last one's tooltip
+        shown = [{"text": n[:96], "tip": n[:600]} for n in notes[-2:]]
+        if len(notes) > 2 and shown:
+            shown[-1]["tip"] = (shown[-1]["tip"] + "\n" + "\n".join(n[:300] for n in notes[:-2]))[:1500]
+        tick = {"theme": sp.get("theme"), "source": sp.get("source"), "progress": sp.get("plan_progress"),
+                "elapsed_s": sp.get("elapsed_s"), "length_s": night["length_s"], "chapter_i": sp.get("chapter_i"),
+                "chapter": sp.get("chapter"), "pending": sp.get("pending"), "error": sp.get("error"),
+                "planner_down": bool(sp.get("planner_down")), "finished": sp.get("finished"), "dead_end": sp.get("dead_end"),
+                "planned": bool(ch), "notes": shown}
+        return night, tick
+
+    def _dj_night_info(self, d, sp):
+        """The night's keys for dj_info: the presets (built once), the LENGTH choices and the length of the next press,
+        the night armed for START (no Director) or the Director's plan, the strip and its tick."""
+        if getattr(self, "_dj_night_presets", None) is None:
+            from lib.dj.setplanner import PRESETS
+            self._dj_night_presets = [{"name": p["name"], "blurb": p.get("blurb") or "",
+                                       "chapters": [[c["name"], round(100 * float(c.get("share") or 0))] for c in p.get("chapters") or []]}
+                                      for p in PRESETS]
+        out = {"night_presets": self._dj_night_presets, "night_lengths": list(self.NIGHT_LENGTHS),
+               "night_len": int(getattr(self, "_dj_night_len", 90)), "night_armed": getattr(self, "_dj_night", None),
+               "dj_night": None, "night_tick": None}
+        if d is None:
+            return out
+        if not hasattr(self, "_dj_night_pos"):
+            self._dj_night_pos = {}
+        night, tick = self._dj_night_payload(sp, self._dj_night_pos)
+        if len(self._dj_night_pos) > 600:
+            self._dj_night_pos.clear()
+        posted = False
+        try:
+            posted = d.night_posted()
+        except Exception:
+            pass
+        if tick is None and posted:
+            tick = {}
+        if tick is not None and posted:
+            tick["pending"] = tick.get("pending") or "your press"
+        if tick is not None and not tick.get("planned"):
+            # a night picked over another: until its first answer the strip stays the night before (the button pulses),
+            # instead of an empty night for a second - only WHILE the press or its request is in flight (2026-10-29): a
+            # request that failed held the old night's chapters and planned slots under the new night's button, with no
+            # limit; now no strip, and the error stays in the story line and the button's underline
+            if (posted or tick.get("pending")) and getattr(self, "_dj_night_last", None) is not None:
+                night, tick["planned"], tick["stale"] = self._dj_night_last, True, True
+            else:
+                night = None                         # (no night before it, or nothing on its way: no strip)
+                self._dj_night_last = None
+        else:
+            self._dj_night_last = night
+        out["dj_night"], out["night_tick"] = night, tick
+        return out
 
     def _remix_stop(self):
         rc = getattr(self, '_remix', None)
@@ -3786,6 +4071,25 @@ class EnvironmentalSystem:
             engine.stop_ambient()
         if self.analyzer:
             self.analyzer.stop()
+        if getattr(self, "_director", None) is not None:
+            try:
+                self._director.close_planner()   # (a planned night's planner process: not left to the GC at exit)
+            except Exception:
+                pass
+        # A DIRECTOR STILL BEING BUILT (2026-10-29): cancelled, so the worker never starts it on an engine being torn down,
+        # and its planner process closed now, not after the search it is busy in
+        self._director_cancel = True
+        for d in (getattr(self, "_director_building", None), (getattr(self, "_director_pending", None) or (None,))[0]):
+            if d is None:
+                continue
+            try:
+                d.stop(fade_s=0.0)
+            except Exception:
+                pass
+            try:
+                d.close_planner()
+            except Exception:
+                pass
         if getattr(self, "bt_receiver", None) is not None:
             self.bt_receiver.shutdown()
         if self.osc_listener is not None:

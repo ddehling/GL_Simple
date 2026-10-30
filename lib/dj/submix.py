@@ -150,8 +150,30 @@ class DJSubmix:
         self._q.put({"cmd": "_fade_out", "duration": max(duration, 0.05)})
 
     # -- audio-callback side -----------------------------------------------------
+    # The last RECENT_EVENTS applied commands, small fields only, for diagnostics: the Director's dropout
+    # context reads it so a silence names its cause from the night log alone (2026-10-26: two 3 s
+    # dropouts at a blend's start left nothing to read). A TUPLE rebound on each append: readers on
+    # another thread iterate whatever tuple they took, never a container being mutated under them.
+    RECENT_EVENTS = 20
+    _RECENT_KEYS = ("deck", "slave", "master", "txn", "value", "ramp_s", "curve", "low", "mid", "high",
+                    "time_s", "cue_s", "mode", "cutoff_hz", "active", "semitones", "duration", "gains",
+                    "track_id", "on", "depth", "audio_pll", "bias_beats", "start_s", "end_s")
+    recent_events = ()
+
+    def _note_event(self, e, cmd):
+        item = {"cmd": cmd, "clock": self.clock, "at": e.get("at")}
+        for k in self._RECENT_KEYS:
+            v = e.get(k)
+            if v is not None and (isinstance(v, (int, float, str, bool)) or (isinstance(v, dict) and len(v) <= 8)):
+                item[k] = dict(v) if isinstance(v, dict) else v
+        self.recent_events = (self.recent_events + (item,))[-self.RECENT_EVENTS:]
+
     def _apply(self, e):
         cmd = e.get("cmd")
+        try:
+            self._note_event(e, cmd)
+        except Exception:
+            pass                                  # diagnostics never cost the mix
         if cmd == "_fade_out":
             self._fade = (1.0 / (e["duration"] * RATE), 0.0)
             return

@@ -1254,7 +1254,10 @@ class WebController:
                       # THE DIRECTOR (lib/dj/director.py on the show's engine):
                       # dials, moments, verdicts, the arc.
                       'director_start', 'director_dial', 'director_act',
-                      'director_rate', 'director_arc', 'director_program'}
+                      'director_rate', 'director_arc', 'director_program',
+                      # the planned night (docs/DJ_SETS.md section 4): a
+                      # preset pressed / cleared, its LENGTH
+                      'director_night'}
         REMIX_ACTS = ('next', 'hold', 'unhold', 'drop', 'break', 'loop4',
                       'loop8', 'unloop', 'save', 'recall')
         DIRECTOR_ACTS = ('next', 'hold', 'drop', 'break', 'slam', 'break_routine', 'sing', 'takeover', 'bridge', 'moment_cancel')
@@ -1376,6 +1379,25 @@ class WebController:
                 try:
                     arg = max(0.0, min(0.999, float(arg)))
                 except (TypeError, ValueError):
+                    return False
+            elif action == 'director_night':
+                # {op: plan | clear | length, theme (a preset's name), length_min (the page's LENGTH choices)}
+                try:
+                    from lib.dj.setplanner import preset_names as _pn
+                    op = str(arg.get('op') or 'plan')
+                    if op not in ('plan', 'clear', 'length'):
+                        return False
+                    theme = arg.get('theme')
+                    if op == 'plan':
+                        theme = next((n for n in _pn() if n.lower() == str(theme or '').lower()), None)
+                        if theme is None:
+                            return False
+                    L = arg.get('length_min')
+                    L = None if L in (None, '') else min((45, 60, 90, 120, 180, 240, 360), key=lambda m: abs(m - float(L)))
+                    if op == 'length' and L is None:
+                        return False
+                    arg = {'op': op, 'theme': theme if op == 'plan' else None, 'length_min': L}
+                except Exception:
                     return False
             elif action == 'director_program':
                 # {key, n} to start (key "stop" ends the running one)

@@ -81,6 +81,20 @@ class TimelineCanvas(QWidget):
         self._img_cache = {}
         self.setMouseTracking(True)
 
+    def set_compact(self, on, lane_h=16, full_lane_h=None):
+        """COMPACT (the Director in RECORD mode, 2026-10-29): thin lanes - the four stems' pictures and the level meters,
+        no section strip (the song maps under NOW / NEXT carry the sections) - so the night strip and the NIGHT tab get
+        the room. Off: the lanes as they were built."""
+        if not hasattr(self, "_full"):
+            self._full = (self.LANE_H, self.RULER_H)
+        self.compact = bool(on)
+        self.LANE_H, self.RULER_H = (lane_h, 16) if on else (full_lane_h or self._full[0], self._full[1])
+        h = self.RULER_H + self.story_h + 4 * self.LANE_H + (4 if on else 8)
+        self.setMinimumHeight(h)
+        self.setMaximumHeight(h if on else 16777215)
+        self._img_cache.clear()
+        self.update()
+
     # geometry
     def x_of(self, bar):
         return self.LEFT + (bar - self.first_bar) * self.px_per_bar
@@ -130,7 +144,7 @@ class TimelineCanvas(QWidget):
             p.setPen(DIM)
             f = QFont(self.font())
             f.setBold(True)
-            f.setPointSizeF(10)
+            f.setPointSizeF(7.5 if getattr(self, "compact", False) else 10)
             p.setFont(f)
             p.drawText(QRectF(8, y, self.LEFT - 10, self.LANE_H), Qt.AlignmentFlag.AlignVCenter, ln.upper())
         # ruler + bar lines
@@ -156,9 +170,11 @@ class TimelineCanvas(QWidget):
                 if x1 < self.LEFT or x0 > W:
                     continue
                 col = self.tab.color(c.track_id)
-                meter_h = 6 if self.story_h else 0
-                sec_h = 5 if self.story_h else 0
-                rect = QRectF(x0, y + 3 + sec_h, max(2.0, x1 - x0), self.LANE_H - 6 - sec_h - meter_h)
+                compact = getattr(self, "compact", False)
+                meter_h = (3 if compact else 6) if self.story_h else 0
+                sec_h = 0 if compact else (5 if self.story_h else 0)
+                inset = 1 if compact else 3
+                rect = QRectF(x0, y + inset + sec_h, max(2.0, x1 - x0), max(2.0, self.LANE_H - 2 * inset - sec_h - meter_h))
                 if c.rest:
                     p.fillRect(rect, QColor(10, 10, 12))
                     p.setPen(QPen(QColor(70, 70, 80), 1, Qt.PenStyle.DashLine if c.ghost else Qt.PenStyle.SolidLine))
@@ -218,15 +234,15 @@ class TimelineCanvas(QWidget):
                 if t is not None and rect.width() > 40 and c.bar == s0:
                     p.setPen(QColor(255, 255, 255) if not c.ghost else QColor(220, 220, 230))
                     f = QFont(self.font())
-                    f.setPointSizeF(9)
+                    f.setPointSizeF(7 if compact else 9)
                     f.setBold(True)
                     p.setFont(f)
-                    p.drawText(QRectF(rect.left() + 4, rect.top() + 1, rect.width() - 8, 16), Qt.AlignmentFlag.AlignVCenter,
+                    p.drawText(QRectF(rect.left() + 4, rect.top() + (0 if compact else 1), rect.width() - 8, rect.height() if compact else 16), Qt.AlignmentFlag.AlignVCenter,
                                ("auto · " if c.ghost else "") + f"{t.title[:36]}  @{_mmss(c.start_s)}" + ("" if c.end_bar is None else f"  {c.end_bar - c.bar} bars"))
                 # the song's SECTIONS along the clip (a strip above it): intro / groove / build / breakdown /
                 # outro by colour, the kind written when there is room, the drop (a groove after a build)
                 # as a white tick; the HOOK (measured) as a gold line under the strip
-                if t is not None and self.story_h and not c.ghost:
+                if t is not None and self.story_h and sec_h and not c.ghost:
                     bar_s = self.tab.bar_s(c.track_id)
                     f = QFont(self.font())
                     f.setPointSizeF(7)
@@ -278,12 +294,13 @@ class TimelineCanvas(QWidget):
         gains_fn = getattr(self.tab, "lane_gains", None)
         if self.story_h and gains_fn is not None:
             gains = gains_fn() or {}
+            mh = 3.0 if getattr(self, "compact", False) else 6.0
             for ln in LANES:
                 gl = gains.get(ln) or {}
                 if not gl:
                     continue
                 y = self.lane_y(ln)
-                base = y + self.LANE_H - 3
+                base = y + self.LANE_H - (1 if mh < 6 else 3)
                 for bb in range(int(self.first_bar), int(self.first_bar) + vb):
                     g = gl.get(bb)
                     if g is None:
@@ -296,7 +313,7 @@ class TimelineCanvas(QWidget):
                         total = sum(g.values())
                         if total <= 0:
                             continue
-                        scale = 6.0 / max(1.0, total)
+                        scale = mh / max(1.0, total)
                         yy = base
                         for tid, gg in sorted(g.items(), key=lambda kv: -kv[1]):
                             h = gg * scale
@@ -305,7 +322,7 @@ class TimelineCanvas(QWidget):
                     else:
                         c = tl.active(ln, bb)
                         col = self.tab.color(c.track_id) if c is not None else QColor(120, 120, 130)
-                        p.fillRect(QRectF(x, base - 6 * g, w, 6 * g), col)
+                        p.fillRect(QRectF(x, base - mh * g, w, mh * g), col)
         # the STORY: what happened where (bands over the lanes it touched, words in the story row) and what
         # is planned (dashed, dimmer)
         marks_fn = getattr(self.tab, "marks", None)
