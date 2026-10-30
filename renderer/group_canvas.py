@@ -26,6 +26,22 @@ import numpy as np
 from OpenGL.GL import *
 
 
+def ensure_current(window) -> None:
+    """Make ``window``'s GL context current on this thread, only if it is not
+    already. glfwMakeContextCurrent always releases and re-binds, even for
+    the context that is current (82 us each on the dev desktop, with an
+    implicit flush), and the render loop asked for it ~5 times per frame.
+    The check is a thread-local read (~1.4 us), so a context made current
+    elsewhere, or on another thread, is still re-bound correctly."""
+    if window is None:
+        return
+    cur = glfw.get_current_context()
+    if cur and (ctypes.cast(cur, ctypes.c_void_p).value
+                == ctypes.cast(window, ctypes.c_void_p).value):
+        return
+    glfw.make_context_current(window)
+
+
 class GroupCanvas:
     def __init__(self, group_id: str, width: int, height: int,
                  glfw_window, frame_id: int = 0):
@@ -59,8 +75,7 @@ class GroupCanvas:
 
     def _make_current(self):
         """Activate GL context (no-op when window is None, i.e. EGL headless)."""
-        if self.glfw_window is not None:
-            glfw.make_context_current(self.glfw_window)
+        ensure_current(self.glfw_window)
 
     # ------------------------------------------------------------------
     # Framebuffer setup

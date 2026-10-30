@@ -27,7 +27,7 @@ from OpenGL.GL import *
 from typing import List, Tuple, Dict, Optional
 from renderer.fan_geometry import FanGeometry
 from renderer.display_modes import FlatSmooth, FanSmooth, LEDDots
-from renderer.group_canvas import GroupCanvas
+from renderer.group_canvas import GroupCanvas, ensure_current
 
 # EGL for headless GPU rendering (no display server required)
 _egl_available = False
@@ -221,7 +221,7 @@ class ShaderRenderer:
         if self._use_egl:
             return
         if self.window:
-            glfw.make_context_current(self.window)
+            ensure_current(self.window)
 
     def _setup_headless_gl(self):
         """Set up OpenGL state for headless EGL rendering."""
@@ -494,8 +494,12 @@ class ShaderRenderer:
             glfw.swap_buffers(self.window)
 
     def clear_window(self):
-        """Clear the entire window (no-op in headless/EGL mode)"""
-        if self._use_egl:
+        """Clear the entire window (no-op in headless/EGL mode).
+
+        Headless with a hidden GLFW window: nothing ever shows (no swap) or
+        reads (readback is from the canvas FBOs) the window's own
+        framebuffer, so clearing it every frame was pure cost."""
+        if self._use_egl or self.headless:
             return
         self._make_current()
         glViewport(0, 0, self.fb_width, self.fb_height)
@@ -654,8 +658,7 @@ class ShaderViewport:
 
     def _make_current(self):
         """Activate GL context (no-op when window is None, i.e. EGL headless)."""
-        if self.glfw_window is not None:
-            glfw.make_context_current(self.glfw_window)
+        ensure_current(self.glfw_window)
 
     @property
     def _current_mode_key(self):

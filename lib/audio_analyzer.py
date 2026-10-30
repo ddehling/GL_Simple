@@ -93,8 +93,9 @@ class CircularBuffer:
                 return self.buffer[:self.filled][::-1][:n]
             
             # Buffer is full, need to reorder
-            # Most recent item is at write_idx - 1
-            indices = [(self.write_idx - 1 - i) % self.max_len for i in range(n)]
+            # Most recent item is at write_idx - 1. Vectorized index (was a
+            # 1000-entry Python list, ~0.14 ms per call); same rows, same copy.
+            indices = (self.write_idx - 1 - np.arange(n)) % self.max_len
             return self.buffer[indices]
     
     def get_latest(self):
@@ -524,6 +525,10 @@ class MicrophoneAnalyzer:
 
             # Skip DC component (bin 0) to avoid DC offset issues
             magnitudes[0] = 0
+            # The same Hann-windowed FFT get_chroma() used to redo on the
+            # render thread every frame (bin 0 is outside its 80 Hz-5 kHz
+            # fold). A fresh array each tick, never written after this.
+            self._fft_mags_pub = magnitudes
             try:
                 self.magnitudes = self.magnitudes * self.max_decay + magnitudes * (1 - self.max_decay)
             except AttributeError:
@@ -566,7 +571,19 @@ class MicrophoneAnalyzer:
             
             # Update circular buffers
             self.band_power_history.append(band_powers)
-            
+
+            # Build the extended-analysis dict HERE, once per new row, instead
+            # of on the render thread every frame (four 1000x32 arrays; it can
+            # only change when this thread appends). get_extended_analysis()
+            # hands this out. Never let it kill the analysis loop.
+            try:
+                self._extended_pub = self._compute_extended_analysis()
+            except Exception as e:
+                self._extended_pub = None
+                if not getattr(self, '_extended_pub_err', False):
+                    self._extended_pub_err = True
+                    print(f"[Audio] extended analysis publish failed: {e}")
+
             # Maintain precise 40 FPS timing
             elapsed = time.time() - frame_start
             sleep_time = max(0, self.frame_time - elapsed)
@@ -604,6 +621,22 @@ class MicrophoneAnalyzer:
         return 0
 
     def get_extended_analysis(self):
+        """The extended-analysis dict (see _compute_extended_analysis).
+
+        While the analysis thread runs it publishes this dict after every new
+        band row (40 Hz), so the render thread only fetches a reference. The
+        dict is SHARED: consumers read it, never write into its arrays
+        (checked 2026-10-30 across lib/, renderer/, engine/, web/, projects/).
+        Computed on demand when the thread is not running, before its first
+        row, or while a sensitivity change has not reached it yet.
+        """
+        pub = getattr(self, '_extended_pub', None)
+        if (pub is not None and self.running
+                and pub.get('sensitivity') == self._sensitivity):
+            return pub
+        return self._compute_extended_analysis()
+
+    def _compute_extended_analysis(self):
         """
         Returns a dictionary with comprehensive audio analysis data
         
@@ -713,7 +746,11 @@ class MicrophoneAnalyzer:
             self._chroma_window = np.hanning(self.CHUNK)
             self._chroma_peak = 1e-9
         mask, pcs = self._chroma_map
-        mags = np.abs(np.fft.rfft(self.audio_buffer * self._chroma_window))
+        # Reuse the analysis thread's FFT of the same buffer and window (Hann,
+        # CHUNK) when it is running; the peak tracking below stays per call.
+        mags = getattr(self, '_fft_mags_pub', None) if self.running else None
+        if mags is None:
+            mags = np.abs(np.fft.rfft(self.audio_buffer * self._chroma_window))
         power = mags[mask] ** 2
         chroma = np.bincount(pcs, weights=power, minlength=12)
         total = float(chroma.sum())
