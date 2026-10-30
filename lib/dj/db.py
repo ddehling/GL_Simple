@@ -13,7 +13,11 @@ import os
 import sqlite3
 import time
 
-SCHEMA_VERSION = 15              # v15: seam_feedback.ver (engine
+SCHEMA_VERSION = 16              # v16: tracks.key_version (key v2
+                                 # reader, 2026-10-28; dj_keys.py
+                                 # backfills rows below features.
+                                 # KEY_VERSION without a full rescan)
+#                                 v15: seam_feedback.ver (engine
                                  # fingerprint, so evidence from
                                  # different engine eras stays separable)
 #                                 v14: setlists.total_s/arc_json (compiled
@@ -65,6 +69,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     bpm_source TEXT,                    -- v14 'scan' (default) | 'live_verified'
     bpm_scan REAL,                      -- v14 original scanner bpm (pre-verify)
     bpm_verified_at REAL,               -- v14 when the live verify wrote back
+    key_version INTEGER,                -- v16 key reader that wrote key_*/camelot/chroma
     analysis_version INTEGER,
     analyzed_at REAL,
     error TEXT,
@@ -175,7 +180,10 @@ _SECTION_COLS = ("kind", "start_s", "end_s", "start_beat", "end_beat",
 class LibraryDB:
     """All DB access. Not thread-safe per instance; open one per thread."""
 
-    def __init__(self, music_root, db_path=None):
+    def __init__(self, music_root, db_path=None, readonly=False):
+        """readonly=True opens the file mode=ro with no migration and no
+        pragmas written - for previews (dj_keys.py --dry-run) that must not
+        touch a library a live session may have open."""
         self.music_root = os.path.abspath(music_root)
         # beat_power.json lives WITH this library (see beatpower.
         # set_music_root) - the ids it is keyed by come from this DB, so
@@ -187,6 +195,13 @@ class LibraryDB:
         except Exception:
             pass
         self.db_path = db_path or os.path.join(self.music_root, DB_FILENAME)
+        if readonly:
+            uri = "file:" + os.path.abspath(self.db_path).replace("\\", "/") \
+                + "?mode=ro"
+            self.conn = sqlite3.connect(uri, uri=True,
+                                        check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            return
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         # check_same_thread=False: DJSystem builds the library cache on the
         # caller's thread, then hands the connection to its planner thread
@@ -265,6 +280,9 @@ class LibraryDB:
             if have_fb and "ver" not in have_fb:            # v15
                 self.conn.execute(
                     "ALTER TABLE seam_feedback ADD COLUMN ver TEXT")
+            if "key_version" not in have:                     # v16
+                self.conn.execute(
+                    "ALTER TABLE tracks ADD COLUMN key_version INTEGER")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self.conn.commit()
 
@@ -313,6 +331,7 @@ class LibraryDB:
             "key_pc": a.get("key_pc"), "key_mode": a.get("key_mode"),
             "camelot": a.get("camelot"), "key_conf": a.get("key_conf"),
             "key_name": a.get("key_name"),
+            "key_version": a.get("key_version"),
             "loudness_gain_db": a.get("loudness_gain_db"),
             "kick_offset_s": a.get("kick_offset_s"),
             "phrase_beats": a.get("phrase_beats"),
@@ -415,6 +434,21 @@ class LibraryDB:
         self.conn.execute("UPDATE tracks SET chroma = ? WHERE id = ?",
                           (json.dumps(profile) if profile is not None
                            else None, track_id))
+        self.conn.commit()
+
+    def set_key(self, track_id, pc, mode, camelot, conf, key_name, chroma,
+                key_version):
+        """Rewrite one track's key fields + chroma from a newer key reader
+        (tools/dj/dj_keys.py, key v2 2026-10-28) without touching anything
+        else the scan wrote. chroma None keeps the stored profile, the same
+        rule upsert_track applies via _KEEP_IF_NONE."""
+        self.conn.execute(
+            "UPDATE tracks SET key_pc = ?, key_mode = ?, camelot = ?,"
+            " key_conf = ?, key_name = ?, chroma = COALESCE(?, chroma),"
+            " key_version = ? WHERE id = ?",
+            (pc, mode, camelot, conf, key_name,
+             json.dumps(chroma) if chroma is not None else None,
+             key_version, track_id))
         self.conn.commit()
 
     def set_structure(self, track_id, blob):

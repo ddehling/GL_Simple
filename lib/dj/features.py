@@ -6,7 +6,9 @@ by the library scanner (tools/dj/dj_scan.py) and stored in the sqlite library:
     tempo + beat grid   windowed autocorrelation -> comb-refined period/phase
                         per stable-tempo segment (handles tempo changes)
     downbeat            bar phase scored by bass-onset + novelty at beats
-    key                 Krumhansl-Schmuckler on energy-weighted chroma -> Camelot
+    key                 key-only long-FFT log-frequency chroma (whitened, C2-C7,
+                        frame-normalised) correlated against 24 EDM templates
+                        -> Camelot + margin confidence (key v2, 2026-10-28)
     structure           beat-synchronous self-similarity matrix -> checkerboard
                         novelty -> sections with fingerprints (energy, busyness,
                         vocalness, repetitiveness, spectral balance)
@@ -669,6 +671,146 @@ def estimate_key(chroma_a_origin, frame_energy):
     return pc, mode, camelot_of(pc, mode), conf
 
 
+# Key v2 (2026-10-28): a KEY-ONLY spectrum, separate from frame_track.
+# estimate_key above reads frame_track's chroma: a 4096-point FFT (10.8 Hz
+# bins) at 44.1k over 80-5000 Hz with raw power, so kick/bass energy smears
+# into whatever pitch class sits near it and 34 % of the library read as 7B
+# (F major); a Beatport spot check found 4 of 16 of those exact, and the old
+# key_conf saturated. Measured on a 72-track published-key truth set
+# (tools/tests/data/dj_key_truth.json, gate tools/tests/_dj_key_truth.py):
+# old reader exact 0.31 / MIREX 0.39, this one 0.85 / 0.89 (holdout n=40:
+# 0.40/0.50 -> 0.83/0.86). FFT length was the biggest single factor (1.35 Hz
+# bins here), then log compression + spectral whitening (the kick is broad,
+# a note is a peak) and dropping everything below C2 (65 Hz). frame_track's
+# chroma still feeds downbeat / phrase / sections and is deliberately left
+# alone: this path takes the mono samples and shares no state with it.
+KEY_VERSION = 2                # tracks.key_version; tools/dj/dj_keys.py backfills
+                               # rows below it WITHOUT bumping ANALYSIS_VERSION
+                               # (that would mean an hours-long full rescan)
+KEY_SR = 11025                 # key path runs on a 4:1 decimation of the 44.1k mono decode
+KEY_NFFT = 8192                # 1.35 Hz bins, 0.74 s Hann window
+KEY_HOP = 2048                 # 0.186 s
+KEY_MIDI0 = 24                 # log-frequency grid: C1 .. (1/3-semitone bins)
+KEY_BPS = 3
+KEY_NBINS = 72 * KEY_BPS       # 216 bins, MIDI 24 .. 95.67
+KEY_FOLD_LO, KEY_FOLD_HI = 36, 96      # semitones folded into chroma (C2 65 Hz .. C7 2093 Hz, inclusive)
+KEY_CONF_SCALE = 0.175         # margin (Pearson units) that maps to conf 1.0: 2x the
+                               # median tune-split margin, frozen before holdout
+# Tonic-first templates, natural minor, nothing chromatic (EDM-style).
+_KEY_EDM_MAJOR = np.array([1.0, 0.0, 0.4, 0.0, 0.6, 0.4, 0.0, 0.8, 0.0, 0.4, 0.0, 0.3])
+_KEY_EDM_MINOR = np.array([1.0, 0.0, 0.4, 0.6, 0.0, 0.4, 0.0, 0.8, 0.4, 0.0, 0.4, 0.0])
+
+
+def _key_logfreq_matrix():
+    """[KEY_NBINS, KEY_NFFT//2+1] triangular rfft-bin -> 1/3-semitone map,
+    each row summing to 1 (a bin narrower than the FFT resolution still gets
+    one FFT bin's width, so the low rows are never empty)."""
+    f = np.arange(KEY_NFFT // 2 + 1) * KEY_SR / KEY_NFFT
+    df = KEY_SR / KEY_NFFT
+    W = np.zeros((KEY_NBINS, len(f)), dtype=np.float32)
+    for k in range(KEY_NBINS):
+        fc = 440.0 * 2.0 ** ((KEY_MIDI0 + k / KEY_BPS - 69.0) / 12.0)
+        hw = max(df, fc * (2.0 ** (1.0 / (12 * KEY_BPS)) - 1.0))
+        w = np.maximum(0.0, 1.0 - np.abs(f - fc) / hw)
+        if w.sum() > 0:
+            W[k] = w / w.sum()
+    return W
+
+
+def _key_bank():
+    rows = []
+    for prof in (_KEY_EDM_MAJOR, _KEY_EDM_MINOR):
+        for pc in range(12):
+            q = np.roll(prof, pc)
+            rows.append((q - q.mean()) / q.std())
+    return np.array(rows)          # [24,12]: 0-11 major tonic pc (C=0), 12-23 minor
+
+
+_KEY_W = None                      # built on first use (~3.5 MB), never at import
+_KEY_BANK = _key_bank()
+
+
+def key_chroma(samples, sr=RATE):
+    """Key-only 12-bin C-origin chroma (L1-normalised) from mono float32 samples.
+    Independent of frame_track. Returns None for silence / too-short input."""
+    global _KEY_W
+    from scipy.ndimage import uniform_filter1d
+    x = np.asarray(samples, dtype=np.float32)
+    if sr != KEY_SR:
+        from scipy.signal import resample_poly
+        g = int(np.gcd(int(sr), KEY_SR))
+        x = resample_poly(x, KEY_SR // g, int(sr) // g).astype(np.float32)
+    if _KEY_W is None:
+        _KEY_W = _key_logfreq_matrix()
+    if len(x) < KEY_NFFT:
+        x = np.pad(x, (0, KEY_NFFT - len(x)))
+    n = 1 + (len(x) - KEY_NFFT) // KEY_HOP
+    win = np.hanning(KEY_NFFT).astype(np.float32)
+    L = np.empty((n, KEY_NBINS), dtype=np.float32)
+    rms = np.empty(n, dtype=np.float32)
+    for i in range(0, n, 256):                # 256-frame blocks: ~8 MB of frames at a time
+        j = min(n, i + 256)
+        fr = x[np.arange(i, j)[:, None] * KEY_HOP + np.arange(KEY_NFFT)[None, :]]
+        rms[i:j] = np.sqrt((fr ** 2).mean(axis=1))
+        L[i:j] = np.abs(np.fft.rfft(fr * win, axis=1)).astype(np.float32) @ _KEY_W.T
+    pos = L[L > 0]
+    if pos.size == 0:
+        return None
+    L = np.log1p(100.0 * L / max(float(np.median(pos)), 1e-9))                 # log compression
+    L = np.maximum(L - uniform_filter1d(L, size=12 * KEY_BPS + 1, axis=1, mode="nearest"), 0.0)  # whiten
+    C = np.zeros((n, 12), dtype=np.float32)
+    for m in range(KEY_FOLD_LO, KEY_FOLD_HI + 1):
+        c = (m - KEY_MIDI0) * KEY_BPS
+        for off, w in ((-1, 0.5), (0, 1.0), (1, 0.5)):
+            k = c + off
+            if 0 <= k < KEY_NBINS:
+                C[:, m % 12] += w * L[:, k]
+    tot = C.sum(axis=1)
+    rpos = rms[rms > 0]
+    gate = rms > 0.1 * max(float(np.median(rpos)) if rpos.size else 0.0, 1e-9)
+    gate &= tot > 1e-9
+    if not gate.any():
+        gate = tot > 1e-9
+    if not gate.any():
+        return None
+    # every non-silent frame votes equally (per-frame normalised): a loud
+    # drop must not outvote the breakdown that states the key most plainly
+    v = (C[gate] / tot[gate, None]).sum(axis=0).astype(np.float64)
+    return v / v.sum()
+
+
+def estimate_key_audio(samples, sr=RATE):
+    """-> (pc C-origin, mode, camelot, conf, chroma_c).
+
+    conf = clip((r_best - r_second) / KEY_CONF_SCALE, 0, 1) over the Pearson r
+    against all 24 keys. Unlike the old key_conf it does not saturate:
+    measured exact-match by conf bin on the truth set (all 72) is 0.69 below
+    0.25, 0.85 / 0.87 in the middle bins, 0.93 at >= 0.75. Below 0.25 treat
+    the label as a neighbourhood (errors there are mostly a fifth or a
+    relative/parallel away). It does NOT catch confident major/minor flips."""
+    v = key_chroma(samples, sr)
+    if v is None or v.std() <= 1e-12:
+        return 0, "major", "8B", 0.0, None
+    z = (v - v.mean()) / v.std()
+    r = _KEY_BANK @ z / 12.0                       # Pearson r against all 24 keys
+    order = np.argsort(-r, kind="stable")
+    b = int(order[0])
+    margin = float(r[b] - r[int(order[1])])
+    pc, mode = b % 12, ("minor" if b >= 12 else "major")
+    return pc, mode, camelot_of(pc, mode), float(np.clip(margin / KEY_CONF_SCALE, 0.0, 1.0)), v
+
+
+def key_chroma_profile(v_c):
+    """C-origin key chroma -> DB tracks.chroma (A-origin, L1, 5 dp), the same
+    contract chroma_profile writes (bin 0 = A). Since key v2 tracks.chroma
+    comes from HERE: the frame_track profile was so F-heavy that clashing
+    truth-set pairs still correlated at r 0.44 (~0.87 compat through
+    brain._CHROMA_MAP, AUC 0.73 compatible-vs-clashing); this one puts them
+    at r -0.12 and same-key pairs at 0.72 (AUC 0.90)."""
+    a = np.array([v_c[(i + 9) % 12] for i in range(12)], dtype=np.float64)
+    return [round(float(t), 5) for t in a / a.sum()]
+
+
 # --------------------------------------------------------------------------
 # Structure: SSM -> novelty -> sections -> fingerprints
 # --------------------------------------------------------------------------
@@ -1286,8 +1428,9 @@ def analyze_samples(samples, deep=True):
     phrase_beats, phrase_start_s, phrase_conf = estimate_phrase(
         beats, downbeat, bands, chroma, onset_broad, novelty)
 
-    frame_energy = (bands / np.maximum(bands.mean(axis=0), 1e-10)).mean(axis=1)
-    key_pc, key_mode, camelot, key_conf = estimate_key(chroma, frame_energy)
+    # key v2 (2026-10-28): its own spectrum from the samples, not frame_track's
+    # chroma (see KEY_VERSION). chroma below comes from the same key chroma.
+    key_pc, key_mode, camelot, key_conf, key_ch = estimate_key_audio(samples, RATE)
 
     sections, nov = build_sections(bands, chroma, beats, downbeat,
                                    onset_perc, novelty)
@@ -1308,7 +1451,9 @@ def analyze_samples(samples, deep=True):
         "key_pc": key_pc, "key_mode": key_mode,
         "camelot": camelot, "key_conf": round(key_conf, 3),
         "key_name": f"{_NOTE_NAMES[key_pc]} {key_mode}",
-        "chroma": chroma_profile(chroma, frame_energy),
+        "key_version": KEY_VERSION,
+        # None (silence) -> db._KEEP_IF_NONE keeps the stored profile
+        "chroma": key_chroma_profile(key_ch) if key_ch is not None else None,
         "rhythm": _rhythm_or_none(bands, grid, downbeat, mix_points),
         "loudness_gain_db": round(estimate_loudness_gain(samples), 2),
         "kick_offset_s": measure_kick_offset(samples, grid),
