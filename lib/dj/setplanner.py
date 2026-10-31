@@ -58,20 +58,36 @@ ALTS_FEW_SHARE = 0.15     # more than this share of planned slots with fewer tha
 WARN_MIN_OFF = 2          # a chapter warning needs at least this many records off what it asks for...
 WARN_MIN_SHARE = 1.0 / 3  # ...and at least this share of the chapter's planned records (red: more than half)
 SKIP_WHY = "skipped for your record"
+WIDEN_BUDGET_S = 4.0      # a "like these" night that does not finish climbs its crate's ladder within this much of one request
+# THE NIGHT'S NOISE (BUILD, 2026-10-30): every seed but 1 scales each record's fit by a factor in 1 +- NOISE, the same all
+# night (the builder's hash01), and each seam's score by 1 +- PAIR_NOISE (a hash of the pair). The builder's +-0.14 on the
+# records alone left 11 of 221 seed pairs (the 17 presets; seeds 1-5 at 90 min, 1-3 at 180) planning the very same night
+# - a BUILD press that changed nothing. +-0.25 left 3: a strong chain (Desert Night's 1046 -> 408 -> 136 -> 99 -> ...,
+# every seam neither-sings-on-the-drop) outweighs any factor that is the same for a record all night. The seam's own
+# noise breaks such a chain: 0 of 221, the chapter warnings about where they were (amber 51 -> 55, red 15 -> 14 over 136
+# plans). Per-chapter record noise was worse than per-record (14 and 4 same of 102). Seed 1 stays without noise (the
+# gates' night, "1 = no noise, as in the builder"); the same seed is the same night.
+NOISE = 0.25
+PAIR_NOISE = 0.15
+TIE = 0.05                # ...and the finished nights within this of the best (log score per record, about 5 %) are
+                          # near-ties the seed chooses among (_search)
 
 # THE BUILDER'S SIX THEMES (2026-10-28, theme_builder.template.html PRESETS), as data: a crate (which records may
-# play), leans (weighted words that rank what is left), chapters (a share of the night, an energy course, a tempo
-# course as crate percentiles, chapter leans, optional mood / vocals / hypnotic / hardness courses) and the keys mode
-# (stored, not scored until the rescan).
+# play: genres / moods / tags in and out, your folders and setlists (groupsIn, any of), tempo, energy, vocals), leans
+# (weighted words that rank what is left), chapters (a share of the night, an energy course, a tempo course as crate
+# percentiles, chapter leans, optional mood / vocals / hypnotic / hardness / mode / percussive courses) and the keys mode
+# (the six builder presets store a "keys" word that is not read: they plan as "veto"). Chapter leans are words that sit
+# on the crate's records near the chapter's energy (2026-10-30: a falling chapter's "emotional / hopeful / inspiring"
+# sat on 0-9 % of them, so Prog Odyssey's "The way down" missed on every record of every run).
 
 
 def _ch(name, share, energy, tempo, leans=None, dims=None):
     return {"name": name, "share": share, "energy": list(energy), "tempo": list(tempo), "leans": list(leans or []), "dims": dict(dims or {})}
 
 
-def _crate(genres_out=(), bpm=(80, 135), energy=(0, 100), vocals="any", tags_out=()):
-    return {"source": None, "genresIn": [], "genresOut": list(genres_out), "moodsIn": [], "tagsIn": [], "tagsOut": list(tags_out),
-            "bpm": list(bpm), "energy": list(energy), "vocals": vocals}
+def _crate(genres_out=(), bpm=(80, 135), energy=(0, 100), vocals="any", tags_out=(), genres_in=()):
+    return {"source": None, "genresIn": list(genres_in), "genresOut": list(genres_out), "moodsIn": [], "tagsIn": [], "tagsOut": list(tags_out),
+            "groupsIn": [], "bpm": list(bpm), "energy": list(energy), "vocals": vocals}
 
 
 PRESETS = [
@@ -79,7 +95,7 @@ PRESETS = [
      "crate": _crate(["rock", "pop"], (80, 135)),
      "leans": {"desert": 2, "organic house": 1.2, "afro house": 1, "downtempo": 0.7, "hypnotic": 0.6, "percussive": 0.6, "travel": 0.5, "nature": 0.5, "warm": 0.4},
      "chapters": [_ch("Dusk", 0.2, (0.25, 0.42), (0.15, 0.35), ["downtempo", "calm", "warm", "nature"], {"vocals": [0, 0.1]}),
-                  _ch("Caravan", 0.3, (0.45, 0.62), (0.4, 0.6), ["organic house", "afro house", "percussive", "hypnotic"]),
+                  _ch("Caravan", 0.3, (0.45, 0.62), (0.4, 0.6), ["desert", "travel", "percussive", "hypnotic"]),
                   _ch("Sandstorm", 0.3, (0.66, 0.88), (0.6, 0.85), ["melodic house & techno", "dark", "driving"], {"mood": [0.35, 0.2], "hardness": [0.5, 0.8]}),
                   _ch("Starfield", 0.2, (0.6, 0.3), (0.55, 0.3), ["space", "dream", "deep"], {"mood": [0.45, 0.65]})], "keys": "close"},
     {"name": "Deep Space", "blurb": "Lift-off on melodic electronica, a long hypnotic orbit, a dark nebula at full power, a slow re-entry.",
@@ -92,32 +108,136 @@ PRESETS = [
     {"name": "Golden Hour", "blurb": "Deep house aperitivo, a nu-disco rooftop, an indie-dance sunset peak, and a warm afterglow.",
      "crate": _crate(["new age", "soundtracks"], (100, 130)),
      "leans": {"nu disco": 1.2, "indie dance": 1, "disco": 1, "house": 0.7, "deep house": 0.6, "summer": 0.8, "happy": 0.7, "groovy": 0.8, "upbeat": 0.6},
-     "chapters": [_ch("Aperitivo", 0.25, (0.35, 0.5), (0.3, 0.45), ["deep house", "sexy", "cool"]),
-                  _ch("Rooftop", 0.3, (0.5, 0.7), (0.45, 0.6), ["nu disco", "groovy", "summer"], {"mood": [0.6, 0.75]}),
-                  _ch("Sunset peak", 0.3, (0.72, 0.9), (0.6, 0.8), ["indie dance", "party", "energetic"], {"mood": [0.7, 0.8], "vocals": [0.3, 0.4]}),
+     "chapters": [_ch("Aperitivo", 0.25, (0.35, 0.5), (0.3, 0.45), ["mellow", "sexy", "cool"]),
+                  _ch("Rooftop", 0.3, (0.5, 0.7), (0.45, 0.6), ["retro", "groovy", "summer"], {"mood": [0.6, 0.75]}),
+                  _ch("Sunset peak", 0.3, (0.72, 0.9), (0.6, 0.8), ["danceable", "party", "energetic"], {"mood": [0.7, 0.8], "vocals": [0.3, 0.4]}),
                   _ch("Afterglow", 0.15, (0.6, 0.45), (0.5, 0.4), ["love", "romantic", "happy"])], "keys": "lift"},
     {"name": "Night Shift", "blurb": "Down into the dark: a sparse descent, a hypnotic tunnel, the machine at full drive, then the surface.",
      "crate": _crate(["pop", "disco", "new age"], (110, 135), (20, 100), "some"),
-     "leans": {"melodic house & techno": 1, "techno (peak time": 1, "dark": 1.2, "hypnotic": 1, "minor": 0.5, "driving": 0.6},
+     "leans": {"melodic house & techno": 1, "techno (peak time / driving)": 1, "dark": 1.2, "hypnotic": 1, "minor": 0.5, "driving": 0.6},
      "chapters": [_ch("Descent", 0.2, (0.4, 0.55), (0.35, 0.5), ["deep", "sparse", "instrumental"], {"mood": [0.3, 0.2]}),
                   _ch("Tunnel", 0.35, (0.55, 0.7), (0.5, 0.6), ["hypnotic", "steady"], {"hypnotic": [0.75, 0.9]}),
                   _ch("Machine", 0.3, (0.75, 0.95), (0.65, 0.85), ["driving", "hard", "bass-heavy"], {"hardness": [0.6, 0.9]}),
-                  _ch("Surface", 0.15, (0.65, 0.45), (0.55, 0.45), ["melodic", "emotional"], {"mood": [0.35, 0.55]})], "keys": "close"},
+                  _ch("Surface", 0.15, (0.65, 0.45), (0.55, 0.45), ["melodic", "warm", "space"], {"mood": [0.35, 0.55]})], "keys": "close"},
     {"name": "Prog Odyssey", "blurb": "The classic journey: a melodic warm-up, a long climb, an epic summit, and an emotional way down.",
      "crate": _crate(["rock", "pop"], (110, 140)),
      "leans": {"progressive house": 1.2, "trance": 1, "psy-trance": 0.8, "melodic house & techno": 0.7, "uplifting": 0.8, "epic": 0.8, "emotional": 0.6},
-     "chapters": [_ch("Warm-up", 0.25, (0.35, 0.55), (0.3, 0.45), ["melodic", "deep", "progressive house"]),
+     "chapters": [_ch("Warm-up", 0.25, (0.35, 0.55), (0.3, 0.45), ["melodic", "deep", "mellow"]),
                   _ch("Climb", 0.3, (0.55, 0.75), (0.45, 0.65), ["driving", "uplifting", "dynamic"]),
-                  _ch("Summit", 0.25, (0.8, 0.95), (0.7, 0.85), ["epic", "peaky", "trance", "powerful"], {"mood": [0.6, 0.75]}),
-                  _ch("The way down", 0.2, (0.7, 0.45), (0.6, 0.4), ["emotional", "hopeful", "inspiring"])], "keys": "lift"},
+                  _ch("Summit", 0.25, (0.8, 0.95), (0.7, 0.85), ["epic", "peaky", "uplifting", "energetic"], {"mood": [0.6, 0.75]}),
+                  _ch("The way down", 0.2, (0.7, 0.45), (0.6, 0.4), ["dream", "mellow", "warm"])], "keys": "lift"},
     {"name": "Slow Morning", "blurb": "No peak on purpose: mist and soundscapes, warm organic grooves over coffee, then the sun comes up.",
-     "crate": _crate(["psy-trance", "techno (peak time"], (70, 118), (0, 70), "any", ["hard"]),
+     "crate": _crate(["psy-trance", "techno (peak time / driving)"], (70, 118), (0, 70), "any", ["hard"]),
      "leans": {"downtempo": 1.2, "organic house": 0.8, "new age": 0.8, "electronica": 0.6, "calm": 0.8, "soft": 0.6, "nature": 0.6, "relaxing": 0.6},
      "chapters": [_ch("Mist", 0.3, (0.12, 0.25), (0.1, 0.25), ["soundscape", "meditative", "new age"], {"vocals": [0, 0.05]}),
-                  _ch("Coffee", 0.35, (0.3, 0.45), (0.3, 0.45), ["warm", "groovy", "organic house"]),
-                  _ch("Sun", 0.35, (0.45, 0.58), (0.45, 0.6), ["uplifting", "happy", "organic house"], {"mood": [0.55, 0.75]})], "keys": "wander"},
+                  _ch("Coffee", 0.35, (0.3, 0.45), (0.3, 0.45), ["warm", "groovy", "gentle", "slow"]),
+                  _ch("Sun", 0.35, (0.45, 0.58), (0.45, 0.6), ["uplifting", "happy", "warm"], {"mood": [0.55, 0.75]})], "keys": "wander"},
+    # THE ELEVEN OF 2026-10-30 (the user's picks from the category survey, docs/DJ_SETS.md section 2): drafted against this
+    # library, then tuned until each plans finished at 90 and 180 min, seeds 1-3, with no red chapter. A blurb says what a
+    # theme really plays where the library cannot carry its name (Deep Lounge, Trance Uplift, Peak Time). These set keys_mode.
+    {"name": "Melodic Journey", "blurb": "Melodic techno as one long climb: a deep arrival, a hypnotic ascent, a dark melodic summit, an emotional afterlight.",
+     "crate": _crate(["pop", "rock"], (115, 132), genres_in=["melodic house & techno", "progressive house", "techno"]),
+     "leans": {"melodic house & techno": 1.5, "progressive house": 0.8, "melodic": 0.6, "space": 0.5, "emotional": 0.5, "minor": 0.4},
+     "chapters": [_ch("Arrival", 0.2, (0.4, 0.55), (0.2, 0.4), ["melodic", "dream", "space"], {"vocals": [0, 0.15]}),
+                  _ch("Ascent", 0.3, (0.55, 0.72), (0.4, 0.6), ["hypnotic", "steady", "progressive house"], {"hypnotic": [0.7, 0.85]}),
+                  _ch("Summit", 0.3, (0.75, 0.92), (0.6, 0.85), ["driving", "dark", "melodic house & techno", "hypnotic"],
+                      {"mood": [0.4, 0.3], "hardness": [0.6, 0.85], "percussive": [0.35, 0.3]}),
+                  _ch("Afterlight", 0.2, (0.7, 0.45), (0.6, 0.4), ["melodic", "dream", "mellow"], {"mood": [0.45, 0.6]})], "keys_mode": "close"},
+    {"name": "After Hours", "blurb": "Past 3 am: dim and dark, a deep hypnotic end, some strange hours in minor keys, then daylight.",
+     "crate": _crate(["pop", "rock", "dance-pop", "soundtracks", "disco", "nu disco", "synth-pop"], (110, 128), (20, 95)),
+     "leans": {"dark": 1.2, "hypnotic": 1.0, "minor": 0.5, "melodic house & techno": 0.8, "space": 0.5, "melancholic": 0.4},
+     "chapters": [_ch("Dim lights", 0.25, (0.45, 0.6), (0.3, 0.5), ["dark", "space"], {"mood": [0.35, 0.25], "mode": [0.15, 0.15]}),
+                  _ch("Deep end", 0.35, (0.6, 0.72), (0.45, 0.65), ["hypnotic", "dark", "steady"], {"hypnotic": [0.75, 0.9], "mood": [0.3, 0.2], "mode": [0.1, 0.1]}),
+                  _ch("Strange hours", 0.25, (0.65, 0.75), (0.5, 0.7), ["dark", "driving", "melodic house & techno"], {"vocals": [0, 0.1], "mode": [0.15, 0.25]}),
+                  _ch("Daylight", 0.15, (0.55, 0.35), (0.5, 0.3), ["uplifting", "dream", "mellow"], {"mood": [0.45, 0.6], "mode": [0.5, 0.8]})], "keys_mode": "close"},
+    {"name": "Hypnotic", "blurb": "Long loops, few elements: a sparse start, a locked-in hypnotic middle, a slow tightening "
+                              "(hypnotic melodic techno and prog - the library holds one minimal record, so it is not a minimal night).",
+     "crate": _crate(["pop", "rock", "dance-pop", "soundtracks", "new age", "synth-pop", "disco", "nu disco"], (116, 130), (25, 100), "some"),
+     "leans": {"hypnotic": 1.5, "steady": 1.0, "sparse": 0.6, "minor": 0.4, "melodic house & techno": 0.5},
+     "chapters": [_ch("Sparse", 0.25, (0.45, 0.58), (0.2, 0.4), ["sparse", "steady", "hypnotic", "space"], {"hypnotic": [0.65, 0.8], "vocals": [0, 0.08]}),
+                  _ch("Locked in", 0.45, (0.58, 0.72), (0.4, 0.65), ["hypnotic", "steady"], {"hypnotic": [0.85, 0.95], "vocals": [0, 0.05]}),
+                  _ch("Tighten", 0.3, (0.72, 0.85), (0.6, 0.85), ["hypnotic", "driving"], {"hypnotic": [0.85, 0.95], "hardness": [0.6, 0.8]})], "keys_mode": "close"},
+    {"name": "Afro Sunset", "blurb": "Organic dusk, hand drums under a low sun, an afro-house fire at the peak, embers to close.",
+     "crate": _crate(["pop", "rock"], (95, 127), genres_in=["organic house", "afro house", "downtempo", "deep house"]),
+     "leans": {"afro house": 1.5, "organic house": 1.2, "percussive": 0.8, "desert": 0.6, "travel": 0.5, "nature": 0.5, "warm": 0.4},
+     "chapters": [_ch("Golden light", 0.2, (0.35, 0.5), (0.1, 0.3), ["downtempo", "warm", "nature", "calm"]),
+                  _ch("Hand drums", 0.3, (0.55, 0.68), (0.35, 0.55), ["organic house", "percussive", "desert"], {"percussive": [0.7, 0.8]}),
+                  _ch("Fire", 0.3, (0.7, 0.88), (0.6, 0.85), ["afro house", "percussive", "driving", "energetic"]),
+                  _ch("Embers", 0.2, (0.65, 0.5), (0.6, 0.5), ["organic house", "emotional", "dream"])], "keys_mode": "close"},
+    {"name": "Warm-up", "blurb": "The opening slot done right: low and slow, never stealing the headliner's peak.",
+     "crate": _crate(["soundtracks", "new age", "rock", "pop rock", "soft rock", "classical"], (95, 124), (0, 70)),
+     "leans": {"mellow": 0.8, "gentle": 0.8, "warm": 0.6, "downtempo": 0.5, "deep house": 0.6, "organic house": 0.6, "soft": 0.4},
+     "chapters": [_ch("Doors", 0.3, (0.15, 0.3), (0.05, 0.3), ["mellow", "gentle", "downtempo"]),
+                  _ch("Settling", 0.35, (0.3, 0.42), (0.3, 0.55), ["warm", "melodic", "groovy"]),
+                  _ch("Opening up", 0.35, (0.45, 0.6), (0.55, 0.9), ["percussive", "melodic", "uplifting"])], "keys_mode": "close"},
+    {"name": "Vocal Night", "blurb": "Songs, not tracks: voices in, a sing-along middle, big choruses, a lullaby.",
+     "crate": _crate(["soundtracks", "new age", "ambient"], (95, 130), (0, 100), "lots"),
+     "leans": {"vocal-heavy": 1.4, "vocals": 0.8, "indie dance": 0.6, "dance-pop": 0.6, "pop": 0.5, "love": 0.5, "romantic": 0.4},
+     "chapters": [_ch("Voices", 0.25, (0.3, 0.48), (0.15, 0.4), ["vocals", "love", "soft"], {"vocals": [0.35, 0.5]}),
+                  _ch("Sing-along", 0.3, (0.5, 0.7), (0.4, 0.65), ["vocal-heavy", "happy", "upbeat"], {"vocals": [0.5, 0.7], "mood": [0.6, 0.75]}),
+                  _ch("Big chorus", 0.3, (0.7, 0.88), (0.6, 0.85), ["vocals", "energetic", "party"], {"vocals": [0.55, 0.7]}),
+                  _ch("Lullaby", 0.15, (0.55, 0.3), (0.5, 0.2), ["romantic", "love", "dream"], {"vocals": [0.4, 0.5]})], "keys_mode": "close"},
+    {"name": "Sunrise", "blurb": "The closing set: a last peak, the blue hour, the sun coming up, and birdsong.",
+     "crate": _crate(["rock", "pop rock"], (85, 128), tags_out=["hard"]),
+     "leans": {"emotional": 1.0, "hopeful": 0.8, "uplifting": 0.8, "melodic": 0.6, "nature": 0.5, "dream": 0.5},
+     "chapters": [_ch("Last peak", 0.25, (0.75, 0.62), (0.85, 0.65), ["epic", "uplifting", "dream"]),
+                  _ch("Blue hour", 0.3, (0.58, 0.42), (0.65, 0.45), ["dream", "mellow", "space"], {"mood": [0.45, 0.6]}),
+                  _ch("Sun up", 0.3, (0.42, 0.28), (0.45, 0.25), ["uplifting", "hopeful", "happy"], {"mood": [0.65, 0.8], "mode": [0.6, 0.8]}),
+                  _ch("Birdsong", 0.15, (0.25, 0.1), (0.3, 0.15), ["nature", "soundscape", "calm", "dream"], {"vocals": [0, 0.05]})], "keys_mode": "wander"},
+    {"name": "Instrumental", "blurb": "Nobody sings: textures, a pulse, a drive, a release.",
+     "crate": _crate(["rock", "pop", "pop rock", "dance-pop"], (85, 132), (0, 100), "some"),
+     "leans": {"instrumental": 0.6, "melodic": 0.8, "hypnotic": 0.6, "space": 0.5, "soundscape": 0.5, "progressive house": 0.5},
+     "chapters": [_ch("Texture", 0.2, (0.2, 0.38), (0.05, 0.3), ["soundscape", "space", "ambient"], {"vocals": [0, 0.05]}),
+                  _ch("Pulse", 0.3, (0.4, 0.58), (0.3, 0.55), ["hypnotic", "steady", "melodic", "space"], {"vocals": [0, 0.05]}),
+                  _ch("Drive", 0.3, (0.62, 0.82), (0.55, 0.85), ["driving", "progressive house", "melodic house & techno"], {"vocals": [0, 0.05]}),
+                  _ch("Release", 0.2, (0.6, 0.3), (0.6, 0.3), ["warm", "dream", "calm"], {"vocals": [0, 0.05]})], "keys_mode": "close"},
+    {"name": "Peak Time", "blurb": "The headline slot as an energy night: straight in at height, a hard peak, a second peak, an encore "
+                               "(it plays as high-energy prog and melodic techno: the library holds few techno records).",
+     "crate": _crate(["soundtracks", "new age", "ambient", "rock", "pop rock"], (120, 142), (40, 100), tags_out=["downtempo-feel"]),
+     "leans": {"driving": 1.0, "peaky": 0.8, "hard": 0.8, "energetic": 0.6, "powerful": 0.6, "melodic house & techno": 0.5, "progressive house": 0.4},
+     "chapters": [_ch("Lift", 0.2, (0.6, 0.75), (0.3, 0.5), ["driving", "melodic house & techno"]),
+                  _ch("Peak", 0.35, (0.82, 0.97), (0.5, 0.8), ["hard", "peaky", "driving"], {"hardness": [0.75, 0.95]}),
+                  _ch("Second peak", 0.3, (0.85, 0.95), (0.7, 0.95), ["peaky", "energetic", "bass-heavy"], {"hardness": [0.7, 0.9]}),
+                  _ch("Encore", 0.15, (0.85, 0.7), (0.8, 0.6), ["epic", "uplifting"])], "keys_mode": "lift"},
+    {"name": "Deep Lounge", "blurb": "Deep and house-y at conversation level: a cool lounge, a rolling groove, a late low-lit hour "
+                                 "(it plays as warm house and organic house: the library has 28 deep house records).",
+     "crate": _crate(["soundtracks", "new age", "rock", "pop rock", "soft rock", "classical"], (105, 125), (0, 85),
+                     genres_in=["deep house", "house", "organic house", "nu disco", "indie dance", "electronica", "downtempo"]),
+     "leans": {"deep house": 1.6, "house": 0.8, "warm": 0.6, "mellow": 0.5, "romantic": 0.4, "love": 0.3},
+     "chapters": [_ch("Lounge", 0.35, (0.3, 0.45), (0.2, 0.4), ["electronica", "warm", "mellow", "soft"]),
+                  _ch("Groove", 0.4, (0.45, 0.62), (0.4, 0.65), ["deep house", "groovy", "percussive"]),
+                  _ch("Low light", 0.25, (0.55, 0.45), (0.6, 0.45), ["deep house", "romantic", "dream", "electronica"], {"mood": [0.45, 0.4]})], "keys_mode": "close"},
+    {"name": "Trance Uplift", "blurb": "The build, the euphoric uplift, a driving peak, and a melodic comedown (it plays as progressive "
+                                   "house: the library's 28 trance and psy records sit at 132-140 bpm, past a blend's tempo reach from the prog that fills it).",
+     "crate": _crate(["pop", "rock"], (118, 145), genres_in=["trance", "psy-trance", "progressive trance", "trance (main floor)", "progressive house"]),
+     "leans": {"trance": 1.5, "psy-trance": 1.2, "progressive house": 0.6, "uplifting": 0.8, "epic": 0.6, "energetic": 0.5},
+     "chapters": [_ch("Build", 0.25, (0.5, 0.65), (0.15, 0.4), ["progressive house", "melodic"]),
+                  _ch("Uplift", 0.3, (0.65, 0.82), (0.4, 0.65), ["energetic", "uplifting", "epic"], {"mood": [0.6, 0.8]}),
+                  _ch("Peak", 0.25, (0.85, 0.97), (0.7, 0.95), ["psy-trance", "driving", "hard"], {"hardness": [0.8, 0.95]}),
+                  _ch("Comedown", 0.2, (0.7, 0.5), (0.6, 0.3), ["melodic", "dream", "mellow", "space"])], "keys_mode": "lift"},
 ]
-CH_DIMS = ("mood", "vocals", "hypnotic", "hardness")
+CH_DIMS = ("mood", "vocals", "hypnotic", "hardness", "mode", "percussive")
+# THE TWO STORY CONTROLS OF 2026-10-30 (the survey's picks): MODE, minor 0 .. major 1, from key v2's mode (tracks.key_mode,
+# 88 % right on the truth set; a record whose key reading is unsure sits nearer 0.5: _mode_value), and PERCUSSIVE,
+# melodic 0 .. percussive 1, the drums' share of drums + other in the stems' body power (env.npz "rms", the file the vocal
+# measure reads: 97 % of the library), as a rank like the others. A course scores a record exp(-((v - want) / width)^2),
+# floored at 0.15 (no measure: 0.8); mode is two-valued, so its width is wide: 0 asks for minor, 0.5 for either.
+DIM_WIDTH = {"mode": 0.5}
+DIM_W0 = 0.18
+
+
+def _mode_value(t):
+    """Key v2's mode as a number: 0 minor, 1 major, pulled toward 0.5 as the key reading's confidence falls (key_conf
+    under 0.25 is a neighbourhood, and a relative-key slip flips the mode): 0.25 / 0.75 at no confidence. None: no key."""
+    m = getattr(t, "key_mode", None)
+    if m not in ("major", "minor"):
+        return None
+    try:
+        c = float((getattr(t, "row", None) or {}).get("key_conf") or 0.0)
+    except (TypeError, ValueError):
+        c = 0.0
+    k = 0.5 * min(1.0, 0.5 + max(0.0, c))
+    return round(0.5 + k if m == "major" else 0.5 - k, 3)
 # the vocal rule of the crate, on the share of a record that sings (the builder's VOCALS_OK)
 VOCALS_OK = {"any": lambda s: True, "none": lambda s: s <= 0.05, "some": lambda s: s <= 0.35, "lots": lambda s: s >= 0.25}
 # THE KEYS MODE (2026-10-29, after the key v2 rescan: 0.825 exact against Beatport): theme["keys_mode"], a LIGHT factor
@@ -169,6 +289,105 @@ def _jround(x):
     return int(math.floor(x + 0.5))
 
 
+# BEATPORT'S GENRE NAMES KEPT WHOLE (2026-10-30). The library's genre parser (brain.TrackInfo.genre_set, all_tags) splits a
+# file genre on "/", so Beatport's "Organic House / Downtempo" (76 club tracks) read as "downtempo" and "Techno (Peak
+# Time / Driving)" as "techno (peak time" + "driving)". The planner and the NIGHT tab's vocabulary read genres here
+# instead (read time only: the DB and the brain are untouched): a piece of the file genre with " / " in it (Beatport
+# writes its compounds with spaces; "Rock/Pop" still splits) is ONE genre word, plus the family words listed below for
+# the names whose parts really are what the record is (a Nu Disco / Disco record is nu disco and disco; an Organic House
+# / Downtempo club track is organic house, not downtempo). A compound not listed is the whole name only.
+GENRE_FAMILY = {
+    "organic house / downtempo": ("organic house",),
+    "nu disco / disco": ("nu disco", "disco"),
+    "dance / pop": ("dance", "pop"),
+    "dance / electro pop": ("dance", "electro pop"),
+    "techno (peak time / driving)": ("techno",),
+    "techno (raw / deep / hypnotic)": ("techno",),
+    "trance (raw / deep / hypnotic)": ("trance",),
+    "minimal / deep tech": ("minimal", "deep tech"),
+    "uk garage / bassline": ("uk garage", "bassline"),
+    "electro (classic / detroit / modern)": ("electro",),
+    "breaks / breakbeat / uk bass": ("breaks", "breakbeat", "uk bass"),
+    "140 / deep dubstep / grime": ("dubstep", "grime"),
+    "hard dance / hardcore / neo rave": ("hard dance", "hardcore"),
+}
+
+
+def _file_genre_parts(fg):
+    """brain's split of a file genre (every "/", "," and ";"): the words the library's all_tags carries for it."""
+    return {p.strip().lower() for p in (fg or "").replace("/", ",").replace(";", ",").split(",") if p.strip()}
+
+
+def genre_words(t):
+    """A record's genres with Beatport's compound names whole (GENRE_FAMILY): MusicBrainz genres + the file genre."""
+    gs = {g.strip().lower() for g in (getattr(t, "genres", None) or []) if g and g.strip()}
+    for piece in (getattr(t, "file_genre", "") or "").replace(";", ",").split(","):
+        piece = " ".join(piece.strip().lower().split())
+        if not piece:
+            continue
+        if " / " in piece:
+            gs.add(piece)
+            gs.update(GENRE_FAMILY.get(piece, ()))
+        else:
+            gs.update(p.strip() for p in piece.split("/") if p.strip())
+    return gs
+
+
+def record_words(t, genres=None):
+    """Every word a record carries for the crate and the leans (all_tags, genres, ML moods), with the parts of a split
+    Beatport compound that no other source gives taken out and the compound (genre_words) put in."""
+    gs = genre_words(t) if genres is None else genres
+    moods = {m.lower() for m in (getattr(t, "ml_moods", None) or [])}
+    junk = _file_genre_parts(getattr(t, "file_genre", ""))
+    if junk:
+        keep = {g.lower() for g in (getattr(t, "genres", None) or [])} | {x.lower() for x in (getattr(t, "auto_tags", None) or [])} \
+            | {x.lower() for x in (getattr(t, "user_tags", None) or [])} | moods
+        if getattr(t, "decade", None):
+            keep.add(str(t.decade).lower())
+        if getattr(t, "danceability", None) is not None:
+            from lib.dj.character import character_tags
+            keep.update(x.lower() for x in character_tags(t))
+        junk -= keep
+    return (set(x.lower() for x in t.all_tags) - junk) | gs | moods
+
+
+def folder_of(t):
+    """The record's top folder in the music root (Desert Whomp, Groovy, Beatport, ...): one of your own categories."""
+    p = str(getattr(t, "path", "") or "").replace("\\", "/").strip("/")
+    return p.split("/")[0] if "/" in p else ""
+
+
+GROUP_MARK = "@"              # a folder / setlist as a word among a record's words ("@groovy"): the leans and "like these"
+                              # read it; it never collides with a tag of the same name (the ML mood "groovy")
+
+
+def vocab(lib, setlists=None):
+    """The NIGHT tab's crate words, each {word: records carrying it}: genres (Beatport's names whole), ML moods, the other
+    tags, and YOUR CATEGORIES - the top folders and the setlists by name (a folder and a setlist of the same name are one
+    word: the crate's groupsIn matches either). `setlists`: {name: [ids]}."""
+    g, mo, tg, gr, shown = {}, {}, {}, {}, {}
+    in_lists = {}
+    for name, ids in (setlists or {}).items():
+        for i in ids:
+            in_lists.setdefault(int(i), set()).add(str(name).strip())
+    for t in lib:
+        gs = genre_words(t)
+        ms = {x.lower() for x in (getattr(t, "ml_moods", None) or ())}
+        for x in gs:
+            g[x] = g.get(x, 0) + 1
+        for x in ms:
+            mo[x] = mo.get(x, 0) + 1
+        for x in record_words(t, gs):
+            if x not in gs and x not in ms:
+                tg[x] = tg.get(x, 0) + 1
+        names = ({folder_of(t)} if folder_of(t) else set()) | in_lists.get(int(t.id), set())
+        for nm in {n.lower(): n for n in names}.values():
+            k = nm.lower()
+            shown.setdefault(k, nm)
+            gr[k] = gr.get(k, 0) + 1
+    return {"genres": g, "moods": mo, "tags": tg, "groups": {shown[k]: n for k, n in gr.items()}}
+
+
 class _NoSubmix:
     """What the record player's pure geometry reads from a submix: nothing is playing (the planner has no audio)."""
     telemetry = {}
@@ -184,8 +403,8 @@ class _NoSubmix:
 # ---- the records -----------------------------------------------------------------------------------------------------
 class _Fact:
     """One record, as the planner sees it (independent of the minimum play)."""
-    __slots__ = ("id", "t", "title", "artist", "ak", "root", "bpm", "e", "words", "genres", "sung", "vr", "hyp", "hard",
-                 "dims", "pl", "dur", "vox", "vox_exact", "rec")
+    __slots__ = ("id", "t", "title", "artist", "ak", "root", "bpm", "e", "words", "genres", "groups", "sung", "vr", "hyp", "hard",
+                 "mode", "perc", "dims", "pl", "dur", "vox", "vox_exact", "rec")
 
 
 class _Geo:
@@ -260,7 +479,7 @@ def _file_sig(path):
         return None
 
 
-def _vox_measure(music_root, t, cache):
+def _vox_measure(music_root, t, cache, levels=None):
     """THE VOCAL ENVELOPE THE PLAYER USES (recordplay.vocal_envelope: the vocal stem's half-second RMS over its 95th
     percentile; silent everywhere when that loud level is under VOX_FLOOR of the mix's), read cheaply from the stem
     envelopes on disk (.stems/<id>/env.npz, the same half-second RMS over the same percentile) instead of decoding a
@@ -273,7 +492,9 @@ def _vox_measure(music_root, t, cache):
     the player (it may say "sings" where the player hears bleed), never looser. Measured 2026-10-28 on 36 records
     against vocal_envelope: every singing / quiet half-second agreed except three sparse-vocal records the floor
     silences (Sequences, Abracadabra, Dunes) - the case the cache is for. No stems: None ("nothing is known, nothing
-    is refused", the player's _vox_quiet)."""
+    is refused", the player's _vox_quiet).
+    `levels` (a dict): filled with the four stems' body RMS from the same file ("rms": drums, bass, other, vocals - the
+    percussive course's drums-vs-other share), read while the file is open."""
     import numpy as np
     from lib.dj.recordplay import VOX_FLOOR, VOX_QUIET, RecordPlayer
     if not getattr(t, "has_stems", False):
@@ -284,15 +505,17 @@ def _vox_measure(music_root, t, cache):
         files = set(z.files)
     except Exception:
         return None, True
+    try:
+        rms = [float(x) for x in z["rms"]]
+    except Exception:
+        rms = []
+    if levels is not None and len(rms) == 4:
+        levels["rms"] = rms
     if "vocals" not in files:
         return None, True               # (17 records: their vocal stem decodes empty; the player's envelope is None too)
     v = np.asarray(z["vocals"], dtype=np.float32)
     if v.size < 2 or not bool(np.any(v >= VOX_QUIET)):
         return v, True                  # quiet everywhere: the floor cannot change that
-    try:
-        rms = [float(x) for x in z["rms"]]
-    except Exception:
-        rms = []
     body = RecordPlayer.body_start(t)
     pw, top_v = 0.0, None
     for i, nm in enumerate(("drums", "bass", "other", "vocals")):
@@ -454,7 +677,12 @@ class Planner:
             pass
         from lib.dj.recordplay import VOX_QUIET
         cache = _load_vox_cache(self.music_root)
+        in_lists = {}
+        for name, ids in self.setlists.items():
+            for i in ids:
+                in_lists.setdefault(int(i), set()).add(str(name).strip().lower())
         facts = {}
+        perc_raw = {}
         for t in lib:
             f = _Fact()
             f.id, f.t = int(t.id), t
@@ -466,17 +694,27 @@ class Planner:
                 f.root = (t.title or "").lower()
             f.bpm = float(t.bpm)
             f.e = float(t.energy_proxy())
-            f.genres = set(t.genre_set)
-            f.words = set(x.lower() for x in t.all_tags) | f.genres | set(m.lower() for m in (t.ml_moods or []))
+            f.genres = genre_words(t)                 # (Beatport's compound names whole: GENRE_FAMILY)
+            # YOUR CATEGORIES (2026-10-30): the record's top folder and the setlists it is in, by name (the crate's
+            # groupsIn), and as "@name" words for the leans and "like these"
+            fo = folder_of(t).strip().lower()
+            f.groups = ({fo} if fo else set()) | in_lists.get(f.id, set())
+            f.words = record_words(t, f.genres) | {GROUP_MARK + g for g in f.groups}
             f.dur = float(t.duration_s or 0.0)
+            lv = {}
             try:
-                f.vox, f.vox_exact = _vox_measure(self.music_root, t, cache)
+                f.vox, f.vox_exact = _vox_measure(self.music_root, t, cache, levels=lv)
             except Exception:
                 f.vox, f.vox_exact = None, True
             f.sung = round(float((f.vox >= VOX_QUIET).mean()), 3) if f.vox is not None and len(f.vox) else 0.0
+            rms = lv.get("rms")
+            if rms and rms[0] ** 2 + rms[2] ** 2 > 1e-12:
+                perc_raw[f.id] = rms[0] ** 2 / (rms[0] ** 2 + rms[2] ** 2)   # the drums' share of drums + other, body power
             ar = t.axes_rank or {}
             f.hyp = None if ar.get("hypnotic") is None else float(ar["hypnotic"])
             f.hard = None if ar.get("hardness") is None else float(ar["hardness"])
+            f.mode = _mode_value(t)
+            f.perc = None
             f.pl = int(self.plays.get(t.id, 0))
             f.vr = None
             r = Rec("p", t)
@@ -487,8 +725,13 @@ class Planner:
         vals = sorted((f for f in facts.values() if f.t.ml_valence is not None), key=lambda f: (float(f.t.ml_valence), f.id))
         for i, f in enumerate(vals):
             f.vr = i / max(1, len(vals) - 1)
+        # percussive (2026-10-30) as a rank too: 0 the most melodic record, 1 the most percussive
+        pr = sorted(perc_raw, key=lambda i: (perc_raw[i], i))
+        for k, i in enumerate(pr):
+            facts[i].perc = k / max(1, len(pr) - 1)
         for f in facts.values():
-            f.dims = {"mood": f.vr, "vocals": f.sung, "hypnotic": f.hyp, "hardness": f.hard}   # the chapter courses' measures
+            f.dims = {"mood": f.vr, "vocals": f.sung, "hypnotic": f.hyp, "hardness": f.hard,
+                      "mode": f.mode, "percussive": f.perc}                       # the chapter courses' measures
         self.facts = facts
         # what the plans depend on, in one number: a keys rescan or a tempo fix changes it (the Director sends reload)
         import zlib
@@ -801,10 +1044,13 @@ class Planner:
         m_in = [w.lower() for w in c.get("moodsIn") or []]
         t_in = [w.lower() for w in c.get("tagsIn") or []]
         t_out = [w.lower() for w in c.get("tagsOut") or []]
+        grp = {str(w).strip().lower() for w in c.get("groupsIn") or [] if str(w).strip()}
         out = []
         for f in self.facts.values():
             if src_ids is not None and f.id not in src_ids:
                 continue
+            if grp and not (f.groups & grp):
+                continue                              # (your folders / setlists, any of)
             if f.dur > MAX_DURATION_S:
                 continue
             if f.bpm < float(lo) or f.bpm > float(hi):
@@ -982,7 +1228,7 @@ class Planner:
             f = self.facts[i]
             tw = sum(v for k, v in pos.items() if k in f.words)
             ng = sum(v for k, v in neg.items() if k in f.words)
-            noise = 0.86 + 0.28 * _hash01(f.id, ctx["seed"]) if ctx["seed"] > 1 else 1.0
+            noise = (1.0 - NOISE) + 2.0 * NOISE * _hash01(f.id, ctx["seed"]) if ctx["seed"] > 1 else 1.0
             worn = 1.0 / (1.0 + 0.3 * min(f.pl, 5)) if ctx["fresh"] else 1.0
             row = []
             for c in chs:
@@ -1035,7 +1281,7 @@ class Planner:
             dv = f.dims
             for k, tv in dims.items():
                 v = dv[k]
-                s *= 0.8 if v is None else max(0.15, math.exp(-(((v - tv) / 0.18) ** 2)))
+                s *= 0.8 if v is None else max(0.15, math.exp(-(((v - tv) / DIM_WIDTH.get(k, DIM_W0)) ** 2)))
         return s
 
     @staticmethod
@@ -1082,6 +1328,8 @@ class Planner:
         dead = None
         solos = {}
         keyed = ctx.get("keys") in ("close", "lift")          # (veto / wander: no factor at all - today's search exactly)
+        seed = int(ctx.get("seed") or 1)
+        pnoise = PAIR_NOISE if seed > 1 else 0.0           # (the seed's noise on each seam: see PAIR_NOISE)
         for _step in range(MAX_STEPS):
             nxt = []
             for sc, path, nnew, st, cue, _en in beams:
@@ -1112,6 +1360,8 @@ class Planner:
                     s = self._node(ctx, j, (st_j + 0.5 * solo) / L) * s_static * self._s_vox(sm)
                     if keyed:
                         s *= self._s_key(ctx, last, c, fit, (st_j + 0.5 * solo) / L)
+                    if pnoise:
+                        s *= (1.0 - pnoise) + 2.0 * pnoise * _hash01(last.id * 7919 + j, seed)
                     cands.append((sc + math.log(max(s, 1e-9)), j, st_j, sm["cue_b"], st_j + solo))
                 if not cands and prefix and nnew == 0:
                     # NOTHING BLENDS STRICTLY AFTER A RECORD THE PLAN DID NOT CHOOSE (the user's UP NEXT, or a committed one):
@@ -1161,8 +1411,20 @@ class Planner:
             if len(done) > DONE_MAX:
                 break
         if done:
-            # a finished night must not overshoot by much (the builder's 0.002 per minute over)
-            done.sort(key=lambda b: -(b[0] / max(1, b[2]) - 0.002 * max(0.0, b[5] - L) / 60.0))
+            # a finished night must not overshoot by much (the builder's 0.002 per minute over), and its last record must
+            # start inside the night: the record before it may play past the end its earliest way out promised (2026-10-30,
+            # Deep Lounge at 45 min: Emola's seam into Tunnel came at 46:00, a record whole after the night)
+            def worth(b):
+                return b[0] / max(1, b[2]) - 0.002 * max(0.0, b[5] - L) / 60.0 - (1.0 if b[3] > L else 0.0)
+            done.sort(key=lambda b: -worth(b))
+            if seed > 1 and TIE > 0.0:
+                # THE SEED'S TIE-BREAK (BUILD): among the finished nights within TIE of the best (per record), the seed
+                # picks one - a chain no noise breaks still ends another way (Warm-up's 90 min: seeds 1 and 2 the same)
+                import zlib
+                w0 = worth(done[0])
+                near = {b[1]: b for b in done if w0 - worth(b) <= TIE}
+                pick = min(near, key=lambda p: (_hash01(zlib.crc32(",".join(map(str, p)).encode()), seed), p))
+                return list(pick), True
             return list(done[0][1]), True
         best = dead or (beams[0] if beams else None)
         if best is None:
@@ -1445,7 +1707,59 @@ class Planner:
         return played, fixed_items, banned, start0
 
     def _plan(self, req):
+        """A plan or re-plan. A "LIKE THESE" NIGHT THAT DOES NOT FINISH (2026-10-30; docs/DJ_SETS.md section 2 item 3) is
+        widened here, in the same request: an unedited inferred theme (its examples, its ladder, not edited) first climbs
+        the ladder until the crate holds its target in records the night can still PLAY (played, skipped and fixed ones
+        do not count - the examples are often records played tonight), then, while the plan does not reach its length,
+        one more rung and planned again, until it finishes, the ladder runs out or WIDEN_BUDGET_S is spent. The answer
+        carries the steps (`widened`) and the theme planned (`theme_used`) for the NightPlan to keep. An edited theme or a
+        preset is never widened: its warning says how to fix it."""
+        from lib.dj import themestore as TS
         theme = self._theme_of(req)
+        if not TS.can_widen(theme):
+            return self._plan_once(req, theme)
+        t0 = time.time()
+        pm = float(req.get("play_min_s") or DEFAULT_PLAY_MIN_S)
+        ctx = self._context(req, theme)
+        _played, _fixed, banned, start0 = self._state(req, ctx)
+
+        def crate_ids(c):
+            return self._crate_ids({"crate": c}, pm)
+        target = int(math.ceil(TS.CRATE_X * TS.need_records(max(0.0, ctx["L"] - start0) / 60.0, pm)))
+        th, steps, n_plans = theme, [], 0
+        while TS._available(crate_ids(th.get("crate") or {}), banned) < target and time.time() - t0 < WIDEN_BUDGET_S:
+            nxt, st = TS.widen(th, crate_ids, banned)
+            if nxt is None:
+                break
+            th, steps = nxt, steps + st
+        out = self._plan_once(req, th)
+        n_plans += 1
+        best = (out, th, list(steps))
+
+        def rank(o):
+            return (bool(o.get("finished")), float(o.get("end_s") or 0.0), len(o.get("slots") or []))
+        while not out.get("finished") and time.time() - t0 < WIDEN_BUDGET_S:
+            nxt, st = TS.widen(th, crate_ids, banned)
+            if nxt is None:
+                break                                 # (the ladder ran out: the plan's own warning stands)
+            th, steps = nxt, steps + st
+            out = self._plan_once(req, th)
+            n_plans += 1
+            if rank(out) > rank(best[0]):
+                best = (out, th, list(steps))
+        out, th, used = best
+        out["widened"] = used
+        out.setdefault("timing", {}).update({"widen_s": round(time.time() - t0, 3), "plans": n_plans})
+        if used:
+            out["theme_used"] = th
+            words = ", ".join(s["what"] for s in used)
+            out["warnings"] = [{"bad": False, "widened": len(used),
+                                "text": f"A night like these: the crate was widened to " + ("finish the night" if out.get("finished") else "go further")
+                                        + f" ({words}): {used[0]['from']} â†’ {used[-1]['records']} records, {used[-1]['available']} not played yet."}] \
+                + list(out.get("warnings") or [])
+        return out
+
+    def _plan_once(self, req, theme):
         ctx = self._context(req, theme)
         t0 = time.time()
         tb = self._table(theme, ctx["play_min"], ctx)
@@ -1641,7 +1955,10 @@ class Planner:
         F = self.facts
         n = len(tb["ids"])
         es = sorted(F[i].e for i in tb["ids"])
+        grp = [str(w).strip() for w in (theme.get("crate") or {}).get("groupsIn") or [] if str(w).strip()]
         return {"crate": n, "pairs": tb["pairs"], "per_record": round(tb["pairs"] / n, 1) if n else 0.0,
+                # (the crate's records from each of your folders / setlists it asks for)
+                "groups": {g: sum(1 for i in tb["ids"] if g.lower() in F[i].groups) for g in grp},
                 "bpm": [round(tb["bpms"][0], 1), round(tb["bpms"][-1], 1)] if n else None,
                 "energy": [round(es[0], 3), round(es[-1], 3)] if n else None, "timing": {"table_s": round(time.time() - t0, 3)}}
 
@@ -1652,9 +1969,10 @@ class Planner:
         from lib.dj.themestore import infer
         pm = float(req.get("play_min_s") or DEFAULT_PLAY_MIN_S)
         length_min = min(max(float(req.get("length_min") or 90.0), LENGTH_MIN[0]), LENGTH_MIN[1])
-
+        # (records the night cannot play - played tonight, not tonight - do not count toward the crate's target)
+        banned = {int(i) for i in (req.get("played_ids") or []) + (req.get("exclude_ids") or [])}
         out = infer(self.facts, [int(i) for i in req.get("example_ids") or []],
-                    lambda crate: self._crate_ids({"crate": crate}, pm), length_min, pm, name=req.get("name"))
+                    lambda crate: self._crate_ids({"crate": crate}, pm), length_min, pm, name=req.get("name"), banned=banned)
         th = out.get("theme")
         if th is not None:
             th["examples"] = [int(i) for i in req.get("example_ids") or []]
@@ -1688,17 +2006,22 @@ class PlannerProcess:
 
     REQUEST (all optional except where noted):
       op            "plan" | "replan" | "rejoin" | "seam" | "crate" | "infer" | "presets" | "ping"
-                    (crate: theme, play_min_s -> {crate, pairs, per_record, bpm, energy}, the NIGHT tab's live count;
-                    infer: example_ids, length_min, play_min_s, name? -> {theme, widened, crate, need, missing},
-                    "a night like these" - lib/dj/themestore.infer)
+                    (crate: theme, play_min_s -> {crate, pairs, per_record, groups: {name: records} for the crate's
+                    groupsIn, bpm, energy}, the NIGHT tab's live count;
+                    infer: example_ids, length_min, play_min_s, name?, played_ids?, exclude_ids? -> {theme, widened,
+                    crate, available, need, missing}, "a night like these" - lib/dj/themestore.infer; played and
+                    excluded records do not count toward the crate's target)
       theme.keys_mode  "veto" (the default and today's planner) | "close" | "wander" | "lift": a light factor on the
                     search's seam score, never a veto (KEYS_MODES above)
       seq           any; echoed, so a caller can drop a stale answer
-      theme         a theme object (the builder's shape: name, crate, leans, chapters, keys) or a preset's name
+      theme         a theme object (the builder's shape: name, crate, leans, chapters, keys) or a preset's name;
+                    crate.groupsIn: your folders / setlists by name (any of; a record carries "@name" for the leans);
+                    chapters[].dims: mood, vocals, hypnotic, hardness, mode, percussive courses (CH_DIMS)
       preset        a preset's name (when no theme)
       length_min    the night's length (10..480; default the theme's length, else 90)
       play_min_s    the record player's minimum play (the PACE dial; default 210)
-      seed          the night seed (1 = no noise, as in the builder); fresh (rest records played in 30 days, default
+      seed          the night seed (1 = no noise, as in the builder; any other a factor 1 +- NOISE per record, BUILD's new
+                    night); fresh (rest records played in 30 days, default
                     true); spacing (records between two by one artist, default 6)
       beam, expand  the search's sizes (default 60, 12)
       played_ids    ids played tonight, in order (never again; the artist spacing reads them)
@@ -1725,7 +2048,11 @@ class PlannerProcess:
       into plan_ids or null), skipped: [{id, title, why}], and queued_refused (why) when the user's record cannot be a
       record (too short for the minimum play: the plan goes on without it). A replan with plan_ids and a rejoin add
       kept_ids (the previous plan's slots kept, in order) and kept_stop ({id, why}: the slot the kept order stopped
-      at, or null). seam answers {seam: SEAM | null, play_s}.
+      at, or null). seam answers {seam: SEAM | null, play_s}. A plan / replan of an UNEDITED "like these" theme (its
+      examples and ladder, not inferred.edited) adds widened: [{what, records, from, available, by}] (the rungs the
+      planner climbed to finish the night, possibly none), timing.widen_s / timing.plans, and - when it widened -
+      theme_used (the theme it planned, its crate and inferred.ladder moved on: the NightPlan keeps it) and a warning
+      that says so.
     SLOT: {id, title, artist, bpm, camelot, energy, sung, chapter, chapter_name, start_s, play_s, end_s, cue_s
       (exact, not rounded: the Director may pass it back as fixed[].cue_s), fixed, user, target: {energy, bpm, dims},
       score, matched: [words], in: SEAM | null (the seam from the slot before), alts: [{id, title, artist, bpm,

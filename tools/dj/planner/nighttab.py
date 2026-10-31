@@ -27,7 +27,11 @@ KEYS_HEAD_TIP = ("KEYS: how the night moves through keys - a light lean on the p
                  "the player's key veto stands in every mode. The keys were rescanned 2026-10-28 (key v2, 0.825 exact "
                  "against Beatport). The presets plan as before until you pick a mode.")
 DIM_TIPS = {"mood": "mood: the record's valence rank (0 dark .. 1 bright)", "vocals": "vocals: the share of the record that sings (its stems)",
-            "hypnotic": "hypnotic: the record's hypnotic rank", "hardness": "hardness: the record's hardness rank"}
+            "hypnotic": "hypnotic: the record's hypnotic rank", "hardness": "hardness: the record's hardness rank",
+            "mode": "mode: minor 0 .. major 1, from the key reading (key v2, 88 % right on the truth set; an unsure reading "
+                    "sits nearer the middle); 0.5 = either",
+            "percussive": "percussive: melodic 0 .. percussive 1, the drums' share of drums + melody in the record's stems, "
+                          "ranked across the library"}
 VOCALS = ("any", "none", "some", "lots")
 VOCALS_TIPS = {"any": "any record, sung or not", "none": "only records that do not sing (5 % of the record at most, by the stems)",
                "some": "records that sing at most a third of the time", "lots": "records that sing a quarter of the time or more"}
@@ -187,7 +191,7 @@ class Chip(QPushButton):
 
 
 class DimsDialog(QDialog):
-    """A chapter's optional courses (mood, vocals, hypnotic, hardness): each on or off, from -> to."""
+    """A chapter's optional courses (mood, vocals, hypnotic, hardness, mode, percussive): each on or off, from -> to."""
 
     def __init__(self, parent, dims):
         super().__init__(parent)
@@ -214,7 +218,7 @@ class DimsDialog(QDialog):
         return {k: [round(a.value(), 2), round(b.value(), 2)] for k, (cb, a, b) in self.rows.items() if cb.isChecked()}
 
 
-DIM_SHORT = {"mood": "mood", "vocals": "vox", "hypnotic": "hyp", "hardness": "hard"}
+DIM_SHORT = {"mood": "mood", "vocals": "vox", "hypnotic": "hyp", "hardness": "hard", "mode": "maj", "percussive": "perc"}
 
 
 def _f2(x):
@@ -289,7 +293,8 @@ class ChapterRow(QWidget):
         if comp is not None:
             self.leans.setCompleter(comp)
         self.dims_btn = _small(QPushButton(dims_words(self.dims)))
-        self.dims_btn.setToolTip("optional courses through the chapter: mood, vocals, hypnotic, hardness (from → to)")
+        self.dims_btn.setToolTip("optional courses through the chapter: mood, vocals, hypnotic, hardness, mode (minor → major), "
+                                 "percussive (melodic → percussive), from → to")
         self.dims_btn.setMaximumWidth(200)
         self.dims_btn.clicked.connect(self._edit_dims)
         # what the plan really asks of the chapter when the ENERGY dial leans it (empty on hold)
@@ -373,7 +378,7 @@ class NightEditor(QWidget):
     among the dials). Every edit emits `changed`; theme() reads the widgets back into the planner's theme dict."""
     changed = pyqtSignal()
     keys_changed = pyqtSignal(str)
-    LIMITS = {"genres": 10, "moods": 8, "tags": 12}     # (the floor: the most common words that fit 1280x800 unscrolled;
+    LIMITS = {"genres": 10, "moods": 8, "tags": 12, "groups": 8}     # (the floor: the most common words that fit 1280x800 unscrolled;
     #                                                      a taller CRATE shows more - _fit_chips - and "+N" shows the rest)
 
     def __init__(self, parent=None):
@@ -381,16 +386,16 @@ class NightEditor(QWidget):
         self.setStyleSheet(CHIP_STYLE)
         self._base = None
         self._filling = False
-        self.vocab = {"genres": [], "moods": [], "tags": []}
+        self.vocab = {"genres": [], "moods": [], "tags": [], "groups": []}
         self.completer_words = []
-        self._more = {"genres": False, "moods": False, "tags": False}
+        self._more = {"genres": False, "moods": False, "tags": False, "groups": False}
         self._lim = dict(self.LIMITS)                  # the caps the room allows now (never under LIMITS)
         self._fit_timer = QTimer(self)
         self._fit_timer.setSingleShot(True)
         self._fit_timer.setInterval(60)                # (a window drag sends many resizes: one refill after it settles)
         self._fit_timer.timeout.connect(self._fit_chips)
-        self.chips = {"genres": {}, "moods": {}, "tags": {}}     # the chips that show, in their order (+ "\0more")
-        self._pool = {"genres": {}, "moods": {}, "tags": {}}      # every chip built, by word (the hidden ones kept)
+        self.chips = {"genres": {}, "moods": {}, "tags": {}, "groups": {}}     # the chips that show, in their order (+ "\0more")
+        self._pool = {"genres": {}, "moods": {}, "tags": {}, "groups": {}}      # every chip built, by word (the hidden ones kept)
         self._more_btn = {}
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 0, 0, 0)
@@ -536,8 +541,10 @@ class NightEditor(QWidget):
         for key, tip in (("genres", "genres: a click = in (a record must carry one of the lit ones), again = out (no record "
                                     "carrying it), again = off; right-click = out"),
                          ("moods", "moods (any of): only records carrying one of the lit moods; none lit = any mood"),
-                         ("tags", "tags: a click = in (a record must carry every lit one), again = out, again = off; right-click = out")):
-            g.addWidget(_dim(key, tip, w=52), r, 0, Qt.AlignmentFlag.AlignTop)
+                         ("tags", "tags: a click = in (a record must carry every lit one), again = out, again = off; right-click = out"),
+                         ("groups", "yours: your own categories - the music folders and the setlists, by name (any of): only "
+                                    "records in one of the lit ones; none lit = any")):
+            g.addWidget(_dim("yours" if key == "groups" else key, tip, w=52), r, 0, Qt.AlignmentFlag.AlignTop)
             cg = FlowLayout(3)
             self.chip_grids[key] = cg
             g.addLayout(cg, r, 1)
@@ -584,12 +591,15 @@ class NightEditor(QWidget):
         return w
 
     # -- the vocabulary (the library's real words) -----------------------------------------------------------------------
-    def set_vocab(self, genres, moods, tags):
-        """[(word, n)] per group, most common first (the library the tab plays from)."""
-        self.vocab = {"genres": list(genres), "moods": list(moods), "tags": list(tags)}
+    def set_vocab(self, genres, moods, tags, groups=()):
+        """[(word, n)] per group, most common first (the library the tab plays from); `groups`: your folders and setlists
+        by name (lib/dj/setplanner.vocab)."""
+        self.vocab = {"genres": list(genres), "moods": list(moods), "tags": list(tags), "groups": list(groups)}
         seen = []
         for grp in ("genres", "moods", "tags"):
             seen += [w for w, _n in self.vocab[grp]]
+        from lib.dj.setplanner import GROUP_MARK
+        seen += [GROUP_MARK + w.lower() for w, _n in self.vocab["groups"]]     # (a folder / setlist as a lean: "@groovy")
         self.completer_words = sorted(set(seen))
         from PyQt6.QtCore import QStringListModel
         self.completer_model = QStringListModel(self.completer_words, self)   # (one model for every row's completer)
@@ -647,7 +657,7 @@ class NightEditor(QWidget):
             if wd not in keep and not c.isHidden():
                 c.setVisible(False)
         self.chips[key] = {}
-        tri = key != "moods"
+        tri = key not in ("moods", "groups")
         for wd in shown:
             n = counts.get(wd)
             tip = (f"{n} records carry ‘{wd}’" if n is not None else f"‘{wd}’ (not among the library's common words)") + \
@@ -811,6 +821,8 @@ class NightEditor(QWidget):
             ts = {w.lower(): "in" for w in c.get("tagsIn") or []}
             ts.update({w.lower(): "out" for w in c.get("tagsOut") or []})
             self._fill_chips("tags", ts)
+            shown = {w.lower(): w for w, _n in self.vocab["groups"]}          # (your names as the library spells them)
+            self._fill_chips("groups", {shown.get(str(w).lower(), str(w)): "in" for w in c.get("groupsIn") or []})
             bpm = (list(c.get("bpm") or [80, 135]) + [80, 135])[:2]
             en = (list(c.get("energy") or [0, 100]) + [0, 100])[:2]
             for s, val in ((self.bpm_lo, bpm[0]), (self.bpm_hi, bpm[1])):
@@ -878,6 +890,7 @@ class NightEditor(QWidget):
         c["genresIn"], c["genresOut"] = lit("genres", "in", "genresIn"), lit("genres", "out", "genresOut")
         c["moodsIn"] = lit("moods", "in", "moodsIn")
         c["tagsIn"], c["tagsOut"] = lit("tags", "in", "tagsIn"), lit("tags", "out", "tagsOut")
+        c["groupsIn"] = lit("groups", "in", "groupsIn")
         lo, hi = sorted((self.bpm_lo.value(), self.bpm_hi.value()))
         c["bpm"] = [round(lo, 1), round(hi, 1)]
         elo, ehi = sorted((self.en_lo.value(), self.en_hi.value()))
@@ -1013,6 +1026,8 @@ def warning_words(warnings, chapters):
             out.append((word, text, "red" if bad else "amber"))
         elif w.get("alts") is not None:
             out.append(("thin crate", text, "amber"))
+        elif w.get("widened") is not None:
+            out.append(("crate widened", text, "amber"))       # (a "like these" crate the planner widened to finish the night)
         elif text.startswith("The crate holds"):
             out.append(("crate too small", text, "red"))
         elif text.startswith("The route runs out"):

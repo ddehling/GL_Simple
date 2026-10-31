@@ -99,6 +99,11 @@ LEVEL_KEYS = {
     "singularity": "singularity_level", "spots": "spots_level",
     "club_rain": "rain_level", "voronoi_sphere": "orb_level",   # it reads orb_level, like balls
     "audio_curve": "audiocurve_level",
+    "aurora": "aurora_level", "pinwheel": "pinwheel_level", "datastream": "datastream_level",
+    "jellies": "jelly_level", "clockwork": "clockwork_level", "tide": "swell_level",
+    "sunflower": "sunflower_level", "neural": "neural_level", "honeycomb": "honeycomb_level",
+    "spectrum_rings": "ringeq_level", "magma": "magma_level", "orrery": "orrery_level",
+    "pulse_line": "pulse_level", "wisps": "wisps_level", "bokeh": "bokeh_level",
 }
 
 

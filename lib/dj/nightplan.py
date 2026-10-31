@@ -404,6 +404,8 @@ class NightPlan:
         self.error = None
         self._fail_n = 0
         self.planner_down = False
+        if resp.get("widened") and isinstance(resp.get("theme_used"), dict):
+            self._adopt_widened(resp["theme_used"], resp["widened"])     # (kept even when the decks moved: the re-ask uses it)
         sent = [int(s["id"]) for s in resp.get("slots") or []]                  # (the answer as the planner sent it)
         sent_fixed = sum(1 for s in resp.get("slots") or [] if s.get("fixed"))
         slots = list(resp.get("slots") or [])
@@ -513,6 +515,25 @@ class NightPlan:
         self.d._event((f"the night is planned: {self.name}, {n_ahead} records, {len(self.chapters)} chapters"
                        if first else f"the plan ({pend['trigger'][:50]}): {n_ahead} records ahead")
                       + (f", {len(dropped)} out" if dropped else "") + f" [{cost['wall_s']:.1f} s]")
+
+    def _adopt_widened(self, used, steps):
+        """THE PLANNER WIDENED A "LIKE THESE" CRATE to finish the night (setplanner.Planner._plan, 2026-10-30): its crate
+        and its ladder become this night's, so every later re-plan starts from the widened crate (and climbs on from
+        there only if it must). Only the crate and the inference record are taken - the chapters the planner saw carry
+        the ENERGY dial's lean (effective_theme), the snapshot does not."""
+        if [int(i) for i in used.get("examples") or []] != [int(i) for i in self.theme.get("examples") or []]:
+            return                                    # (not this night's theme)
+        if (self.theme.get("inferred") or {}).get("edited"):
+            return
+        self.theme["crate"] = json.loads(json.dumps(used.get("crate") or self.theme.get("crate")))
+        if isinstance(used.get("inferred"), dict):
+            self.theme["inferred"] = json.loads(json.dumps(used["inferred"]))
+        self.d._event(f"the plan widened the crate of {self.name} to finish the night: " + ", ".join(str(s.get("what")) for s in steps)
+                      + f" ({steps[0].get('from')} → {steps[-1].get('records')} records)")
+
+    def widened(self):
+        """The crate widenings the planner made for this night (the inference's own are in theme.inferred.widened too)."""
+        return [w for w in (self.theme.get("inferred") or {}).get("widened") or [] if w.get("by") == "plan"]
 
     # -- the hook: the next record of the plan ----------------------------------------------------------------------------
     def _first_planned(self):
@@ -1021,7 +1042,8 @@ class NightPlan:
                 "pending": (self.pending or {}).get("trigger"), "error": self.error, "finished": self.finished, "dead_end": self.dead_end,
                 "planner_down": self.planner_down, "failures": self._fail_n,
                 "changes": [{k: c.get(k) for k in ("t", "seq", "trigger", "op", "night_s")} for c in self.changes[-8:]],
-                "crate": len(self.crate_ids), "keys": getattr(self, "keys_words", None) or "veto only"}
+                "crate": len(self.crate_ids), "keys": getattr(self, "keys_words", None) or "veto only",
+                "widened": [str(w.get("what")) for w in self.widened()]}
 
     def then_rows(self, now_bpm=None):
         """THE PLAN's THEN rows after UP NEXT: [(seconds from now, text, sub, key, id)] - the planned records in order, a

@@ -339,6 +339,21 @@ depth-based approach — new club effects must too.
 | 0.35 | club_tesla | tesla_level | branching hub-to-rim lightning on hard kicks + treble corona |
 | 0.30 | fireworks_burst one-shot | (event) | audio_balls at a distinct depth |
 | 0.28 | club_fibers | fiber_level | Geiss 'Bright Fiber Matrix' port: fibers whip-crack + flood on every kick |
+| 0.93 | club_aurora | aurora_level | auroral curtains round the arc: sharp hem, strip-aligned rays; kicks surge them outward |
+| 0.89 | club_bokeh | bokeh_level | soft out-of-focus discs drifting; a beat pulls one into focus |
+| 0.87 | club_wisps | wisps_level | two-colour warped smoke rising from a coal bed at the hub, sparks riding the filaments |
+| 0.86 | club_magma | magma_level | 4.6 ft lava plates, glowing seams, embers swelling per plate, big hot/cool zones drifting |
+| 0.84 | club_tide | swell_level | wild swells rolling outward: per-crest colour, foam lip, churned trail, spray at the rim (NOT tide_level - that is the ocean water line) |
+| 0.83 | club_honeycomb | honeycomb_level | 3 ft hex cells; kicks flood ripples of honey cell by cell |
+| 0.77 | club_sunflower | sunflower_level | golden-spiral seed head, every seed tied to its own band, petals at the rim |
+| 0.76 | club_jellies | jelly_level | bioluminescent jellyfish: rimmed bells, canals, lobes, beaded tentacles; kicks pulse them |
+| 0.71 | club_orrery | orrery_level | sun + five sunlit planets on BPM-locked orbits, ringed planet, moons, starfield |
+| 0.64 | club_datastream | datastream_level | glyph rain along the strips; kicks fire a packet ring |
+| 0.59 | club_spectrum_rings | ringeq_level | 16-ring radial analyser, peak caps |
+| 0.57 | club_pinwheel | pinwheel_level | turbine blades ticking per beat; glow + speed-length fading trail |
+| 0.53 | club_clockwork | clockwork_level | four toothed wheels in four hues ticking on beat divisions |
+| 0.51 | club_neural | neural_level | living nerve net: nodes born/die, axons rewire, coloured spikes cascade |
+| 0.46 | club_pulse_line | pulse_level | eight-band ECG monitor bent round the fan |
 | 0.05 | club_strobe | beat_flash_amount / strobe_* | per-flash stencils (wedges/arcs/checker), full-bright cells only (never full-field, never dim washes) |
 
 Club conventions: every pattern self-gates on its LEVEL PARAM (a normal

@@ -339,6 +339,8 @@ def main():
         print("PICKER", flush=True)
         k = kinds(tab)
         check(k["preset"] == preset_names(), "the presets are listed, in order", ", ".join(k["preset"]))
+        check(len(k["preset"]) >= 17 and tab.night_pick.maxVisibleItems() >= tab.night_pick.count(),
+              "the open picker shows every entry without scrolling", f"{tab.night_pick.count()} entries, {tab.night_pick.maxVisibleItems()} visible")
         check(GATE_SAVED in k["saved"], "a saved theme is listed", ", ".join(k["saved"]))
         check(k["brain"] == list(PICKER_THEMES), "the brain's themes are listed (no plan, the DJ picks)")
         check(tab.right_tabs.currentWidget() is tab.night_tab and tab.right_tabs.isTabVisible(0)
@@ -382,7 +384,7 @@ def main():
 
         def chip_slack():
             """The empty room under the last chip row of the CRATE pane (px)."""
-            last = max((c.geometry().bottom() for c in ed.chips["tags"].values()), default=0)
+            last = max((c.geometry().bottom() for d in ed.chips.values() for c in d.values() if c.isVisible()), default=0)
             return sa.viewport().height() - last
         n12, th12 = chip_counts(), ed.theme()
         check(ed._lim == ed.LIMITS, "at 1280x800 the CRATE chips are the floor (LIMITS)", f"{ed._lim} {n12}")
@@ -515,6 +517,24 @@ def main():
                   f"{src.itemText(1)}")
         else:
             check(src.count() == 1 and ed.theme()["crate"].get("source") is None, "CRATE › from: the whole library (no playlists here)")
+        # YOURS (2026-10-30): your folders and setlists as chips; one lit is the crate's groupsIn, the planner counts it
+        from tools.dj.planner.nighttab import DimsDialog
+        from lib.dj.setplanner import CH_DIMS
+        gchips = [c for c in ed.chips["groups"].values() if isinstance(c, Chip)]
+        check(len(gchips) >= 3, "CRATE › yours: your folders and setlists are chips", ", ".join(c.word for c in gchips[:8]))
+        if gchips:
+            gc = gchips[0]
+            gc.click()
+            th_g = ed.theme()
+            cnt = tab._night_dir()._planner_proc().request({"op": "crate", "theme": th_g, "play_min_s": 210.0})
+            gc.click()
+            check(th_g["crate"].get("groupsIn") == [gc.word] and cnt.get("ok") and 0 < (cnt.get("groups") or {}).get(gc.word, 0) == cnt.get("crate")
+                  and ed.theme()["crate"].get("groupsIn") == [], f"a lit '{gc.word}' is the crate's groupsIn, counted by the planner, and off again",
+                  f"{th_g['crate'].get('groupsIn')} -> {cnt.get('crate')} records {cnt.get('groups')}")
+        dd = DimsDialog(ed, {"mode": [0.1, 0.2], "percussive": [0.7, 0.8]})
+        check(list(dd.rows) == list(CH_DIMS) and dd.dims() == {"mode": [0.1, 0.2], "percussive": [0.7, 0.8]},
+              "STORY › courses…: mode and percussive are courses beside mood / vocals / hypnotic / hardness", str(list(dd.rows)))
+        dd.deleteLater()
         wait(lambda: not tab._night_debounce.isActive(), 5, "")
         # two crate counts asked back to back (the second the newer): the count settles on the newer one, whatever order
         # the answers land in (the night timer held, so only these two are asked)

@@ -264,6 +264,7 @@ class Director:
         self._planner_lock = threading.Lock()
         self._night_posted = []          # the web page's night presses, waiting for the Director's thread (night_async)
         self._night_lock = threading.Lock()
+        self._like = None                # the last "like these" press: {ids, name, out (inferring), error, tok} (night_like)
         self.set_skips = set()           # track ids: not tonight
         self.via_ids = set()             # UP NEXT entries that are a route's intermediates
         self._hz_sig = None              # the triggers' signature at the last plan
@@ -570,12 +571,13 @@ class Director:
             except Exception:
                 pass
 
-    def set_theme_plan(self, theme, length_min=None, seed=None):
+    def set_theme_plan(self, theme, length_min=None, seed=None, source=None):
         """START WITH A THEME: the whole night planned (a preset's name, a theme JSON file in the builder's shape, or the
         theme dict). Before START the plan is made now, off-thread, and START opens on its first record when the answer
         has come (else the brain's opener, and the plan carries on from it); while a record plays the rest is re-planned
         from slot +2. None / "" = no theme: START plays exactly as before. `length_min`: the night's length (default the
-        theme's, else the LENGTH dial). Returns (ok, words)."""
+        theme's, else the LENGTH dial); `source`: the plan's source word in place of resolve_theme's ("like": a night
+        like these). Returns (ok, words)."""
         if theme is None or (isinstance(theme, str) and not theme.strip()):
             self.plan = None
             if self.player is not None:
@@ -590,7 +592,7 @@ class Director:
         if length_min is None:
             length_min = th.get("length") or (ARC_LEN_S[self.dials["length"]] / 60.0)
         old = self.plan
-        pl = NightPlan(self, th, length_min, seed=seed, source=src)
+        pl = NightPlan(self, th, length_min, seed=seed, source=source or src)
         if old is not None:
             # (a theme picked during the night: the night's clock, what it skipped and what BAD said carry on)
             pl.offset_s, pl.clock0 = old.offset_s, old.clock0
@@ -617,8 +619,9 @@ class Director:
     NIGHT_LENGTH_DIAL = {round(v / 60.0): k for k, v in ARC_LEN_S.items()}   # minutes -> the LENGTH dial's value
 
     def night_async(self, op="plan", theme=None, length_min=None):
-        """op "plan" (theme = a preset's name, length_min), "clear", or "length" (length_min: the night on now re-planned
-        to it from slot +2). Never blocks."""
+        """op "plan" (theme = a preset's name, length_min), "clear", "length" (length_min: the night on now re-planned
+        to it from slot +2), or "like" (theme = 2 to 5 record ids: a night like these, inferred in the planner's process,
+        then planned as "plan" is). Never blocks."""
         item = (str(op), theme, length_min)
         if self.running:
             with self._night_lock:
@@ -628,8 +631,77 @@ class Director:
         return True
 
     def night_posted(self):
-        """A press waiting for the Director's thread (the page shows it as planning)."""
-        return bool(self._night_posted)
+        """A press waiting for the Director's thread, or a "like these" inference still out (the page shows it as planning)."""
+        lk = self._like
+        return bool(self._night_posted) or bool(lk and lk.get("out"))
+
+    def night_like(self):
+        """The last "like these" press for the page: {ids, name, pending (inferring), error} or None."""
+        lk = self._like
+        if lk is None:
+            return None
+        return {"ids": list(lk["ids"]), "name": lk["name"], "pending": bool(lk.get("out")), "error": lk.get("error")}
+
+    def _night_like(self, ids, L):
+        """A NIGHT LIKE THESE from the show's web page (2026-10-30; the planner app's _night_infer): the theme inferred in
+        the planner's process (lib/dj/themestore.infer through its "infer" op), its answer posted back to this thread
+        and planned by set_theme_plan - before START the whole night, during it from slot +2."""
+        from lib.dj.themestore import _short
+        ids = [int(i) for i in dict.fromkeys(ids or [])][:5]
+        name = "Like " + _short(self.title(ids[0])) + (f" +{len(ids) - 1}" if len(ids) > 1 else "") if ids else "Like these"
+        tok = time.time()
+        self._like = {"ids": ids, "name": name, "out": True, "error": None, "tok": tok}
+        L = L or (ARC_LEN_S[self.dials["length"]] / 60.0)
+        req = {"op": "infer", "example_ids": ids, "length_min": float(L), "play_min_s": PLAY_MIN_S.get(self.dials.get("pace"), 210.0),
+               "name": name, "played_ids": self._night_gone(), "exclude_ids": sorted(int(x) for x in self.set_skips)}
+
+        def done(resp):
+            # (on the planner's request thread: the answer is applied on the Director's own thread, as a press is)
+            item = ("like_answer", (tok, resp), L)
+            if self.running:
+                with self._night_lock:
+                    self._night_posted.append(item)
+            else:
+                self._night_do(*item)
+        try:
+            self._planner_proc().submit(req, done)
+        except Exception as e:  # noqa: BLE001
+            self._like.update(out=False, error=f"the planner is down: {e}")
+        self._event(f"night: {name} - inferring the night from {len(ids)} records")
+
+    def _night_gone(self):
+        """The records a night planned now cannot play: played tonight and the decks' own (the record playing, the one
+        after it) - a "like these" crate's count toward its target leaves them out (2026-10-30)."""
+        out = [int(t) for t, _w in list(self.played)]
+        p = self.player
+        try:
+            if p is not None:
+                from lib.dj.nightplan import NightPlan
+                rec = p.songs.get(p.record) if p.record else None
+                nxt = NightPlan._next_of(p)
+                out += [int(r.track.id) for r in (rec, nxt) if r is not None]
+        except Exception:
+            pass
+        return list(dict.fromkeys(out))
+
+    def _night_liked(self, tok, resp, L):
+        lk = self._like
+        if lk is None or lk.get("tok") != tok:
+            return                                    # (a newer choice, or cleared: the answer is dropped)
+        lk["out"] = False
+        th = resp.get("theme") if resp.get("ok") else None
+        if th is None:
+            lk["error"] = str(resp.get("error") or "no theme came back")[:200]
+            self._event(f"like these: {lk['error']}")
+            return
+        th["length"] = float(L)
+        ok, words = self.set_theme_plan(th, length_min=L, source="like")
+        if not ok:
+            lk["error"] = str(words)[:200]
+            return
+        wid = resp.get("widened") or []
+        self._event(f"night: {lk['name']} - {resp.get('crate')} records" + (f", widened {len(wid)}x" if wid else "")
+                    + (f"; no crate holds {', '.join(resp['missing'])}" if resp.get("missing") else ""))
 
     def _night_step(self):
         with self._night_lock:
@@ -646,11 +718,25 @@ class Director:
         if getattr(self, "_planner_closed", False):
             return
         pl = self.plan
+        if op == "like_answer":
+            self._night_liked(*theme, length_min)
+            return
         if op == "clear":
+            self._like = None                         # (an inference still out is dropped with it)
             if pl is not None:
                 self.set_theme_plan(None)
             return
         L = float(length_min) if length_min else None
+        if op == "like":
+            ids = [int(i) for i in dict.fromkeys(theme or [])][:5]
+            lk = self._like
+            if lk is not None and lk.get("out") and lk["ids"] == ids:
+                return                                # (the same records, still inferring: a press replayed after START)
+            if (pl is not None and pl.source == "like" and [int(i) for i in pl.theme.get("examples") or []] == ids
+                    and (L is None or abs(pl.length_min - L) < 0.5)):
+                return                                # (that night is the plan already)
+            self._night_like(ids, L)
+            return
         if op == "length":
             if pl is None or L is None or abs(pl.length_min - L) < 0.5:
                 return
@@ -665,6 +751,7 @@ class Director:
             return
         if pl is not None and str(pl.source or "").lower() == str(theme or "").lower() and (L is None or abs(pl.length_min - L) < 0.5):
             return                                    # (that night is the plan already: a press replayed after START)
+        self._like = None                             # (a preset picked over a "like these" still inferring: the newer wins)
         self.set_theme_plan(theme, length_min=L)
 
     def plan_wait(self, timeout=120.0):

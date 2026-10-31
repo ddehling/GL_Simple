@@ -660,6 +660,7 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self.night_pick.setMinimumWidth(210)
         # (the box grows to its longest entry - "✎ <name> (unsaved)" included: the suffix is the part that says so)
         self.night_pick.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.night_pick.setMaxVisibleItems(48)        # (17 presets, your themes and the DJ's 9 in one open list, no scrolling)
         self.NIGHT_PICK_TIP = ("the night: a planned night (the presets, then the themes you saved - right-click one to delete it), "
                                "or no plan, the DJ picks record by record from one of its themes; applies on pick")
         self.night_pick.setToolTip(self.NIGHT_PICK_TIP)
@@ -2028,28 +2029,27 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         self._night_send()
 
     def _night_vocab(self):
-        """The CRATE chips are the library's own words: genres, ML moods, tags (by how many records carry each)."""
+        """The CRATE chips are the library's own words: genres (Beatport's compound names whole), ML moods, tags, and your
+        folders and setlists (by how many records carry each; lib/dj/setplanner.vocab, the words the planner reads)."""
         try:
             lib = self._library()
         except Exception:
             return
-        g, mo, tg = {}, {}, {}
-        for t in lib:
-            gs = {x.lower() for x in (getattr(t, "genre_set", None) or ())}
-            ms = {x.lower() for x in (getattr(t, "ml_moods", None) or ())}
-            for x in gs:
-                g[x] = g.get(x, 0) + 1
-            for x in ms:
-                mo[x] = mo.get(x, 0) + 1
-            for x in (getattr(t, "all_tags", None) or ()):
-                x = x.lower()
-                if x not in gs and x not in ms:
-                    tg[x] = tg.get(x, 0) + 1
+        from lib.dj.setplanner import vocab
+        lists = {}
+        try:
+            db = self._db()
+            for sid, name in db.conn.execute("SELECT id, name FROM setlists").fetchall():
+                lists[str(name)] = [int(r[0]) for r in db.conn.execute("SELECT track_id FROM setlist_entries WHERE setlist_id = ?", (sid,)).fetchall()]
+        except Exception:
+            pass
+        v = vocab(lib, lists)
+        g, mo, tg, gr = v["genres"], v["moods"], v["tags"], v["groups"]
         rank = lambda d, k: sorted(((w, n) for w, n in d.items() if n >= k), key=lambda wn: (-wn[1], wn[0]))  # noqa: E731
-        sig = (len(lib), len(g), len(mo), len(tg))
+        sig = (len(lib), len(g), len(mo), len(tg), tuple(sorted(gr.items())))
         if sig != getattr(self, "_vocab_sig", None):
             self._vocab_sig = sig
-            self.night_editor.set_vocab(rank(g, 3), rank(mo, 3), rank(tg, 5))
+            self.night_editor.set_vocab(rank(g, 3), rank(mo, 3), rank(tg, 5), rank(gr, 3))
 
     def _like_ids(self):
         ids = []
@@ -2084,6 +2084,12 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         box = self._nbox
         req = {"op": "infer", "example_ids": [int(i) for i in ids], "length_min": float((keep or {}).get("length") or self._nlen),
                "play_min_s": PLAY_MIN_S.get(d.dials.get("pace"), 210.0)}
+        try:
+            # (what the night cannot play - played tonight, the decks', not tonight - does not count toward the crate)
+            req["played_ids"] = d._night_gone()
+            req["exclude_ids"] = sorted(int(x) for x in d.set_skips)
+        except Exception:
+            pass
         if keep is not None:
             req["name"] = keep.get("name")
         d._planner_proc().submit(req, lambda resp: box.__setitem__("infer", (tok, resp, keep)))
@@ -2122,6 +2128,34 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if self._placed and self._placed[0]:
             self.right_tabs.setCurrentWidget(self.night_tab)
         self._night_send()
+
+    def _night_adopt_widened(self, d, pl):
+        """THE PLANNER WIDENED THE "LIKE THESE" CRATE to finish the night (NightPlan._adopt_widened, 2026-10-30): the tab's
+        theme takes the widened crate and its ladder (the editor and the like-these line show it), and what was sent is
+        marked as that - the tab does not send it again (the plan already is it). Never over your edits."""
+        sel = self._nsel
+        th = sel.get("theme") or {}
+        if sel.get("edited") or not th.get("examples") or (th.get("inferred") or {}).get("edited"):
+            return
+        mine = th.get("inferred") or {}
+        theirs = pl.theme.get("inferred") or {}
+        if ([int(i) for i in th.get("examples") or []] != [int(i) for i in pl.theme.get("examples") or []]
+                or not theirs.get("ladder") or theirs.get("ladder") == mine.get("ladder")):
+            return
+        old_sig = self._night_sig(self._night_want(), self._brain_theme)
+        th = json.loads(json.dumps(th))
+        th["crate"] = json.loads(json.dumps(pl.theme.get("crate") or th.get("crate")))
+        th["inferred"] = json.loads(json.dumps(theirs))
+        sel["theme"] = th
+        new_sig = self._night_sig(self._night_want(), self._brain_theme)
+        for k, v in list(self._nsent.items()):
+            if v == old_sig:
+                self._nsent[k] = new_sig
+        self.night_editor.set_theme(th)
+        wid = [w for w in theirs.get("widened") or [] if w.get("by") == "plan"]
+        if wid:
+            self._night_say(f"the plan widened the crate to finish the night: {', '.join(w['what'] for w in wid)} "
+                            f"({wid[0]['from']} → {wid[-1]['records']} records)", 15.0)
 
     def _night_poll(self):
         """(the night timer, before START too) answers in, the night sent, the strip and the warnings drawn."""
@@ -2168,6 +2202,8 @@ QWidget#perform QListWidget { font-size: 9.5pt; }
         if inf is not None and inf[0] == self._nbox.get("infer_tok"):
             self._night_inferred(inf[1], inf[2])
         pl = d.plan if d is not None else None
+        if pl is not None and planned:
+            self._night_adopt_widened(d, pl)
         sp, rows = None, {}
         if pl is not None:
             sp = pl.status()

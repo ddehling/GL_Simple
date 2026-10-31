@@ -52,16 +52,16 @@ A theme is the prototype's object, unchanged:
 
 | Part | What it is |
 |---|---|
-| **Crate** | Which records may play at all: source (library or a playlist), genres to require or exclude, moods (any of), tags to require or exclude, tempo range, energy range, vocals (any / none / some / lots). |
+| **Crate** | Which records may play at all: source (library or a playlist), genres to require or exclude, moods (any of), tags to require or exclude, **your folders and setlists (any of, 2026-10-30: `groupsIn`)**, tempo range, energy range, vocals (any / none / some / lots). Genres read Beatport's compound names whole ("organic house / downtempo", section 2a). |
 | **Leans** | Weighted words that make a record a better fit (e.g. `downtempo 1.0, warm 0.6`). The crate filters records out; leans rank the ones that are left. |
-| **Story** | Chapters: a name, a share of the night, an energy course (from, to), a tempo course (as crate percentiles), and optional courses for mood, vocals, hypnotic and hardness, plus chapter leans. |
+| **Story** | Chapters: a name, a share of the night, an energy course (from, to), a tempo course (as crate percentiles), and optional courses for mood, vocals, hypnotic, hardness, **mode** (minor 0 → major 1) and **percussive** (melodic 0 → percussive 1) (the last two 2026-10-30, section 2a), plus chapter leans. |
 | **Keys** | veto / close / wander / lift (`keys_mode`). The keys were rescanned 2026-10-28 (key v2, 0.825 exact against Beatport), so the modes now score: a light factor on each seam in the planner's search, never a veto of its own. **veto** is the default and today's planner exactly; it is the only mode of a theme that does not set `keys_mode` (the presets' stored `keys` words are not read, so they plan as before until you pick a mode). **close** prefers Camelot distance 1 or less over the diagonal the veto still lets through; **wander** has no preference beyond the veto; **lift** prefers the +1 move on the wheel where a chapter's energy rises (+2 fits 0.55, under the player's veto, so it never blends). The player's veto (`KEY_BLEND`) stands in every mode. |
-| **Variety** | Night seed, rest for records played in the last 30 days, artist spacing. |
+| **Variety** | Night seed, rest for records played in the last 30 days, artist spacing. Seed 1 has no noise; every other seed scales each record's fit by 1 ± 0.25 and each seam's by 1 ± 0.15, so BUILD (a new seed) plans another night (section 2a). |
 | **Length** | Minutes. This becomes the LENGTH dial in record mode. |
 
 Four ways to fill one, all producing the same object:
 
-1. **Saved themes**: the presets (the builder's six, `setplanner.PRESETS`, in code and never deleted) and the
+1. **Saved themes**: the presets (the builder's six plus the eleven of 2026-10-30, section 2a; `setplanner.PRESETS`, in code and never deleted) and the
    ones you saved (the library DB's `themes` table, schema v17, with their seed and length). You pick one from a
    list, and it applies on pick. (The brain's nine `PICKER_THEMES` are the "no plan, the DJ picks" choices.)
 2. **The NIGHT tab** (decision 4, 2026-10-29): the crate / leans / chapters / keys editor, in the planner app's
@@ -76,8 +76,97 @@ Four ways to fill one, all producing the same object:
    example ids are stored with the theme and the theme is re-inferred on load, because every rank is relative
    to the library it was measured in (unless you edited it after the inference: then your edits are the theme).
    Built 2026-10-29 as `lib/dj/themestore.infer`, run in the planner's process (`op: "infer"`).
+   **The planner judges (2026-10-30).** The crate's count toward its target leaves out what the night cannot
+   play (played tonight, not tonight, the decks' records); the examples are often records played tonight. The
+   count is not the whole test, though. "Like Galapagos +2" during a night inferred 49 records (45 playable,
+   target 44), but from slot +1 (Waves) only 5 pairs led into the crate. Three were the playing record and two
+   examples already played. The other two were a dead end (Gathering of the Tribes, whose only pair was Waves)
+   and Aberrations in Blindness. The one record after that was Polo & Pan again, inside the artist spacing of
+   Dorothy, which had played. So the plan held 1 record and ran out at 0:13. Now an *unedited* inferred theme
+   whose plan does not reach its length is widened one more rung of the same ladder (`themestore.widen`,
+   `inferred.ladder`) and planned again in the same request. This repeats until the plan finishes, the ladder
+   runs out or `WIDEN_BUDGET_S` (4 s) is spent. That night: 3 rungs, 49 → 99 records, 18 planned, 4 plans in
+   0.08 s. The answer carries `widened` and `theme_used`. The NightPlan keeps that crate and ladder, so later
+   re-plans start from it, and the NIGHT tab and the web page show it. An edited theme or a preset is never
+   widened: its warning says how to fix it.
 4. **A playlist** is a crate source, as it is in the builder. A playlist is still a pool and never a planned night
    (section 5 keeps the two apart).
+
+### 2a. The seventeen presets, finer words, two more story controls (2026-10-30)
+
+Built from the user's picks on the category survey (scratchpad `cats/`: what the library's records carry, which
+measures can steer a chapter, 15 drafted themes planned through the real planner).
+
+**Eleven new presets** after the builder's six, each tuned until it plans finished at 90 and 180 min, seeds 1-3, with
+no red chapter (seed 1 has no noise, so it is the "same" night the gates plan):
+
+| Preset | Crate | Pairs / record | Records 90 / 180 min | Thin slots (max) | Note |
+|---|---|---|---|---|---|
+| Melodic Journey | 236 | 50 | 18 / 38-39 | 0 % | Summit asks for melodic records (percussive 0.35 → 0.30) |
+| After Hours | 426 | 78 | 20-21 / 38 | 0 % | minor keys through the night (mode 0.1-0.25), Daylight turns major-ish |
+| Hypnotic | 290 | 66 | 18-19 / 38-39 | 0 % | drafted as "Minimal Loop"; the library holds one minimal record, so it is named for what it plays |
+| Afro Sunset | 149 | 21 | 18 / 34-35 | 0 % | Hand drums percussive (0.7 → 0.8); see below for Embers |
+| Warm-up | 286 | 25 | 20-21 / 41-42 | 10 % | Settling eased to 0.30 → 0.42 (it went red in 3 of 4 survey runs) |
+| Vocal Night | 337 | 34 | 20-21 / 39-41 | 0 % | crate vocals "lots" |
+| Sunrise | 468 | 33 | 21-23 / 41-42 | 10 % | Birdsong's tempo course 0.30 → 0.15 (0.25 → 0.05 left 20 % thin: the slow end of the crate blends little) |
+| Instrumental | 472 | 57 | 21 / 41-45 | 2 % | the tuned form: crate vocals "some" plus a vocals course 0-0.05 in every chapter |
+| Peak Time | 354 | 68 | 20-21 / 39-41 | 0 % | an energy night; its leans promise no techno (the library holds 28 techno records): it plays as high-energy prog and melodic techno |
+| Deep Lounge | 174 | 25 | 19-21 / 39-40 | 5 % | the user wanted it anyway: plays as warm house and organic house (28 deep house records) |
+| Trance Uplift | 112 | 20 | 18 / 36-38 | 8 % | the user wanted it anyway: plays as progressive house (the 28 trance / psy records sit at 125-142 bpm, median 134, past a blend's tempo reach from the prog that fills it); its peak chapter is "Peak", not "Psy peak" |
+
+Afro Sunset at 180 min had a red Embers in 3 of 3 runs: the crate's middle energies were used up before it (Hand drums
+took 0.5-0.65 for 54 minutes), so Embers placed 0.74-0.89 records where it asked for 0.4-0.5. Hand drums now sits at
+0.55 → 0.68 and Embers ends at 0.50 (tempo 0.6 → 0.5): no red in any run, Embers amber in 2 of 3 at 180 min. The six
+builder presets kept their crates (the same records, checked by the unit gate) and their seed-1 nights except where
+the chapter words below changed; Slow Morning stays thin (13 pairs per record, 24-59 % of slots with under 2
+alternates, said by its warning: its crate is the user's).
+
+**Chapter words that occur (task 5).** Falling chapters leaned on ML mood words that almost never sit on records near
+their energy: "emotional" on 0-8 % of the eligible crate records, "hopeful" 0-8 %, "inspiring" 9 % (Prog Odyssey's "The
+way down" missed on 27 of 33 placed records). Every preset chapter was measured (`cats/leans_near.py`: crate records
+within the chapter's energy ± 0.08, the warning's own window), and a lean under about 10 % was replaced by a word that
+sits there and fits the chapter: The way down "dream, mellow, warm", Night Shift's Surface "melodic, warm, space",
+Golden Hour's genre leans that its crate barely holds (deep house 5 %, nu disco 2 %, indie dance 5 %) by "mellow",
+"retro", "danceable", and so on (setplanner.PRESETS). Records placed with none of their chapter's leans, 17 presets
+× 90 / 180 min × seeds 1-3: **424 of 3005 → 206 of 2996**; The way down 27/33 → 3/37, Surface 15/23 → 1/26, Warm-up's
+Settling 26/62 → 5/68, Deep Lounge's Groove 26/74 → 3/71, Instrumental's Pulse 28/48 → 7/50.
+
+**Beatport's genre names whole.** The library's parser splits a file genre on "/": the 64 club tracks tagged "Organic
+House / Downtempo" read as "downtempo", and "Techno (Peak Time / Driving)" as "techno (peak time" and "driving)". The
+planner and the NIGHT tab's vocabulary now read genres through `setplanner.genre_words` / `record_words` (read time
+only; the DB, the scanner and the brain's own `genre_set` are untouched): a piece with " / " in it is one word, plus the
+family words that really describe the record (`GENRE_FAMILY`: Organic House / Downtempo is "organic house", never
+"downtempo"; Nu Disco / Disco is both; Techno (Peak Time / Driving) is "techno"). Night Shift's lean and Slow Morning's
+exclusion say "techno (peak time / driving)". The six builder presets' crates hold exactly the records they held.
+
+**Your categories as crate words.** Your top music folders (Desert Whomp, Groovy, Loungey, Melodic Techno 2025, Swamp
+Womp, ...) and your setlists (Prog House, Poopy, Cyber, ...) are a crate filter, `crate.groupsIn` (any of; a folder
+and a setlist of the same name are one word), shown in CRATE as the "yours" chips; the crate op counts them
+(`groups`). Every record also carries "@name" for each (the leans can use it; "@groovy" never collides with the mood
+"groovy"). "Like these" weighs "@name" by lift like any word, so a folder becomes a lean only when it is informative;
+it never narrows the crate.
+
+**Two more story controls** (`CH_DIMS`, scored like mood / vocals / hypnotic / hardness; STORY's "courses…" editor):
+- **mode**, minor 0 → major 1, from key v2's mode (`tracks.key_mode`, 88 % right on the truth set; 627 minor, 446
+  major). A confident reading is 0 or 1; an unsure one (key_conf under 0.5) sits toward 0.5 (0.25 / 0.75 at none). Being
+  two-valued it scores with a wider width (0.5): a course at 0 asks for minor, 0.5 for either.
+- **percussive**, melodic 0 → percussive 1: the drums' share of drums + other in the stems' body power (env.npz "rms",
+  the file the vocals measure already reads), ranked across the library. 1045 of 1073 records (97 %).
+Cost: both are read while the planner loads the library (the rms array is read from the env.npz already open for the
+vocals), under 0.15 s of a 5 s load; no cache was needed. The unit gate checks that a chapter asking for minor plans
+more minor records than one asking for major (and the same for percussive). "Like these" proposes them when the
+examples agree: every example minor (or every one major) gives a mode course at their mean, percussive ranks within
+0.25 a percussive course.
+
+**BUILD must change the night.** The builder's night noise (each record's fit × 0.86-1.14, the same all night; seed 1
+none) left 8 of 102 seed pairs (17 themes, 90 / 180 min, seeds 1-3) planning the very same night. A record-only factor
+cannot break a strong chain (Desert Night's 1046 → 408 → 136 → 99 → ..., every seam "neither sings, the drop on the
+swap") and ± 0.25 still left 3 of 221. Now every seed but 1: each record × 1 ± 0.25 (`NOISE`), each seam × 1 ± 0.15 (a
+hash of the pair, `PAIR_NOISE`), and the seed picks among the finished nights within 0.05 per record of the best
+(`TIE`; Warm-up's 90 min chain survived the noise alone). The rules are untouched: every candidate still passed the key
+veto, the vocal room and the strict placement before it was scored. **0 of 102 seed pairs plan the same night**
+(before: 8); chapter warnings over those 102 plans amber 44 → 24, red 31 → 0 (the tuning above included); the same
+seed plans the same night.
 
 **The lighting set as a helper: opt-in, off by default, lives in the project.** A new hook in
 `projects/fan/project.yaml` (`dj_music: projects.fan.dj_music`) maps a weather set to a theme
@@ -179,17 +268,19 @@ slot +1 never change, so nothing here can cause a cut).
 
 - **One picker** in place of the brain's theme box and the night box: the planned nights first (the presets, then
   your saved themes, ★; right-click a saved one to delete it), then "no plan, the DJ picks: <the brain's theme>",
-  which is today's behaviour exactly. Beside it **LENGTH** (45 / 60 / 90 / 120 / 180 / 240 / 360 min, default 90),
-  **BUILD** (the same theme, a new seed; lit until the new night is planned) and **SAVE** (asks for a name, default
+  which is today's behaviour exactly; it opens with every entry in view (17 presets, your themes, the DJ's 9; each
+  preset's blurb in its tooltip). Beside it **LENGTH** (45 / 60 / 90 / 120 / 180 / 240 / 360 min, default 90),
+  **BUILD** (the same theme, a new seed - another night where the crate allows it, section 2a; lit until the new night
+  is planned) and **SAVE** (asks for a name, default
   "<theme> (mine)"; the seed and the length are saved with it, so it plans the same night again).
 - **The NIGHT tab**, first in the right column in RECORD mode, in place of DIALS (the other LAYERS modes keep DIALS
   as before). Every edit is made in place and applies on its own, debounced 600 ms; an edited preset shows as
   "<name> (edited)" until it is saved. CRATE: genres in / out and tags in / out as small chips (a click cycles in,
-  out, off; right-click = out), moods (any of), the tempo and energy ranges as paired boxes, vocals any / none /
+  out, off; right-click = out), moods (any of), "yours" (your folders and setlists, any of; 2026-10-30), the tempo and energy ranges as paired boxes, vocals any / none /
   some / lots, and the live count ("743 records · about 71 blendable pairs each", from the planner's own pair
   table, `op: "crate"`). LEANS: a word and a weight slider (0 to 2), add / remove. STORY: the chapters as rows -
   name, share (renormalised), energy from→to, tempo from→to, chapter leans, the optional courses (mood / vocals /
-  hypnotic / hardness) - add, remove, reorder. Under them the dials that act in RECORD mode (LAYERS, which switches
+  hypnotic / hardness / mode / percussive) - add, remove, reorder. Under them the dials that act in RECORD mode (LAYERS, which switches
   engines, PACE, ENERGY, BASS, TONE, LEVEL; ARC is left out, the chapters are the arc), the KEYS row, and the
   moments. The planner's warnings sit in the header as short words, amber or red, the sentence in the tooltip.
   With no plan the tab shows MOOD instead of the editor.
@@ -247,7 +338,9 @@ as blocks at their energy, the playhead, and amber or red marks on a chapter, wi
 like these" goes on Tonight's history rows. The theme editor (the NIGHT tab) is desktop-shaped and stays off the
 phone card.
 
-(Built 2026-10-29, the user's "what about in the DJ page?") The presets as night buttons with a LENGTH select, in the
+(Built 2026-10-29, the user's "what about in the DJ page?") The presets as night buttons with a LENGTH select (with 17
+presets since 2026-10-30 the row wraps to six rows on a phone and two at 1280, unchanged otherwise: its replacement is
+being decided), in the
 Director card in RECORD mode and under Prepare ("Night ★", armed for ★ DIRECTOR, which plans it before its first
 record while the room keeps its sound). The strip is drawn at the screen's density; a chapter mark reads "Orbit 2/5
 off" and the records that miss are outlined; while a re-plan runs, or a new pick waits for its first answer, it keeps
@@ -489,3 +582,13 @@ again it is inferred again from its examples and plans the same night; the Qt th
 re-plans was 22 ms (a 0 ms heartbeat; limit 50; idle floor 1.6 ms). `_dj_setplan_unit.py --quick` and
 `_dj_nightplan_unit.py` still pass. Not exercised: a re-plan while records play (no rendered gate was run here; it goes
 through the same `night_async` / `set_theme_plan` path the web page uses).
+
+**The seventeen presets, 2026-10-30 (uncommitted, not yet heard).** Section 2a: eleven presets, Beatport's genre names
+whole, your folders and setlists as crate words ("yours" in CRATE), the mode and percussive courses, chapter words that
+occur near their energy, and a BUILD that changes the night. A planner fix the new presets turned up: a finished
+night whose last record would start after the night's end is ranked below one that ends inside it (Deep Lounge at 45
+min: 50 minutes for 45). A gate fix: its alternates checker now counts tonight's played artists in the spacing, as the
+planner does (two "like these" nights named records by Polo & Pan and Emancipator, who had just played, as missed).
+*Gates:* `_dj_setplan_unit.py --quick` adds PRESETS CLEAN (every preset, 90 / 180 min, seeds 1-3: finished, no red
+chapter, no two seeds the same night), STORY DIMS, YOURS and GENRES; `_dj_night_tab.py` adds the yours chips, the
+courses dialog and a picker that opens with every entry in view.

@@ -23,6 +23,20 @@ record player itself:
                 back), or re-searches from the user's record when none does
   LANDED PAST   (2026-10-29) Prophecy Theme / Neon Dawn: the player's cut lands past their silent start; a re-plan told
                 the moved cue and the phrase origin times the record's way out as the player does
+  LIKE THESE    (2026-10-30) a night like 3 records played tonight, planned during a night (the record playing and slot
+                +1 fixed, what played banned): the infer counts only playable records toward its crate's target; the
+                planner widens an unedited inferred crate until the night reaches its length (the web page's failing
+                night - Galapagos playing, Waves next: 1 record, "runs out at 0:13" - must finish), or says why not
+                when the ladder runs out; every seam passes the checks above; the answer carries the theme it used and
+                a re-plan from it is the same night; an edited theme or a preset is never widened
+  PRESETS CLEAN (2026-10-30) every preset at 90 and 180 min, seeds 1-3: finished, no red chapter (unless PRESET_RED_OK
+                names the reason); BUILD changes the night (no two seeds the very same night); a seed again is the same
+  STORY DIMS    a chapter asking for minor (mode 0) plans more minor records than one asking for major; the same for
+                percussive; both cover the library
+  YOURS         a crate from one of your folders / setlists holds exactly its records, they carry "@name", the crate
+                op counts it
+  GENRES        Beatport's compound names are one word (plus their family words, never "downtempo" for an Organic House
+                / Downtempo club track, never "driving)"); the six builder presets' crates are unchanged by it
   SUBPROCESS    the same request through PlannerProcess gives the same night
   VOCALS        the stems' envelope as the planner reads it agrees with the player's vocal_envelope on sampled records
 
@@ -32,6 +46,7 @@ and prints the plan time at 90 minutes and 6 hours.
 
 Exit 0 = ALL OK, 1 = FAIL.
 """
+import json
 import os
 import random
 import sys
@@ -107,7 +122,7 @@ def ak_of(f):
     return f.ak
 
 
-def check_plan(P, rp, resp, L_s, label, n_fixed=0, check_clock=True, spacing=6, banned=()):
+def check_plan(P, rp, resp, L_s, label, n_fixed=0, check_clock=True, spacing=6, banned=(), played=()):
     from lib.dj.recordplay import KEY_BLEND, MAX_TEMPO_GAP
     F = P.facts
     slots = resp["slots"]
@@ -191,7 +206,7 @@ def check_plan(P, rp, resp, L_s, label, n_fixed=0, check_clock=True, spacing=6, 
             said = any(w.get("alts") is not None for w in resp.get("warnings") or [])
             ok &= check(per < THIN_PAIRS and said, f"{label}: {few} of {n_planned} planned slots with fewer than 2 alternates "
                                                    f"({per:.0f} pairs per record; thin-crate warning {'given' if said else 'MISSING'})")
-            missed = missed_alternates(P, rp, resp, n_fixed, spacing, banned)
+            missed = missed_alternates(P, rp, resp, n_fixed, spacing, banned, played)
             ok &= check(not missed, f"{label}: alternates the planner missed: " + "; ".join(missed[:3]))
             print(f"  ({label}: {few} of {n_planned} planned slots with fewer than 2 alternates - a thin crate, {per:.0f} pairs per record: "
                   f"said, and every crate record checked by the player: {'none' if not missed else len(missed)} missed)", flush=True)
@@ -201,9 +216,12 @@ def check_plan(P, rp, resp, L_s, label, n_fixed=0, check_clock=True, spacing=6, 
 
 
 THIN_PAIRS = 20.0         # blendable pairs per crate record under which a crate is thin (Slow Morning 13; the others 70-90)
+# (preset, length) -> the chapters that may still go red there, each with its reason (docs/DJ_SETS.md section 2's table);
+# every other red chapter of a preset at 90 / 180 min, seeds 1-3, fails the gate
+PRESET_RED_OK = {}
 
 
-def missed_alternates(P, rp, resp, n_fixed, spacing, banned=()):
+def missed_alternates(P, rp, resp, n_fixed, spacing, banned=(), played=()):
     """Every crate record the planner did NOT list as an alternate for a slot with fewer than two, checked with the REAL
     player: within the tempo limit and the key veto of both neighbours, the variety rules kept, and both seams placed by
     _find_blend_strict. Any that passes is an alternate the planner missed."""
@@ -223,7 +241,11 @@ def missed_alternates(P, rp, resp, n_fixed, spacing, banned=()):
         prev, nxt = F[ids[k - 1]], (F[ids[k + 1]] if k + 1 < len(ids) else None)
         listed = {a["id"] for a in slots[k]["alts"]}
         roots = {F[i].root for j, i in enumerate(ids) if j != k}
-        near = {F[i].ak for i in ids[max(0, k - spacing):k] + ids[k + 1:k + 1 + spacing] if F[i].ak}
+        # (the artist spacing counts what played tonight before the plan, as the planner does: 2026-10-30, a "like these"
+        # night whose played records are Polo & Pan and Emancipator - their records are no alternate within 6 slots)
+        seq = [i for i in played if i in F] + ids
+        off = len(seq) - len(ids)
+        near = {F[i].ak for i in seq[max(0, off + k - spacing):off + k] + seq[off + k + 1:off + k + 1 + spacing] if F[i].ak}
         for j in crate:
             c = F.get(j)
             if c is None or j in ids or j in listed or j in banned or c.root in roots or (c.ak and c.ak in near):
@@ -281,6 +303,99 @@ def main():
             times.append((name, L, tm.get("table_s", 0), tm.get("search_s", 0)))
     print(f"the player's clock: {clock_n - clock_bad} of {clock_n} planned seams start where the real player starts them", flush=True)
 
+    # ---- EVERY PRESET PLANS CLEAN, AND BUILD CHANGES THE NIGHT (2026-10-30) -------------------------------------------------
+    # 90 and 180 min, seeds 1-3: finished, no red chapter (unless PRESET_RED_OK names the reason), and no two seeds the very
+    # same night (BUILD must change it); the same seed again is the same night (the gates' determinism)
+    n_same = n_pairs = 0
+    for name in names:
+        for L in (90, 180):
+            ids_by = {}
+            for seed in (1, 2, 3):
+                r = P.handle({"op": "plan", "preset": name, "length_min": L, "seed": seed})
+                reds = [w for w in r.get("warnings") or [] if w.get("bad")]
+                red_ch = [r["chapters"][w["chapter"]]["name"] for w in reds if w.get("chapter") is not None]
+                why = PRESET_RED_OK.get((name, L))
+                check(r.get("ok") and r.get("finished"), f"{name} {L} seed {seed}: finished ({r.get('error')}, ends {(r.get('end_s') or 0) / 60:.1f} min)")
+                check(not reds or (why and len(reds) == len(red_ch) and all(c in why for c in red_ch)),
+                      f"{name} {L} seed {seed}: no red chapter ({'; '.join(w['text'][:120] for w in reds)})")
+                ids_by[seed] = [s["id"] for s in r.get("slots") or []]
+            for a, b in ((1, 2), (1, 3), (2, 3)):
+                n_pairs += 1
+                n_same += ids_by[a] == ids_by[b]
+                check(ids_by[a] != ids_by[b], f"{name} {L}: BUILD changes the night (seeds {a} and {b} plan the same {len(ids_by[a])} records)")
+    again = [[s["id"] for s in P.handle({"op": "plan", "preset": names[-1], "length_min": 180, "seed": 3})["slots"]] for _k in range(2)]
+    check(again[0] == again[1] == ids_by[3], "the same seed plans the same night again")
+    print(f"presets clean: {len(names)} presets x 90 / 180 min x seeds 1-3; {n_same} of {n_pairs} seed pairs plan the same night", flush=True)
+
+    # ---- THE STORY CONTROLS mode and percussive score (2026-10-30) ----------------------------------------------------------
+    base = SP.get_preset("After Hours")
+    for dim, lo_name in (("mode", "minor"), ("percussive", "melodic")):
+        got = {}
+        for want in (0.0, 1.0):
+            th = json.loads(json.dumps(base))
+            th["name"] = f"dims {dim} {want}"
+            for ch in th["chapters"]:
+                ch["dims"] = {dim: [want, want]}
+            r = P.handle({"op": "plan", "theme": th, "length_min": 90, "seed": 1})
+            vals = [F[s["id"]].dims.get(dim) for s in r["slots"]]
+            vals = [v for v in vals if v is not None]
+            got[want] = (sum(1 for v in vals if v < 0.5), len(vals), sum(vals) / max(1, len(vals)))
+        check(got[0.0][0] > got[1.0][0] and got[0.0][2] < got[1.0][2],
+              f"the {dim} course scores: asking {lo_name} plans more {lo_name} records ({got[0.0][0]}/{got[0.0][1]}, mean {got[0.0][2]:.2f}) "
+              f"than asking the other end ({got[1.0][0]}/{got[1.0][1]}, mean {got[1.0][2]:.2f})")
+        print(f"dims {dim}: asking 0 -> {got[0.0][0]}/{got[0.0][1]} under 0.5 (mean {got[0.0][2]:.2f}); asking 1 -> "
+              f"{got[1.0][0]}/{got[1.0][1]} (mean {got[1.0][2]:.2f})", flush=True)
+    cov = {d: sum(1 for f in F.values() if f.dims.get(d) is not None) / len(F) for d in ("mode", "percussive")}
+    check(cov["mode"] > 0.95 and cov["percussive"] > 0.9, f"the story controls cover the library ({cov})")
+
+    # ---- YOUR FOLDERS AND SETLISTS as a crate filter (2026-10-30) -------------------------------------------------------------
+    from lib.dj.setplanner import folder_of, GROUP_MARK
+    lists = dict(P.setlists)
+    folders = {}
+    for f in F.values():
+        if folder_of(f.t):
+            folders.setdefault(folder_of(f.t), set()).add(f.id)
+    pick = sorted(folders, key=lambda k: -len(folders[k]))[:1] + [n for n in lists if n.lower() not in {k.lower() for k in folders}][:1]
+    for g in pick:
+        want_ids = {i for i in folders.get(g, set())} | {int(i) for i in lists.get(g, [])}
+        th = SP.get_preset(names[0])
+        th["crate"] = dict(SP._crate(), bpm=[0, 999], groupsIn=[g])
+        cr = set(P._crate_ids(th, pm))
+        ok_ids = {i for i in want_ids if i in F and F[i].dur <= SP.MAX_DURATION_S and P._geo_of(pm, F[i]).why is None}
+        check(cr == ok_ids, f"the crate from '{g}' holds exactly its records ({len(cr)} vs {len(ok_ids)})")
+        check(all(GROUP_MARK + g.lower() in F[i].words for i in cr), f"'{g}' records carry the word {GROUP_MARK}{g.lower()} (a lean)")
+        rc = P.handle({"op": "crate", "theme": th, "play_min_s": pm})
+        check(rc.get("ok") and rc.get("crate") == len(cr) and (rc.get("groups") or {}).get(g) == len(cr),
+              f"the crate op counts '{g}' ({rc.get('crate')}, {rc.get('groups')})")
+        print(f"crate from '{g}': {len(cr)} records ({rc.get('pairs')} pairs)", flush=True)
+
+    # ---- BEATPORT'S GENRE NAMES WHOLE (2026-10-30) ---------------------------------------------------------------------------
+    class _T:
+        genres, auto_tags, user_tags, ml_moods, decade, danceability, all_tags = [], [], [], [], None, None, []
+    for fg, has, hasnt in (("Organic House / Downtempo", {"organic house / downtempo", "organic house"}, {"downtempo"}),
+                           ("Techno (Peak Time / Driving)", {"techno (peak time / driving)", "techno"}, {"techno (peak time", "driving)"}),
+                           ("Nu Disco / Disco", {"nu disco / disco", "nu disco", "disco"}, set()),
+                           ("Rock/Pop", {"rock", "pop"}, {"rock/pop"}), ("Electronic, Dance", {"electronic", "dance"}, set())):
+        t = _T()
+        t.file_genre = fg
+        t.all_tags = sorted(SP._file_genre_parts(fg))           # (what the library's all_tags carries for it)
+        w = SP.record_words(t)
+        check(has <= w and not (hasnt & w), f"genre words of '{fg}': {sorted(w)}")
+    junk = sorted({w for f in F.values() for w in f.genres if w.count("(") != w.count(")")})
+    check(not junk, f"no split-off genre fragments in the library's words: {junk[:5]}")
+    # the six builder presets' crates are what they were with the split words (their filters still match)
+    old_words = {i: set(x.lower() for x in f.t.all_tags) | set(f.t.genre_set) | {m.lower() for m in f.t.ml_moods or []} for i, f in F.items()}
+    new_words = {i: f.words for i, f in F.items()}
+    for p in SP.PRESETS[:6]:
+        th_old = json.loads(json.dumps(p).replace("techno (peak time / driving)", "techno (peak time"))
+        a = set(P._crate_ids(p, pm))
+        for i in F:
+            F[i].words = old_words[i]
+        b = set(P._crate_ids(th_old, pm))
+        for i in F:
+            F[i].words = new_words[i]
+        check(a == b, f"{p['name']}: the same crate with Beatport's names whole ({len(a)} vs {len(b)} with the split words)")
+
     # ---- the plan time at 90 minutes and 6 hours -------------------------------------------------------------------------
     for name in names[:2] if quick else names:
         r = P.handle({"op": "plan", "preset": name, "length_min": 360})
@@ -306,7 +421,7 @@ def main():
           "replan keeps the night's clock at the fixed records")
     check(not (set(played) | set(excl)) & set(ids), "replan never brings back what played or was excluded")
     check(r["slots"][0]["alts"] == [] and r["slots"][1]["alts"] == [], "fixed slots carry no alternates")
-    check_plan(P, rp, r, 90 * 60.0, "replan", n_fixed=2, banned=set(played) | set(excl))
+    check_plan(P, rp, r, 90 * 60.0, "replan", n_fixed=2, banned=set(played) | set(excl), played=played)
     # ---- BAD: the previous plan's slots that still fit and carry none of its tags stay (DJ_SETS.md section 3) ------------
     old_future = [x["id"] for x in r["slots"][2:]]
     fixed2 = [{"id": r["slots"][0]["id"], "cue_s": r["slots"][0]["cue_s"], "start_s": r["slots"][0]["start_s"]}, {"id": r["slots"][1]["id"]}]
@@ -323,7 +438,7 @@ def main():
               f"BAD keeps exactly the slots before the first that carries {tagged}: kept {kept} of {old_future[:stop_k + 1]}")
         check((rb.get("kept_stop") or {}).get("id") == old_future[stop_k] and old_future[stop_k] not in nb[2:],
               f"BAD stops at the tagged slot and re-searches from there ({rb.get('kept_stop')})")
-        check_plan(P, rp, rb, 90 * 60.0, "BAD replan", n_fixed=2, banned=set(played) | set(excl))
+        check_plan(P, rp, rb, 90 * 60.0, "BAD replan", n_fixed=2, banned=set(played) | set(excl), played=played)
         print(f"BAD replan: kept {len(kept)} slots, stopped at {(rb.get('kept_stop') or {}).get('why')}, {len(nb)} records", flush=True)
     print(f"replan: {len(ids)} records, {ids[:2]} kept, search {(r.get('timing') or {}).get('search_s')} s", flush=True)
 
@@ -444,6 +559,88 @@ def main():
         alt = ((r_np.get("slots") or [None, None])[1] or {}).get("in") or {}
         print(f"landed past: {f.title[:24]} cue {lm0:.2f} -> {land:.2f} s; its way out at {sm['blend_at_s']} s with the phrase origin, "
               f"{alt.get('blend_at_s')} s if the planner counted from the moved cue", flush=True)
+
+    # ---- A NIGHT LIKE THESE DURING A NIGHT (2026-10-30) -----------------------------------------------------------------------
+    # three records played tonight as the examples (the record playing and two played), the record playing and slot +1
+    # fixed: the planner widens the inferred crate until the night reaches its length (or says why not), keeps the fixed
+    # prefix, bans what played, every seam by the player's strict placement; the answer carries the theme it used, and a
+    # re-plan from that theme is the same night without widening again; an edited theme and a preset are never widened
+    from lib.dj import themestore as TS
+    like_cases = []
+    if all(i in F and P._geo_of(pm, F[i]).why is None for i in (408, 136, 622, 1054)):
+        # the web page's failing night: Galapagos (saQi Remix) playing, Waves slot +1, L and Dorothy played (crate 49, 1 record)
+        like_cases.append(("Galapagos+2", [408, 622, 1054], [622, 1054],
+                           [{"id": 408, "cue_s": P._geo_of(pm, F[408]).first, "start_s": 0.0}, {"id": 136}]))
+    for name in names:
+        s0 = plans[(name, 90)]["slots"]
+        if len(s0) >= 9:
+            like_cases.append((f"{name} 3,6,8", [s0[3]["id"], s0[6]["id"], s0[8]["id"]],
+                               [s0[0]["id"], s0[1]["id"], s0[2]["id"], s0[6]["id"], s0[8]["id"]],
+                               [{"id": s0[3]["id"], "cue_s": s0[3]["cue_s"], "start_s": 0.0}, {"id": s0[4]["id"]}]))
+    n_widened = 0
+    for label, ex, played_l, fixed_l in like_cases:
+        L = 90
+        ban = set(played_l) | {d_["id"] for d_ in fixed_l}
+        inf = P.handle({"op": "infer", "example_ids": ex, "length_min": L, "play_min_s": pm, "played_ids": sorted(ban)})
+        th = inf.get("theme")
+        if not check(th is not None, f"like {label}: inferred ({inf.get('error')})"):
+            continue
+        cr = P._crate_ids(th, pm)
+        check(inf.get("available") == sum(1 for i in cr if i not in ban), f"like {label}: the infer counts only records the night can play "
+                                                                         f"({inf.get('available')} of {len(cr)})")
+        check(inf["available"] >= inf["target"] or th["inferred"]["ladder"]["at"] == len(TS.WIDEN),
+              f"like {label}: the infer widened until the playable crate met its target ({inf['available']} of {inf['target']})")
+        ed = dict(th, inferred=dict(th["inferred"], edited=True))
+        req_l = {"op": "replan", "length_min": L, "fixed": fixed_l, "played_ids": played_l, "elapsed_s": 0.0, "seed": 5}
+        r_ed = P.handle(dict(req_l, theme=ed))
+        r_l = P.handle(dict(req_l, theme=th))
+        ids_l = [x["id"] for x in r_l.get("slots") or []]
+        tm = r_l.get("timing") or {}
+        wid = r_l.get("widened") or []
+        n_widened += bool(wid)
+        print(f"like {label}: as inferred {sum(1 for x in r_ed['slots'] if not x['fixed'])} planned (finished {r_ed.get('finished')}, crate "
+              f"{r_ed.get('crate')}); the planner's {sum(1 for x in r_l['slots'] if not x['fixed'])} planned (finished {r_l.get('finished')}, crate "
+              f"{r_l.get('crate')}, {len(wid)} widenings: {', '.join(w['what'] for w in wid) or '-'}; {tm.get('plans')} plans in {tm.get('widen_s')} s)", flush=True)
+        check(r_l.get("ok") and ids_l[:2] == [d_["id"] for d_ in fixed_l], f"like {label}: the fixed prefix kept ({r_l.get('error')}, {ids_l[:2]})")
+        check(not set(played_l) & set(ids_l[2:]), f"like {label}: nothing played comes back")
+        check("widened" not in r_ed and "theme_used" not in r_ed, f"like {label}: an edited theme is never widened")
+        check(r_ed.get("finished") or any(w["bad"] for w in r_ed["warnings"]), f"like {label}: an edited theme that does not finish says so")
+        check(float(tm.get("widen_s") or 0.0) <= SP.WIDEN_BUDGET_S + 2.0, f"like {label}: the widening took {tm.get('widen_s')} s")
+        if r_l.get("finished"):
+            check_plan(P, rp, r_l, L * 60.0, f"like {label}", n_fixed=2, banned=ban, played=played_l)
+        else:
+            # the ladder ran out (or the budget): the plan's own warning stands
+            lad_end = (r_l.get("theme_used") or th)["inferred"]["ladder"]["at"] >= len(TS.WIDEN)
+            check(any(w["bad"] for w in r_l["warnings"]) and (lad_end or float(tm.get("widen_s") or 0) >= SP.WIDEN_BUDGET_S),
+                  f"like {label}: not finished only when the ladder ran out, and said")
+        if wid:
+            tu = r_l.get("theme_used") or {}
+            check(tu.get("crate") and len(P._crate_ids(tu, pm)) == r_l["crate"] and tu["inferred"]["ladder"]["at"] > th["inferred"]["ladder"]["at"]
+                  and tu["inferred"]["widened"][-len(wid):] == wid and all(w.get("by") == "plan" for w in wid),
+                  f"like {label}: the answer carries the theme it planned (its crate, its ladder moved on, every widening)")
+            check(any(w.get("widened") for w in r_l["warnings"]), f"like {label}: a warning says the crate was widened")
+            r_again = P.handle(dict(req_l, theme=tu))
+            check(not r_again.get("widened") and [x["id"] for x in r_again["slots"]] == ids_l,
+                  f"like {label}: a re-plan from the theme it used is the same night, not widened again")
+        else:
+            check("theme_used" not in r_l, f"like {label}: nothing widened, no theme_used")
+    if any(c[0] == "Galapagos+2" for c in like_cases):
+        r_g = P.handle({"op": "replan", "theme": P.handle({"op": "infer", "example_ids": [408, 622, 1054], "length_min": 90, "play_min_s": pm,
+                                                          "played_ids": [408, 136, 622, 1054]})["theme"],
+                        "length_min": 90, "fixed": like_cases[0][3], "played_ids": [622, 1054], "elapsed_s": 0.0, "seed": 5})
+        check(r_g.get("finished") and r_g["end_s"] >= 90 * 60.0 - 1.0, f"like Galapagos+2: the web page's failing night reaches its length "
+                                                                       f"({len(r_g['slots'])} slots, ends {r_g['end_s'] / 60:.1f} min)")
+    check(n_widened >= 1, f"like these: some night needed the planner's widening ({n_widened} of {len(like_cases)})")
+    # a ladder that has run out: nothing more to widen, the warning stands; a preset is never widened
+    if like_cases:
+        label, ex, played_l, fixed_l = like_cases[0]
+        th = P.handle({"op": "infer", "example_ids": ex, "length_min": 90, "play_min_s": pm})["theme"]
+        th["inferred"]["ladder"]["at"] = len(TS.WIDEN)
+        r_x = P.handle({"op": "replan", "theme": th, "length_min": 90, "fixed": fixed_l, "played_ids": played_l, "elapsed_s": 0.0, "seed": 5})
+        check(r_x.get("widened") == [] and "theme_used" not in r_x and (r_x.get("finished") or any(w["bad"] for w in r_x["warnings"])),
+              f"like {label}: the ladder run out - not widened, the plan's own warning stands")
+    r_p = P.handle({"op": "replan", "preset": names[0], "length_min": 90, "fixed": [{"id": s[0]["id"], "cue_s": s[0]["cue_s"], "start_s": 0.0}]})
+    check("widened" not in r_p and "theme_used" not in r_p, "a preset is never widened")
 
     # ---- the subprocess gives the same night ----------------------------------------------------------------------------------
     req = {"op": "plan", "preset": names[0], "length_min": 45}

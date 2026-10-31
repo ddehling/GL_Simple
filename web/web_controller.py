@@ -37,6 +37,20 @@ def _sanitize_for_json(obj):
     return obj
 
 
+def valid_like_ids(ids, library_ids):
+    """The DJ page's "like these" records (director_night op "like"): a list of 2 to 5 distinct ints, each one in
+    `library_ids` (the show publishes the library's ids as WebController.dj_library_ids). Returns the list, or None:
+    a bool, a string, a float, an unknown id, a library not known yet."""
+    if not isinstance(ids, (list, tuple)) or not library_ids:
+        return None
+    if any(type(i) is not int for i in ids):
+        return None
+    ids = list(dict.fromkeys(ids))
+    if not 2 <= len(ids) <= 5 or any(i not in library_ids for i in ids):
+        return None
+    return ids
+
+
 class WebController:
     """
     Web-based control interface for modifying runtime parameters.
@@ -107,6 +121,9 @@ class WebController:
                                  engineio_logger=False)
 
         self.available_events = []  # Will be set by EnvironmentalSystem
+        # the DJ library's record ids (set by the show off its render thread): the "like these" press is checked
+        # against them (valid_like_ids)
+        self.dj_library_ids = None
 
         # Shader Lab (live GLSL slot). live_shader_dirty is the render
         # thread's every-frame fast-path flag (plain GIL-atomic bool);
@@ -1253,7 +1270,8 @@ class WebController:
             self._values_cache = None
 
         CLUB_THEMES = {'', 'organic', 'geometric', 'cosmic', 'heavy',
-                       'molten', 'flow', 'psychedelic'}
+                       'molten', 'flow', 'psychedelic',
+                       'neon', 'abyss', 'polar', 'machine'}
 
         @self.socketio.on('set_club_theme')
         def handle_set_club_theme(data):
@@ -1405,22 +1423,30 @@ class WebController:
                 except (TypeError, ValueError):
                     return False
             elif action == 'director_night':
-                # {op: plan | clear | length, theme (a preset's name), length_min (the page's LENGTH choices)}
+                # {op: plan | clear | length | like, theme (a preset's name), length_min (the page's LENGTH choices),
+                # ids (like: 2 to 5 distinct record ids, ints, in the library)}
                 try:
                     from lib.dj.setplanner import preset_names as _pn
                     op = str(arg.get('op') or 'plan')
-                    if op not in ('plan', 'clear', 'length'):
+                    if op not in ('plan', 'clear', 'length', 'like'):
                         return False
                     theme = arg.get('theme')
                     if op == 'plan':
                         theme = next((n for n in _pn() if n.lower() == str(theme or '').lower()), None)
                         if theme is None:
                             return False
+                    ids = None
+                    if op == 'like':
+                        ids = valid_like_ids(arg.get('ids'), getattr(self, 'dj_library_ids', None))
+                        if ids is None:
+                            return False
                     L = arg.get('length_min')
                     L = None if L in (None, '') else min((45, 60, 90, 120, 180, 240, 360), key=lambda m: abs(m - float(L)))
                     if op == 'length' and L is None:
                         return False
                     arg = {'op': op, 'theme': theme if op == 'plan' else None, 'length_min': L}
+                    if ids is not None:
+                        arg['ids'] = ids
                 except Exception:
                     return False
             elif action == 'director_program':

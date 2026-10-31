@@ -64,21 +64,68 @@
         .dr-deck .lamp { width:38px; text-align:center; font-size:.7em; padding:1px 0; border-radius:4px; background:#262626; color:#666; }
         .dr-deck .lamp.on { background:#f0a05a; color:#1a1a1a; font-weight:bold; }
         .dr-deck .lamp.half { background:#5a4a30; color:#ddd; }
-        /* THE NIGHT (a planned night, RECORD mode): one small button per planner preset, the LENGTH select, the strip's
-           THEN lines (docs/DJ_SETS.md section 4) */
-        .night-row { display:flex; gap:5px; flex-wrap:wrap; align-items:stretch; }
-        .night-btn { flex:1 1 96px; min-width:0; padding:7px 4px; font-size:.8em; border-radius:6px; border:1px solid #555;
-                     background:#26262e; color:#ccc; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .night-btn.on { border-color:#f0c85a; background:#3a3016; color:#ffe08a; font-weight:bold; }
-        .night-btn.pending { border-color:#9fc0ff; animation: drpulse .9s ease-in-out infinite; }
-        .night-btn.err { border-color:#f0a05a; box-shadow: inset 0 -3px 0 #f0a05a; }
-        .night-len { flex:0 1 88px; min-width:72px; padding:6px 4px; background:#1c1c24; color:#9fc0ff; border:1px solid #445;
+        /* THE NIGHT (a planned night, RECORD mode): SHAPE CARDS (2026-10-30, in place of a row of buttons) - one card per
+           planner preset (and the night like these), its name and a small picture of its energy course (the chapters as
+           bands, their names under them, the energy line, a soft fill), in one strip that swipes sideways; the LENGTH
+           select beside the strip's label; the strip's THEN lines (docs/DJ_SETS.md section 4) */
+        :root { --nc-bg:#22222a; --nc-border:#474753; --nc-text:#d8d8e0; --nc-sub:#9a9aa8; --nc-line:#7da2e3;
+                --nc-band:rgba(255,255,255,.03); --nc-band2:rgba(255,255,255,.075); --nc-sep:rgba(255,255,255,.16);
+                --nc-on:#f0c85a; --nc-on-bg:#3a3016; --nc-on-text:#ffe08a; --nc-pend:#9fc0ff; --nc-err:#f0a05a; }
+        .night-row { min-width:0; }
+        .night-head { display:flex; align-items:center; gap:8px; margin-bottom:4px; }
+        .night-head .now-sub { flex:1 1 auto; min-width:0; }
+        .night-strip { position:relative; display:flex; gap:6px; overflow-x:auto; overflow-y:hidden; scroll-snap-type:x proximity;
+                       overscroll-behavior-x:contain; padding:1px 1px 6px 1px; scrollbar-width:thin; scrollbar-color:#3a3a46 transparent; }
+        .night-strip::-webkit-scrollbar { height:5px; }
+        .night-strip::-webkit-scrollbar-thumb { background:#3a3a46; border-radius:3px; }
+        .night-card { flex:0 0 148px; min-width:0; scroll-snap-align:start; position:relative; display:flex; flex-direction:column; gap:2px;
+                      padding:5px 7px 4px 7px; border-radius:8px; border:1px solid var(--nc-border); background:var(--nc-bg);
+                      color:var(--nc-text); font:inherit; text-align:left; cursor:pointer; }
+        .night-card .nc-top { display:flex; align-items:center; gap:4px; min-width:0; height:17px; }
+        .night-card .nc-name { flex:1 1 auto; min-width:0; font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .night-card .nc-state { flex:0 0 auto; font-size:9.5px; color:var(--nc-pend); }
+        .night-card .nc-state:empty { display:none; }
+        .night-card .nc-i { flex:0 0 auto; width:15px; height:15px; line-height:14px; border-radius:50%; border:1px solid var(--nc-sub);
+                            font-size:9.5px; font-style:italic; font-family:Georgia,serif; text-align:center; color:var(--nc-sub); opacity:.55; }
+        @media (hover: hover) and (pointer: fine) { .night-card .nc-i { display:none; } }   /* (the mouse has the tooltip) */
+        .night-card .nc-curve { display:block; width:100%; height:34px; border-radius:3px; }
+        .nc-curve .b { fill:var(--nc-band); } .nc-curve .b2 { fill:var(--nc-band2); } .nc-curve .s { fill:var(--nc-sep); }
+        .nc-curve .f { fill:url(#nc-fill); }
+        .nc-curve .l { fill:none; stroke:var(--nc-line); stroke-width:1.6; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+        .nc-curve .l.dash { stroke-dasharray:3 3; opacity:.6; }
+        .night-card .nc-chs { position:relative; display:block; height:21px; font-size:9px; line-height:10px; color:var(--nc-sub); }
+        .night-card .nc-chs > span { position:absolute; top:0; text-align:center; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .night-card .nc-chs > span.r1 { top:11px; }
+        .night-card .nc-chs > span.al { text-align:left; }
+        .night-card .nc-chs > span.ar { text-align:right; }
+        .night-card.on { border-color:var(--nc-on); background:var(--nc-on-bg); color:var(--nc-on-text); }
+        .night-card.on .nc-chs { color:#d9c58c; }
+        .night-card.on .nc-curve .l { stroke:var(--nc-on); }
+        .night-card.on .nc-curve .f { fill:url(#nc-fill-on); }
+        .night-card.pending { border-color:var(--nc-pend); animation: drpulse .9s ease-in-out infinite; }
+        .night-card.err { border-color:var(--nc-err); box-shadow: inset 0 -3px 0 var(--nc-err); }
+        .night-card.like-night .nc-name { font-style:italic; }
+        .night-card.flash { filter:brightness(1.6); transition: filter .4s ease-out; }   /* (lit on the press, before the server answers) */
+        .night-card-tip { font-size:.78em; line-height:1.35; color:#c8c8d2; white-space:pre-line; margin:0 0 4px 0; }
+        .night-len { flex:0 0 auto; width:92px; padding:4px 4px; background:#1c1c24; color:#9fc0ff; border:1px solid #445;
                      border-radius:6px; font-size:.8em; }
         .night-then { font-size:.8em; line-height:1.45; margin:2px 0 4px 0; }
         .night-then div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; opacity:.85; }
         .night-then .t { color:#9fc0ff; font-variant-numeric:tabular-nums; }
         .night-then .w { color:#f0c85a; }
         .night-note { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#c9b37a; }
+        /* "MORE LIKE THESE" (2026-10-30): tonight's records as chips - tap = picked (lit), again = dropped; 2 to 5 light
+           the ≈ button, which plans a night like them. The inferred night is a button in the night row */
+        .like-row { display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-top:6px; }
+        .like-cap { font-size:.75em; opacity:.6; margin-right:2px; cursor:help; }
+        .like-chip { flex:0 1 auto; max-width:220px; min-width:0; padding:4px 9px; font-size:.75em; border-radius:12px; border:1px solid #445;
+                     background:#1f1f27; color:#b8b8c4; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .like-chip.now { border-color:#7a6a3a; color:#e8d9a8; }
+        .like-chip.on { border-color:#9fc0ff; background:#2a4a8a; color:#ffffff; }   /* (not bold: a tap must not reflow the row) */
+        .like-chip.more { border-style:dashed; color:#889; }
+        .like-go { flex:0 0 auto; margin-left:auto; padding:5px 10px; font-size:.78em; border-radius:6px; border:1px solid #445;
+                   background:#1c1c24; color:#667; cursor:pointer; }
+        .like-go.ready { border-color:#9fc0ff; background:#24324a; color:#e6f0ff; font-weight:bold; }
         .now-sub { font-size: 0.85em; opacity: 0.7; }
         .kv { display: flex; justify-content: space-between; font-size: 0.85em;
               padding: 2px 0; }
@@ -132,7 +179,7 @@
         /* Pull-to-refresh mid-set reloads the control surface at the worst
            possible moment - suppress the gesture on this page. */
         html, body { overscroll-behavior-y: contain; }
-        .btn, .theme-btn, select { touch-action: manipulation;
+        .btn, .theme-btn, .night-card, .like-chip, .like-go, select { touch-action: manipulation;
             -webkit-tap-highlight-color: transparent; }
         input[type=range] { accent-color: #4bd; min-height: 34px;
             touch-action: manipulation; }
@@ -158,8 +205,10 @@
             .btn { min-height: 46px; }
             .theme-btn { min-height: 42px; }
             .setrow select { min-height: 44px; }
-            .night-btn { min-height: 38px; font-size: 13px; }
-            .night-len { min-height: 38px; font-size: 16px; }   /* (under 16px iOS zooms the page on focus) */
+            .night-card { flex-basis: 130px; padding: 5px 6px 4px 6px; }   /* (about 2.5 cards in view: the strip says "swipe") */
+            .night-len { min-height: 34px; font-size: 16px; }   /* (under 16px iOS zooms the page on focus) */
+            .like-chip { min-height: 32px; font-size: 13px; max-width: 46%; }
+            .like-go { min-height: 32px; font-size: 13px; }
             /* A select sharing its row with buttons (setlist: IN ORDER /
                STEER POOL) was squeezed to an unreadable sliver - wrap the
                row so the select gets the full width and the buttons drop
@@ -183,6 +232,11 @@
     </style>
 </head>
 <body>
+    <!-- the shape cards' soft fill under the energy line (one pair for every card on the page) -->
+    <svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false"><defs>
+        <linearGradient id="nc-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--nc-line);stop-opacity:.42"/><stop offset="1" style="stop-color:var(--nc-line);stop-opacity:.03"/></linearGradient>
+        <linearGradient id="nc-fill-on" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--nc-on);stop-opacity:.45"/><stop offset="1" style="stop-color:var(--nc-on);stop-opacity:.03"/></linearGradient>
+    </defs></svg>
     <div class="container">
         <header>
             <h1>Lucifera DJ</h1>
@@ -394,10 +448,13 @@
             <div id="dj-dr-programs" class="transport" style="margin-top:8px;flex-wrap:wrap"></div>
             <div class="now-sub" id="dj-dr-program"></div>
             <div id="dj-dr-dials" style="margin-top:8px"></div>
-            <!-- RECORD mode: THE NIGHT - a planner preset plans the whole night (lit = on; press the lit one = off), its length -->
+            <!-- RECORD mode: THE NIGHT - a shape card per planner preset plans the whole night (lit = on; tap the lit one =
+                 off), the strip swipes sideways; its length beside the label (the head and the strip are built by renderNight) -->
             <div id="dj-dr-night" class="hidden" style="margin-top:10px">
-                <div class="now-sub" title="a planned night: chapters, each record placed where its chapter asks for it and checked to blend with its neighbours. Press = plan that night (the record playing and the next one stay); press the lit one = the DJ picks record by record again">Night</div>
-                <div class="night-row" id="dj-night-btns" data-where="director"></div>
+                <div class="night-row" id="dj-night-btns" data-where="director" data-label="Night"
+                     data-tip="a planned night: chapters, each record placed where its chapter asks for it and checked to blend with its neighbours. Each card draws its night's energy course. Tap = plan that night (the record playing and the next one stay); tap the lit one = the DJ picks record by record again. Swipe for more"></div>
+                <!-- tonight's records: tap 2 to 5, then ≈ like these (a night inferred from them, from the record after next) -->
+                <div class="like-row hidden" id="dj-like" data-where="director"></div>
             </div>
             <!-- RECORD mode: the SONGS pool the records are picked from, and the theme (its brain reads the theme at the next START) -->
             <div id="dj-dr-songs" class="hidden" style="margin-top:10px">
@@ -405,8 +462,12 @@
                 <div class="setrow">
                     <select id="dj-dr-pool" title="only these songs; the DJ picks the order - chosen the moment you pick it"><option value="">(whole library)</option></select>
                 </div>
-                <div class="now-sub" style="margin-top:8px">Theme <span style="opacity:.5;font-size:11px">(the tempo window and the arc; a change is read at the next START)</span></div>
-                <div class="theme-row" id="dj-dr-themes"></div>
+                <!-- (hidden in RECORD mode while a night is planned, armed or on its way: it would only steer the DJ's gap
+                     picks, and read as a second theme picker beside the night buttons) -->
+                <div id="dj-dr-theme-wrap">
+                    <div class="now-sub" style="margin-top:8px">Theme <span style="opacity:.5;font-size:11px">(the tempo window and the arc; a change is read at the next START)</span></div>
+                    <div class="theme-row" id="dj-dr-themes"></div>
+                </div>
             </div>
             <!-- RECORD mode: the story - what the player did and why, newest last -->
             <div class="now-sub" id="dj-dr-recent" style="margin-top:8px;opacity:.85;line-height:1.35"></div>
@@ -456,11 +517,17 @@
         <div class="section-panel hidden" id="dj-steer">
             <div class="section-header"><h3 id="dj-steer-h">Prepare</h3></div>
             <div id="dj-night-idle">
-                <div class="now-sub" title="a planned night for ★ DIRECTOR (RECORD mode): pick it now and the night is planned before its first record, which is the plan's first. Press the lit one = no plan">Night ★</div>
-                <div class="night-row" id="dj-night-btns-idle" data-where="idle" style="margin-bottom:12px"></div>
+                <div class="night-row" id="dj-night-btns-idle" data-where="idle" data-label="Night ★"
+                     data-tip="a planned night for ★ DIRECTOR (RECORD mode): pick it now and the night is planned before its first record, which is the plan's first. Each card draws its night's energy course. Tap the lit one = no plan. Swipe for more"></div>
+                <!-- the records the last session played tonight: ≈ like these arms a night like them for ★ DIRECTOR -->
+                <div class="like-row hidden" id="dj-like-idle" data-where="idle"></div>
+                <div style="height:12px"></div>
             </div>
-            <div class="now-sub">Theme</div>
-            <div class="theme-row" id="dj-themes"></div>
+            <!-- (hidden while a night is armed for ★ DIRECTOR, as in the Director card) -->
+            <div id="dj-themes-wrap">
+                <div class="now-sub">Theme</div>
+                <div class="theme-row" id="dj-themes"></div>
+            </div>
             <div class="now-sub" style="margin-top:12px">Persona
                 <span style="opacity:.5;font-size:11px">
                     (how the DJ plays tonight)</span></div>
@@ -927,8 +994,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             if (rx) renderRemix(dj.remix || {});
             show($("dj-director"), dr);
             if (dr) renderDirector(dj.director || {}, dj);
-            else renderNight($("dj-night-btns-idle"), dj, false);   // (a night armed for ★ DIRECTOR)
+            else { renderNight($("dj-night-btns-idle"), dj, false); renderLike($("dj-like-idle"), dj); }   // (a night armed for ★ DIRECTOR)
             show($("dj-night-idle"), !on && !rx && !dr);
+            show($("dj-themes-wrap"), !(!on && !rx && !dr && nightHolds(dj)));
 
             // Transport buttons.
             const starting = !!dj.director_starting || !!dj.dj_starting;
@@ -1443,7 +1511,9 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
             show($("dj-dr-night"), record);
             show($("dj-dr-then"), nightOn);
             if (!nightOn) show($("dj-dr-night-tip"), false);
-            if (record) renderNight($("dj-night-btns"), dj, true);
+            if (record) { renderNight($("dj-night-btns"), dj, true); renderLike($("dj-like"), dj); }
+            else show($("dj-like"), false);
+            show($("dj-dr-theme-wrap"), !(record && nightHolds(dj)));   // (the layered modes keep their theme row)
             show($("dj-dr-moments"), !record);
             show($("dj-dr-moment"), !record);
             show($("dj-dr-programs"), !record);
@@ -1558,65 +1628,304 @@ off over 15 minutes - a reaction, not a setting">🔥 PUSH IT</button>
         // what the server says: the night on (the Director's plan, or the one armed for START), planning, its error
         function nightServer(dj, director) {
             const tk = dj.night_tick || null, armed = dj.night_armed || null;
-            const on = director ? (tk && tk.planned ? (tk.source || tk.theme) : null) : (armed ? armed.theme : null);
+            // (a night like these: source "like" - its own button, labelled with the night's name)
+            const on = director ? (tk && tk.planned ? (tk.source || tk.theme) : null) : (armed ? (armed.like ? "like" : armed.theme) : null);
             const err = director && tk ? (tk.planner_down ? `the planner is down: the DJ picks record by record${tk.error ? " (" + tk.error + ")" : ""}`
                 : (tk.error && !tk.pending ? `the plan could not be made: ${tk.error}` : null)) : null;
             const lenMin = director && tk && tk.planned && tk.length_s ? Math.round(tk.length_s / 60) : (armed && armed.length_min) || dj.night_len || 90;
             return {on, pending: !!(director && tk && tk.pending), err, lenMin};
         }
+        // ---- THE SHAPE CARDS (2026-10-30, in place of a row of night buttons): a card per night - its name and its energy
+        // course (the chapters as bands with their names under them, the energy line across them, a soft fill) - in one
+        // strip that swipes sideways. Built once per presets list (night_presets, a delta key); a tick only toggles classes
+        // and titles, and redraws the like card's picture when its night's shape arrives. Tap = plan, the lit one = clear;
+        // the "i" (touch screens only) shows the tooltip under the strip ----
+        const LEN_TIP = "the night's length - with a night on it is planned again to this (the record playing and the next one stay); with none, the next press plans this long";
+        const likeShapes = new Map();     // a like night's name -> its chapters as [name, share %, e0, e1] (from dj_night)
+        let likeShapeSeen = null;
+        function shapeSvg(chs) {
+            // viewBox 100 x 36, stretched to the card; energy 0..1 on a fixed scale, so the cards compare
+            if (!chs || !chs.length)
+                return `<svg class="nc-curve" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">`
+                    + `<rect class="b" x="0" y="0" width="100" height="36"/><path class="l dash" d="M0 20 L100 20"/></svg>`;
+            const tot = chs.reduce((a, c) => a + Math.max(0, +c[1] || 0), 0) || 1;
+            const Y = (e) => (34 - Math.max(0, Math.min(1, +e || 0)) * 31).toFixed(1);
+            let x = 0, bands = "", seps = "", line = "";
+            chs.forEach((c, k) => {
+                const x1 = Math.min(100, x + Math.max(0, +c[1] || 0) / tot * 100);
+                bands += `<rect class="${k % 2 ? "b2" : "b"}" x="${x.toFixed(2)}" y="0" width="${(x1 - x).toFixed(2)}" height="36"/>`;
+                if (k) seps += `<rect class="s" x="${(x - 0.3).toFixed(2)}" y="0" width="0.6" height="36"/>`;
+                line += `${k ? "L" : "M"}${x.toFixed(2)} ${Y(c[2])} L${x1.toFixed(2)} ${Y(c[3])} `;
+                x = x1;
+            });
+            return `<svg class="nc-curve" viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">${bands}${seps}`
+                + `<path class="f" d="${line}L100 36 L0 36 Z"/><path class="l" d="${line.trim()}"/></svg>`;
+        }
+        // the chapter names under the bands, on two staggered rows: a name may use half of each neighbour's band (its
+        // neighbours sit on the other row), so "Second peak" reads at card size; the first is left-aligned, the last right
+        function chapterNames(chs, empty) {
+            if (!chs || !chs.length) return `<span class="al" style="left:0;width:100%">${esc(empty || "")}</span>`;
+            const tot = chs.reduce((a, c) => a + Math.max(0, +c[1] || 0), 0) || 1, n = chs.length;
+            const mids = [];
+            let x = 0;
+            for (const c of chs) { const w = Math.max(0, +c[1] || 0) / tot * 100; mids.push(x + w / 2); x += w; }
+            return chs.map((c, k) => {
+                const l = k ? mids[k - 1] : 0, r = k < n - 1 ? mids[k + 1] : 100;
+                const al = n === 1 ? "" : (k === 0 ? " al" : (k === n - 1 ? " ar" : ""));
+                return `<span class="r${k % 2}${al}" style="left:${l.toFixed(1)}%;width:${(r - l).toFixed(1)}%">${esc(c[0])}</span>`;
+            }).join("");
+        }
+        function cardInner(name, chs, empty) {
+            const row = chapterNames(chs, empty);
+            return `<span class="nc-top"><span class="nc-name">${esc(name)}</span><span class="nc-state"></span><span class="nc-i">i</span></span>`
+                + shapeSvg(chs) + `<span class="nc-chs">${row}</span>`;
+        }
+        // a planned night's chapters (dj_night: start_s / end_s / energy) as card rows - the like night's picture
+        function shapeOfNight(N) {
+            const chs = (N && N.chapters) || [];
+            const tot = chs.reduce((a, c) => a + Math.max(0, (c.end_s || 0) - (c.start_s || 0)), 0);
+            if (!chs.length || tot <= 0) return null;
+            return chs.map((c) => {
+                const e = c.energy && c.energy.length ? c.energy : [0.5, 0.5];
+                return [c.name || "", Math.round(100 * Math.max(0, (c.end_s || 0) - (c.start_s || 0)) / tot), e[0], e.length > 1 ? e[1] : e[0]];
+            });
+        }
+        function likeShapeFor(dj, label) {
+            const N = dj.dj_night;
+            if (N && N !== likeShapeSeen) {
+                likeShapeSeen = N;
+                const sh = N.source === "like" && N.theme ? shapeOfNight(N) : null;
+                if (sh) { likeShapes.set(N.theme, sh); if (likeShapes.size > 8) likeShapes.delete(likeShapes.keys().next().value); }
+            }
+            return likeShapes.get(label) || null;
+        }
+        const chapterLines = (chs) => (chs || []).map((c) => `${c[0]} · ${c[1]} %` + (c.length > 3 ? ` · energy ${(+c[2]).toFixed(2)} → ${(+c[3]).toFixed(2)}` : "")).join("\n");
         function renderNight(box, dj, director) {
             if (!box || !dj) return;
             const presets = dj.night_presets || [], lens = dj.night_lengths || [45, 60, 90, 120, 180, 240, 360];
-            const key = presets.map((p) => p.name).join("|") + "#" + lens.join(",");
-            if (box.dataset.have !== key) {
-                box.dataset.have = key;
-                box.innerHTML = presets.map((p) => `<button class="night-btn" data-night="${esc(p.name)}">${esc(p.name)}</button>`).join("")
-                    + `<select class="night-len" title="the night's length - with a night on it is planned again to this (the record playing and the next one stay); with none, the next press plans this long">`
-                    + lens.map((m) => `<option value="${m}">${m < 120 ? m + " min" : (m / 60) + " h"}</option>`).join("") + `</select>`;
-                for (const b of box.querySelectorAll(".night-btn"))
-                    b.onclick = () => {
-                        const S = nightServer(lastFullDj || {}, !!(lastFullDj && lastFullDj.director_active));
-                        const shown = nightPending ? nightPending.theme : S.on;
-                        const len = parseInt(box.querySelector(".night-len").value, 10) || 90;
-                        const lit = shown && shown.toLowerCase() === b.dataset.night.toLowerCase();
-                        nightPending = {theme: lit ? null : b.dataset.night, at: Date.now()};
-                        emit("director_night", lit ? {op: "clear"} : {op: "plan", theme: b.dataset.night, length_min: len});
-                        flash(b);
-                        for (const x of document.querySelectorAll(".night-row")) paintNight(x, lastFullDj || {}, x.dataset.where === "director");
-                    };
-                box.querySelector(".night-len").onchange = (ev) => {
-                    nightLenTouched = Date.now();
-                    for (const s of document.querySelectorAll(".night-len")) s.value = ev.target.value;
-                    emit("director_night", {op: "length", length_min: parseInt(ev.target.value, 10)});
-                };
+            // (the presets arrive as a delta key: the same object between sends, so the build key is read only when it is new)
+            if (box._presets !== presets || box._lens !== lens.join(",")) {
+                box._presets = presets; box._lens = lens.join(",");
+                box._byName = Object.fromEntries(presets.map((p) => [p.name, p]));
+                const key = presets.map((p) => p.name + ":" + (p.chapters || []).map((c) => c.join(",")).join(";")).join("|") + "#" + box._lens;
+                if (box.dataset.have !== key) { box.dataset.have = key; buildNight(box, presets, lens); }
             }
             paintNight(box, dj, director);
         }
+        function buildNight(box, presets, lens) {
+            const old = box.querySelector(".night-strip"), sl = old ? old.scrollLeft : 0;
+            box.innerHTML = `<div class="night-head"><span class="now-sub" title="${esc(box.dataset.tip || "")}">${esc(box.dataset.label || "Night")}</span>`
+                + `<select class="night-len" title="${esc(LEN_TIP)}">`
+                + lens.map((m) => `<option value="${m}">${m < 120 ? m + " min" : (m / 60) + " h"}</option>`).join("") + `</select></div>`
+                + `<div class="night-strip"><button type="button" class="night-card like-night hidden"></button>`
+                + presets.map((p) => `<button type="button" class="night-card" data-night="${esc(p.name)}">${cardInner(p.name, p.chapters)}</button>`).join("")
+                + `</div><div class="night-card-tip hidden"></div>`;
+            const strip = box.querySelector(".night-strip");
+            strip.scrollLeft = sl;
+            strip.onclick = (ev) => {
+                const card = ev.target.closest(".night-card");
+                if (!card) return;
+                if (ev.target.closest(".nc-i")) { cardTip(box, card); return; }    // (the tooltip on a phone: no plan)
+                if (card.classList.contains("like-night")) likeCardPress(box, card);
+                else presetCardPress(box, card);
+            };
+            box.querySelector(".night-len").onchange = (ev) => {
+                nightLenTouched = Date.now();
+                for (const s of document.querySelectorAll(".night-len")) s.value = ev.target.value;
+                emit("director_night", {op: "length", length_min: parseInt(ev.target.value, 10)});
+            };
+        }
+        // a preset's card: lit = on (tap = no plan); unlit = plan it (before START: armed; during a night: from slot +2)
+        function presetCardPress(box, b) {
+            const S = nightServer(lastFullDj || {}, !!(lastFullDj && lastFullDj.director_active));
+            const shown = nightPending ? nightPending.theme : S.on;
+            const len = parseInt(box.querySelector(".night-len").value, 10) || 90;
+            const lit = !!shown && shown.toLowerCase() === b.dataset.night.toLowerCase();
+            nightPending = {theme: lit ? null : b.dataset.night, at: Date.now()};
+            emit("director_night", lit ? {op: "clear"} : {op: "plan", theme: b.dataset.night, length_min: len});
+            flash(b);
+            repaintNights();
+        }
+        // THE NIGHT LIKE THESE's card: lit = on (tap = no plan); unlit (its inference failed) = tap asks again
+        function likeCardPress(box, b) {
+            const S = nightServer(lastFullDj || {}, !!(lastFullDj && lastFullDj.director_active));
+            const shown = nightPending ? nightPending.theme : S.on;
+            const ids = JSON.parse(b.dataset.ids || "[]");
+            if (shown === "like") {
+                nightPending = {theme: null, at: Date.now()};
+                emit("director_night", {op: "clear"});
+            } else if (ids.length >= 2) {
+                nightPending = {theme: "like", label: b.dataset.label || "", at: Date.now()};
+                emit("director_night", {op: "like", ids, length_min: parseInt(box.querySelector(".night-len").value, 10) || 90});
+            }
+            flash(b);
+            repaintNights();
+        }
+        let cardTipTimer = null;
+        function cardTip(box, card) {
+            const el = box.querySelector(".night-card-tip");
+            if (!el) return;
+            clearTimeout(cardTipTimer);
+            const of = card.dataset.night || "~like";
+            if (el.dataset.of === of && !el.classList.contains("hidden")) { show(el, false); return; }
+            el.dataset.of = of;
+            el.textContent = card.title || "";
+            show(el, true);
+            cardTipTimer = setTimeout(() => show(el, false), 9000);
+        }
+        const setTitle = (el, t) => { if (el.title !== t) el.title = t; };
+        const setText = (el, t) => { if (el && el.textContent !== t) el.textContent = t; };
         function paintNight(box, dj, director) {
             const S = nightServer(dj, director);
+            const LK = (director && dj.night_like) || null;      // the last "like these" press: {ids, name, pending, error}
             if (nightPending) {
-                const done = nightPending.theme === null ? !S.on : (S.on && S.on.toLowerCase() === nightPending.theme.toLowerCase() && !S.pending);
-                if (done || (S.err && Date.now() - nightPending.at > 1500) || Date.now() - nightPending.at > 120000) nightPending = null;
+                const age = Date.now() - nightPending.at, likeErr = !!(LK && LK.error);
+                // (a night like these over another one: done once the server has taken the press and planned it)
+                const done = nightPending.theme === null ? !S.on
+                    : nightPending.theme === "like" ? (age > 1500 && !S.pending && (S.on === "like" || likeErr || !director))
+                    : (S.on && S.on.toLowerCase() === nightPending.theme.toLowerCase() && !S.pending);
+                if (done || ((S.err || likeErr) && age > 1500) || age > 120000) nightPending = null;
             }
             const shown = nightPending ? nightPending.theme : S.on;
-            const byName = Object.fromEntries((dj.night_presets || []).map((p) => [p.name, p]));
-            for (const b of box.querySelectorAll(".night-btn")) {
+            const strip = box.querySelector(".night-strip");
+            if (!strip) return;
+            const byName = box._byName || {};
+            // the night like these: shown while it is on, armed, on its way, or failed (its error needs a home)
+            const lb = strip.querySelector(".like-night");
+            if (lb) {
+                const tk = dj.night_tick || {}, armed = dj.night_armed || null;
+                const pend = nightPending && nightPending.theme === "like";
+                const lit = shown === "like";
+                // (lit: the night on's name; a later "like these" that failed keeps that night on and says so in the tooltip)
+                const label = (pend && nightPending.label) || (S.on === "like" ? (director ? tk.theme : armed && armed.theme) : "") || (LK && LK.name) || "";
+                const ids = (LK && LK.ids) || (armed && armed.like) || [];
+                const planning = lit && director && (S.pending || pend || (LK && LK.pending));
+                const lkErr = LK && LK.error ? (LK.name !== label ? `${LK.name}: ${LK.error}` : LK.error) : null;
+                const err = !planning ? (lkErr || ((lit || LK) && S.err) || null) : null;
+                // its picture: the inferred theme's chapters once its night is planned (one "Rise" or one flat chapter);
+                // until then a dashed line - before START it is inferred when ★ DIRECTOR starts
+                const shape = label ? likeShapeFor(dj, label) : null;
+                const empty = !shape && !director && lit ? "inferred at START" : "";
+                const sig = label + "#" + (shape ? shape.map((c) => c.join(",")).join(";") : "") + "#" + empty;
+                if (lb.dataset.sig !== sig) { lb.dataset.sig = sig; lb.innerHTML = cardInner(label, shape, empty); }
+                lb.dataset.label = label;
+                show(lb, !!label && (lit || pend || !!LK));
+                lb.dataset.ids = JSON.stringify(ids);
+                lb.classList.toggle("on", lit);
+                lb.classList.toggle("pending", !!planning);
+                lb.classList.toggle("err", !!err);
+                setText(lb.querySelector(".nc-state"), planning ? "planning…" : "");
+                setTitle(lb, `${label}: a night like ${ids.length} records played tonight (the crate, leans and story inferred from them)`
+                    + (shape ? "\n" + chapterLines(shape) : "")
+                    + (planning ? "\nplanning…" : "") + (err ? `\n⚠ ${err}` : "")
+                    + (lit ? (director ? "\ntap again: no plan (the DJ picks record by record)" : "\n★ DIRECTOR plans it before its first record · tap again: no plan")
+                           : "\ntap: ask for this night again"));
+            }
+            for (const b of strip.querySelectorAll(".night-card[data-night]")) {
                 const name = b.dataset.night, lit = !!shown && shown.toLowerCase() === name.toLowerCase();
                 const planning = lit && director && (S.pending || (nightPending && nightPending.theme !== null));
                 b.classList.toggle("on", lit);
                 b.classList.toggle("pending", !!planning);
                 b.classList.toggle("err", lit && !!S.err && !planning);
+                setText(b.querySelector(".nc-state"), planning ? "planning…" : "");
                 const p = byName[name] || {};
-                b.title = `${name}: ${p.blurb || ""}\n` + (p.chapters || []).map(([c, pct]) => `${c} ${pct} %`).join(" · ")
+                setTitle(b, `${name}: ${p.blurb || ""}\n` + chapterLines(p.chapters)
                     + (planning ? "\nplanning…" : "") + (lit && S.err && !planning ? `\n⚠ ${S.err}` : "")
-                    + (lit ? (director ? "\npress again: no plan (the DJ picks record by record)" : "\n★ DIRECTOR plans it before its first record · press again: no plan")
-                           : (director ? "\npress: plan this night from the record after next" : "\npress: ★ DIRECTOR starts on this night"));
+                    + (lit ? (director ? "\ntap again: no plan (the DJ picks record by record)" : "\n★ DIRECTOR plans it before its first record · tap again: no plan")
+                           : (director ? "\ntap: plan this night from the record after next" : "\ntap: ★ DIRECTOR starts on this night")));
+            }
+            // the lit card scrolled into view - the strip only, never the page - when the lit one changes (a swipe is
+            // never fought: nothing scrolls while the same card stays lit)
+            const litCard = strip.querySelector(".night-card.on:not(.hidden)");
+            const litKey = litCard ? (litCard.dataset.night || "~like") : "";
+            if (strip.clientWidth > 0 && strip.dataset.lit !== litKey) {
+                const first = strip.dataset.lit === undefined;
+                strip.dataset.lit = litKey;
+                if (litCard) {
+                    const left = Math.max(0, litCard.offsetLeft - (strip.clientWidth - litCard.offsetWidth) / 2);
+                    if (Math.abs(strip.scrollLeft - left) > 4) strip.scrollTo({left, behavior: first ? "auto" : "smooth"});
+                }
             }
             const sel = box.querySelector(".night-len");
             if (sel && document.activeElement !== sel && Date.now() - nightLenTouched > 2500) {
                 const want = String((dj.night_lengths || [S.lenMin]).reduce((a, m) => Math.abs(m - S.lenMin) < Math.abs(a - S.lenMin) ? m : a, S.lenMin));
                 if (sel.value !== want) sel.value = want;
             }
+        }
+        function repaintNights() {
+            for (const x of document.querySelectorAll(".night-row")) paintNight(x, lastFullDj || {}, x.dataset.where === "director");
+            for (const x of document.querySelectorAll(".like-row")) paintLike(x);
+        }
+        // a night planned, armed or on its way (the server's night_wanted, or a press not yet answered): the brain's Theme
+        // row only steers the DJ's gap picks then, so it is hidden
+        function nightHolds(dj) {
+            return !!(dj && dj.night_wanted) || !!(nightPending && nightPending.theme !== null);
+        }
+
+        // ---- MORE LIKE THESE: tonight's records as chips (tap = picked, again = dropped), ≈ plans a night like 2 to 5 ----
+        const likeSel = new Map();        // id -> title, in the order tapped (the first names the night)
+        let likeOpen = false;             // all of tonight's records shown, not only the newest LIKE_SHOWN
+        const LIKE_SHOWN = 10, LIKE_MIN = 2, LIKE_MAX = 5;
+        const LIKE_TIP = "the records played tonight - tap the ones that work (2 to 5), then ≈ like these: a night planned like them "
+            + "(the crate, leans and story inferred from them). Before START it is armed for ★ DIRECTOR; during the night it is planned "
+            + "from the record after next (the record playing and the next one stay)";
+        // (lib/dj/themestore._short: the night's name is "Like <the first record> +N")
+        const shortTitle = (t, n = 18) => {
+            const s0 = String(t || "?"), s = s0.replace(/\s*[\(\[][^\)\]]*(mix|edit|version|remaster)[^\)\]]*[\)\]]\s*$/i, "") || s0;
+            return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
+        };
+        function renderLike(box, dj) {
+            if (!box || !dj) return;
+            const recs = dj.night_tonight || [];
+            const have = new Set(recs.map((r) => r.id));
+            for (const id of [...likeSel.keys()]) if (!have.has(id)) likeSel.delete(id);   // (no longer offered: dropped)
+            show(box, recs.length > 0);
+            const shown = likeOpen ? recs : recs.slice(0, LIKE_SHOWN);
+            const key = shown.map((r) => r.id + (r.now ? "*" : "")).join(",") + "#" + recs.length + (likeOpen ? "o" : "");
+            if (box.dataset.have !== key) {
+                box.dataset.have = key;
+                const more = recs.length > LIKE_SHOWN
+                    ? `<button class="like-chip more" title="${likeOpen ? "only the newest records" : "every record played tonight"}">${likeOpen ? "less" : "+" + (recs.length - LIKE_SHOWN)}</button>` : "";
+                box.innerHTML = `<span class="like-cap" title="${esc(LIKE_TIP)}">Tonight</span>`
+                    + shown.map((r) => `<button class="like-chip${r.now ? " now" : ""}" data-id="${r.id}" data-t="${esc(r.title)}"`
+                        + ` title="${esc(r.title)}${r.artist ? " — " + esc(r.artist) : ""}&#10;${r.now ? "playing now" : "played tonight"}&#10;tap: pick it for ≈ like these (2 to 5) · tap again: drop it">`
+                        + `${r.now ? "▶ " : ""}${esc(r.title)}</button>`).join("")
+                    + more + `<button class="like-go">≈ like these</button>`;
+                for (const c of box.querySelectorAll(".like-chip[data-id]"))
+                    c.onclick = () => {
+                        const id = parseInt(c.dataset.id, 10);
+                        if (likeSel.has(id)) likeSel.delete(id);
+                        else if (likeSel.size < LIKE_MAX) likeSel.set(id, c.dataset.t);
+                        else flash(box.querySelector(".like-go"));   // (five at most: the button says so)
+                        repaintNights();
+                    };
+                const m = box.querySelector(".like-chip.more");
+                if (m) m.onclick = () => { likeOpen = !likeOpen; renderLike(box, lastFullDj || {}); };
+                box.querySelector(".like-go").onclick = (ev) => {
+                    const b = ev.currentTarget, ids = [...likeSel.keys()];
+                    flash(b);
+                    if (ids.length < LIKE_MIN || ids.length > LIKE_MAX) return;
+                    const titles = ids.map((i) => likeSel.get(i));
+                    const label = "Like " + shortTitle(titles[0]) + (ids.length > 1 ? ` +${ids.length - 1}` : "");
+                    const sel = document.querySelector(`.night-row[data-where="${box.dataset.where}"] .night-len`);
+                    nightPending = {theme: "like", label, at: Date.now()};
+                    emit("director_night", {op: "like", ids, length_min: (sel && parseInt(sel.value, 10)) || 90});
+                    likeSel.clear();                  // (the night's own button carries it now)
+                    repaintNights();
+                };
+            }
+            paintLike(box);
+        }
+        function paintLike(box) {
+            for (const c of box.querySelectorAll(".like-chip[data-id]")) c.classList.toggle("on", likeSel.has(parseInt(c.dataset.id, 10)));
+            const g = box.querySelector(".like-go");
+            if (!g) return;
+            const n = likeSel.size, ready = n >= LIKE_MIN && n <= LIKE_MAX;
+            g.classList.toggle("ready", ready);
+            const txt = n ? `≈ like these ${n}` : "≈ like these";
+            if (g.textContent !== txt) g.textContent = txt;
+            g.title = ready ? `plan a night like these ${n} records` + (box.dataset.where === "idle" ? " (armed for ★ DIRECTOR)" : " from the record after next")
+                : (n >= LIKE_MAX ? "five at most" : `tap ${LIKE_MIN - n} more record${LIKE_MIN - n === 1 ? "" : "s"} first (2 to 5)`);
         }
         // the strip's geometry, for hover / tap
         let nightGeo = null;

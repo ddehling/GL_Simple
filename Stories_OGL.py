@@ -3153,9 +3153,11 @@ class EnvironmentalSystem:
             info["state"] = "starting"
         for k in ('arc_curve', 'track_map', 'next_map', 'horizon',
                   'history', 'tags', 'themes', 'setlists', 'deck_maps',
-                  'night_presets', 'night_lengths'):
+                  'night_presets', 'night_lengths', 'night_tonight'):
             if k in info:
-                h = hash(_json.dumps(info[k], sort_keys=True, default=str))
+                # (the shape cards' presets: hashed once when built - the same list object every tick)
+                h = (self._dj_night_presets_h if k == 'night_presets' and info[k] is getattr(self, '_dj_night_presets', None)
+                     else hash(_json.dumps(info[k], sort_keys=True, default=str)))
                 if self._dj_sent.get(k) == h:
                     del info[k]
                 else:
@@ -3225,10 +3227,12 @@ class EnvironmentalSystem:
             user, genre, decade = set(), set(), set()
             mood, auto = set(), set()
             counts = {}
+            lib_ids = set()
             for r in db.conn.execute(
                     "SELECT id, auto_tags, enrichment, file_genre,"
                     " mood_ml FROM tracks WHERE error"
                     " IS NULL AND missing = 0"):
+                lib_ids.add(r['id'])
                 if scope is not None and r['id'] not in scope:
                     continue
                 folded = set(per_track.get(r['id'], []))
@@ -3255,6 +3259,7 @@ class EnvironmentalSystem:
                 for t in folded:
                     counts[t] = counts.get(t, 0) + 1
             db.close()
+            self._dj_publish_library_ids(lib_ids)
             vocab = [(t, counts.get(t, 0), True) for t in
                      sorted(user, key=lambda k: (-counts.get(k, 0), k))]
             seen = set(user)
@@ -3619,6 +3624,7 @@ class EnvironmentalSystem:
         self._director_queued = []
         self._dj_last_error = ""
         self._dj_night_last, self._dj_night_h, self._dj_night_pos = None, None, {}
+        self._dj_tonight_prev = list(getattr(self, "_dj_tonight_last", None) or [])   # (tonight so far: the new Director's list goes on from it)
         attach = engine.attach_track if engine is not None else None
         theme = self.dj_cfg.get("theme", "groove")
 
@@ -3633,9 +3639,18 @@ class EnvironmentalSystem:
                     # then the plan's first record, as the planner tab's prepared Director does it. An answer slower than
                     # this starts on the brain's opener and the plan carries on from it. Waited in slices: a STOP meanwhile
                     # ends the wait (it used to wait the minute out, then start the opener on the engine)
-                    d.set_theme_plan(night["theme"], length_min=night.get("length_min"))
+                    if night.get("like"):
+                        # (a night like these: inferred first, in the planner's process, then planned - Director.night_async)
+                        d.night_async("like", list(night["like"]), night.get("length_min"))
+                    else:
+                        d.set_theme_plan(night["theme"], length_min=night.get("length_min"))
                     t_end = time.time() + self.NIGHT_START_WAIT_S
                     while time.time() < t_end and not self._director_cancel:
+                        if d.plan is None:
+                            if not d.night_posted():
+                                break                 # (the inference failed: no plan to wait for - the brain's opener)
+                            time.sleep(0.1)
+                            continue
                         if d.plan_wait(0.2):
                             break
                 if self._director_cancel:
@@ -3655,6 +3670,8 @@ class EnvironmentalSystem:
                         pass
                 ok = d.start(threaded=True)
                 err = None if ok else (d.last_error or "the Director failed to start")
+                self._dj_publish_library_ids(t.id for t in d.library)
+                self._dj_tonight_lib = (id(d), {t.id: t for t in d.library})   # (the tonight list's titles: not on the render thread)
             except Exception as e:  # noqa: BLE001
                 ok, err = False, f"director start failed: {e}"
             if not ok and d is not None:
@@ -3737,6 +3754,7 @@ class EnvironmentalSystem:
         # (the night strip of this session goes with it: a next START whose plan is still unanswered shows no strip, not
         # this one's, marked stale - 2026-10-29)
         self._dj_night_last, self._dj_night_h, self._dj_night_pos = None, None, {}
+        self._dj_tonight_cache = None         # (tonight's records stay for the idle page: _dj_tonight_last)
         engine = self.scheduler.state.get("soundengine")
         if getattr(self, '_director_starting', False):
             self._director_cancel = True      # (a STOP while it is still being built: dropped when it arrives)
@@ -3767,10 +3785,11 @@ class EnvironmentalSystem:
 
     # -- THE NIGHT on the web page (docs/DJ_SETS.md section 4, "Web /dj page (phone)"; 2026-10-29) ---------------
     def _director_night(self, arg):
-        """THE NIGHT BUTTONS: {op: plan | clear | length, theme, length_min}. Never blocks the render thread: with a
-        Director the press is posted to its own thread (Director.night_async); without one the night is ARMED, and
-        ★ DIRECTOR plans it before its first record (the start worker waits for the plan: the opener is its first
-        record). LENGTH with no night on only sets the length of the next press."""
+        """THE NIGHT BUTTONS: {op: plan | clear | length | like, theme, length_min, ids (like: 2 to 5 records played
+        tonight)}. Never blocks the render thread: with a Director the press is posted to its own thread
+        (Director.night_async: a "like" is inferred in the planner's process, then planned); without one the night is
+        ARMED, and ★ DIRECTOR plans it before its first record (the start worker waits for the plan: the opener is its
+        first record). LENGTH with no night on only sets the length of the next press."""
         arg = arg or {}
         op = arg.get("op") or "plan"
         L = arg.get("length_min")
@@ -3781,15 +3800,77 @@ class EnvironmentalSystem:
         elif op == "length":
             if getattr(self, "_dj_night", None):
                 self._dj_night = dict(self._dj_night, length_min=int(L or self._dj_night_len))
+        elif op == "like":
+            ids = [int(i) for i in arg.get("ids") or []]
+            self._dj_night = {"theme": self._dj_like_name(ids), "like": ids, "length_min": int(L or getattr(self, "_dj_night_len", 90))}
         else:
             self._dj_night = {"theme": str(arg.get("theme") or ""), "length_min": int(L or getattr(self, "_dj_night_len", 90))}
         d = getattr(self, "_director", None)
         if d is not None:
-            d.night_async(op, arg.get("theme"), L or (getattr(self, "_dj_night", None) or {}).get("length_min"))
+            d.night_async(op, arg.get("ids") if op == "like" else arg.get("theme"),
+                          L or (getattr(self, "_dj_night", None) or {}).get("length_min"))
         elif getattr(self, "_director_starting", False):
             # pressed while the Director is being built: the worker may have read the armed night already - replayed on
             # adopt (a press that is the plan already is a no-op there)
             self._director_queued = (getattr(self, "_director_queued", None) or []) + [("director_night", arg)]
+
+    # -- "MORE LIKE THESE" on the web page (docs/DJ_SETS.md section 4; 2026-10-30): tonight's records, tap 2 to 5, a night
+    # inferred from them ------------------------------------------------------------------------------------------------
+    TONIGHT_MAX = 24                  # the records offered (newest first)
+
+    def _dj_publish_library_ids(self, ids):
+        """The library's record ids for the web controller's "like" check (director_night): from the idle vocabulary's
+        DB walk and the start worker - never the render thread."""
+        try:
+            ids = frozenset(int(i) for i in ids)
+            if self.web_controller is not None:
+                self.web_controller.dj_library_ids = ids
+            import lib.dj.themestore  # noqa: F401  (imported here, so a press on the render thread never pays for it)
+        except Exception as e:  # noqa: BLE001
+            print(f"[DJ] library ids: {e}")
+
+    def _dj_like_name(self, ids):
+        """The button's word for a night like these: "Like <the first record> +N" (Director._night_like says the same)."""
+        from lib.dj.themestore import _short
+        if not ids:
+            return "Like these"
+        first = (getattr(self, "_dj_tonight_titles", None) or {}).get(int(ids[0])) or f"#{ids[0]}"
+        return "Like " + _short(first) + (f" +{len(ids) - 1}" if len(ids) > 1 else "")
+
+    def _dj_tonight(self, d):
+        """THE RECORDS PLAYED TONIGHT (the Director's played list - this session's and, live, the earlier sessions' of
+        the night log), newest first, the record playing marked: the page's "like these" chips. Rebuilt only when that
+        list or the record changes (one dict of the library per Director, then lookups); a stopped Director's list stays
+        for the idle page, so a night like tonight's can be armed before the next START."""
+        played = list(getattr(d, "played", None) or [])
+        now_id = ((getattr(d, "_pstat", None) or {}).get("record") or {}).get("track_id")
+        key = (id(d), len(played), now_id)
+        c = getattr(self, "_dj_tonight_cache", None)
+        if c is not None and c[0] == key:
+            return c[1]
+        lib = getattr(self, "_dj_tonight_lib", None)
+        if lib is None or lib[0] != id(d):
+            lib = self._dj_tonight_lib = (id(d), {t.id: t for t in (getattr(d, "library", None) or [])})
+        by_id, seen, out = lib[1], set(), []
+        for tid, _when in reversed(played):
+            if tid in seen or tid not in by_id:
+                continue
+            seen.add(tid)
+            t = by_id[tid]
+            out.append({"id": int(tid), "title": str(t.title or "")[:60], "artist": str(t.artist or "")[:40], "now": tid == now_id})
+            if len(out) >= self.TONIGHT_MAX:
+                break
+        # (then the earlier sessions of this process - a headless show has no night log to seed the Director's list)
+        for e in getattr(self, "_dj_tonight_prev", None) or []:
+            if len(out) >= self.TONIGHT_MAX:
+                break
+            if e["id"] not in seen and e["id"] in by_id:
+                seen.add(e["id"])
+                out.append(dict(e, now=False))
+        self._dj_tonight_titles = {e["id"]: by_id[e["id"]].title for e in out}
+        self._dj_tonight_cache = (key, out)
+        self._dj_tonight_last = [dict(e, now=False) for e in out]   # (the idle page's after a STOP: nothing plays then)
+        return out
 
     _NIGHT_REROUTE = ("picked again", "the DJ filled a gap", "your record", "cannot be the record")
 
@@ -3835,7 +3916,9 @@ class EnvironmentalSystem:
                  "warnings": [{"bad": bool(w.get("bad")), "chapter": w.get("chapter"), "text": str(w.get("text") or "")[:400],
                                "off": w.get("off"), "of": w.get("of"), "off_ids": [int(x) for x in (w.get("off_ids") or [])][:40]}
                               for w in (sp.get("warnings") or [])][:8],
-                 "slots": slots, "skipped": skipped[-12:], "crate": sp.get("crate")}
+                 "slots": slots, "skipped": skipped[-12:], "crate": sp.get("crate"),
+                 # (a "like these" crate the planner widened to finish the night - NightPlan.widened, 2026-10-30)
+                 "widened": [str(w)[:40] for w in (sp.get("widened") or [])][:10]}
         # THE STORY LINES' night part: the re-plans (with their trigger), the record that moved (picked again, a gap the DJ
         # filled, your record), the slots that left, the planner's own trouble - short text, the whole of it as a tooltip
         notes = []
@@ -3853,6 +3936,9 @@ class EnvironmentalSystem:
             by_why.setdefault(s["why"] or "skipped", []).append(s["title"])
         for why, titles in list(by_why.items())[-2:]:
             notes.append(f"{why}: {', '.join(titles)}")
+        wid = next((w for w in night["warnings"] if w["chapter"] is None and str(w["text"]).startswith("A night like these: the crate was widened")), None)
+        if wid is not None:
+            notes.append(wid["text"])
         if sp.get("planner_down"):
             notes.append(f"the planner is down: the DJ picks record by record ({sp.get('error') or ''})")
         elif sp.get("error") and not sp.get("pending"):
@@ -3872,19 +3958,51 @@ class EnvironmentalSystem:
                 "planned": bool(ch), "notes": shown}
         return night, tick
 
+    @staticmethod
+    def _dj_shape_cards(presets):
+        """The presets for the web page's shape cards: [{name, blurb, chapters: [[name, share %, e0, e1], ...]}], the
+        shares renormalised to 100, the energy course of each chapter (from, to) to two places. Pure."""
+        out = []
+        for p in presets or []:
+            chs = [c for c in (p.get("chapters") or []) if isinstance(c, dict)]
+            tot = sum(max(0.0, float(c.get("share") or 0)) for c in chs) or 1.0
+            rows = []
+            for c in chs:
+                e = [float(x) for x in (c.get("energy") or (0.5, 0.5))][:2]
+                e = e + e[-1:] if len(e) == 1 else (e or [0.5, 0.5])
+                rows.append([str(c.get("name") or ""), round(100.0 * max(0.0, float(c.get("share") or 0)) / tot),
+                             round(e[0], 2), round(e[1], 2)])
+            out.append({"name": str(p.get("name") or ""), "blurb": str(p.get("blurb") or ""), "chapters": rows})
+        return out
+
     def _dj_night_info(self, d, sp):
-        """The night's keys for dj_info: the presets (built once), the LENGTH choices and the length of the next press,
-        the night armed for START (no Director) or the Director's plan, the strip and its tick."""
-        if getattr(self, "_dj_night_presets", None) is None:
-            from lib.dj.setplanner import PRESETS
-            self._dj_night_presets = [{"name": p["name"], "blurb": p.get("blurb") or "",
-                                       "chapters": [[c["name"], round(100 * float(c.get("share") or 0))] for c in p.get("chapters") or []]}
-                                      for p in PRESETS]
+        """The night's keys for dj_info: the presets (built once per PRESETS list, the shape cards' data), the LENGTH choices and the length of the next press,
+        the night armed for START (no Director) or the Director's plan, the strip and its tick; tonight's records and the
+        last "like these" press (night_tonight, night_like); night_wanted - a night planned, armed or on its way (the
+        page hides the brain's Theme row then: it only steers the DJ's gap picks)."""
+        from lib.dj.setplanner import PRESETS
+        if getattr(self, "_dj_night_presets_of", None) != (id(PRESETS), len(PRESETS)):
+            # THE SHAPE CARDS' DATA (2026-10-30): every preset's name, blurb and chapters as [name, share %, energy from,
+            # energy to] - read from setplanner.PRESETS generically (never a list of names here), built once per list and
+            # hashed once: a delta key, sent when it changes (and in the 3 s full refresh), never every tick
+            self._dj_night_presets = self._dj_shape_cards(PRESETS)
+            self._dj_night_presets_of = (id(PRESETS), len(PRESETS))
+            import json as _json
+            self._dj_night_presets_h = hash(_json.dumps(self._dj_night_presets, sort_keys=True, default=str))
+        armed = getattr(self, "_dj_night", None)
         out = {"night_presets": self._dj_night_presets, "night_lengths": list(self.NIGHT_LENGTHS),
-               "night_len": int(getattr(self, "_dj_night_len", 90)), "night_armed": getattr(self, "_dj_night", None),
-               "dj_night": None, "night_tick": None}
+               "night_len": int(getattr(self, "_dj_night_len", 90)), "night_armed": armed,
+               "dj_night": None, "night_tick": None, "night_like": None, "night_wanted": bool(armed),
+               "night_tonight": getattr(self, "_dj_tonight_last", None) or []}
         if d is None:
             return out
+        try:
+            out["night_tonight"] = self._dj_tonight(d)
+        except Exception as e:  # noqa: BLE001
+            out["night_tonight"] = []
+            print(f"[DJ] tonight list: {e}")
+        like = d.night_like() if hasattr(d, "night_like") else None
+        out["night_like"] = like
         if not hasattr(self, "_dj_night_pos"):
             self._dj_night_pos = {}
         night, tick = self._dj_night_payload(sp, self._dj_night_pos)
@@ -3911,7 +4029,13 @@ class EnvironmentalSystem:
                 self._dj_night_last = None
         else:
             self._dj_night_last = night
+        if like and like.get("error"):
+            # a "like these" that failed (the planner down, nothing inferred): the story line, as a night's error is
+            tick = tick if tick is not None else {}
+            n = f"like these: {like['error']}"
+            tick["notes"] = (list(tick.get("notes") or []) + [{"text": n[:96], "tip": f"{like['name']}\n{n}"[:600]}])[-2:]
         out["dj_night"], out["night_tick"] = night, tick
+        out["night_wanted"] = bool(tick and (tick.get("planned") or tick.get("pending"))) or posted
         return out
 
     def _remix_stop(self):

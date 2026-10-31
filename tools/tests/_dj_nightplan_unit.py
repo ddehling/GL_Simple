@@ -29,6 +29,9 @@ RecordPlayer._pick and RecordPlayer._decode on small fakes, one case per finding
   BACK-OFF      a failing planner is not asked again every tick; after 3 failures it is down (said once) until you act
   SKIPPED       slots a rejoin skipped for your UP NEXT stay out of every later request
   GAP PASSES    the brain's gap pick takes a mixable record from outside the crate before a clashing one inside it
+  WIDENED       (2026-10-30) a "like these" crate the planner widened to finish the night is the night's from then on
+                (later requests send it); the chapters stay the snapshot's; another night's answer or an edited theme
+                is never taken; a stale answer still keeps it for the request asked again
 
     python tools/tests/_dj_nightplan_unit.py
 
@@ -778,6 +781,65 @@ def skipped():
     check(3 in ex and 4 in ex, f"the slots skipped for your record stay out of later requests ({ex})")
 
 
+def widened_adopted():
+    """(2026-10-30) the planner widened a "like these" crate to finish the night: the NightPlan keeps the widened crate
+    and ladder (later requests send it), never the chapters it planned with (the ENERGY dial's lean is on them), and never
+    over an edited theme or another night's answer."""
+    print("WIDENED, ADOPTED")
+    import json as _j
+    from lib.dj.nightplan import NightPlan
+    from lib.dj.setplanner import get_preset
+
+    def like_night(edited=False):
+        d, p, _pl = night()
+        th = get_preset("Desert Night")
+        th.update(name="Like rec1 +2", examples=[1, 5, 6],
+                  crate={"bpm": [100.0, 110.0], "energy": [20, 50], "vocals": "some", "genresIn": ["ambient"]},
+                  inferred={"widened": [{"what": "tempo ±6 %", "records": 49, "from": 40}], "ladder": {"at": 2, "tempo": 0.06}, "edited": edited})
+        pl = NightPlan(d, th, 90)
+        d.plan = pl
+        pl.rows = [row(1, "now")]
+        return d, p, pl
+    d, p, pl = like_night()
+    d.dials["energy"] = "lift"                                       # (a lean on the chapters the planner sees)
+    pl.request("theme", user=True)
+    req = d._p.reqs[-1]
+    used = _j.loads(_j.dumps(req["theme"]))
+    used["crate"] = dict(used["crate"], bpm=[98.0, 112.0], vocals="any")
+    used["inferred"] = dict(used["inferred"], ladder={"at": 5, "tempo": 0.08}, crate=99,
+                            widened=used["inferred"]["widened"] + [{"what": "tempo ±8 %", "records": 99, "from": 49, "available": 95, "by": "plan"}])
+    steps = used["inferred"]["widened"][-1:]
+    chs0 = _j.dumps(pl.theme["chapters"])
+    slots = [{"id": 1, "fixed": True}, {"id": 8}, {"id": 9}]
+    pl._apply({"ok": True, "seq": req["seq"], "slots": slots, "chapters": pl.chapters, "finished": True, "widened": steps, "theme_used": used})
+    check(pl.theme["crate"] == used["crate"] and pl.theme["inferred"]["ladder"]["at"] == 5,
+          f"the widened crate and its ladder are the night's ({pl.theme['crate']}, {pl.theme['inferred'].get('ladder')})")
+    check(_j.dumps(pl.theme["chapters"]) == chs0, "the chapters stay the snapshot's (the ENERGY lean is not taken in)")
+    check(pl.status()["widened"] == ["tempo ±8 %"] and sum("widened the crate" in e for e in d.events) == 1,
+          f"said once, and the status carries it ({pl.status()['widened']})")
+    pl.on_dial("energy", "hold")
+    check(d._p.reqs[-1]["theme"]["crate"] == used["crate"], "the next request sends the widened crate")
+    # another night's answer (other examples), and an edited theme: never adopted
+    d, p, pl = like_night()
+    pl.request("theme", user=True)
+    req = d._p.reqs[-1]
+    other = dict(_j.loads(_j.dumps(req["theme"])), examples=[2, 3], crate={"bpm": [60.0, 200.0]})
+    pl._apply({"ok": True, "seq": req["seq"], "slots": slots, "chapters": pl.chapters, "finished": True, "widened": steps, "theme_used": other})
+    check(pl.theme["crate"]["bpm"] == [100.0, 110.0], "another night's widened theme is not taken")
+    d, p, pl = like_night(edited=True)
+    pl.request("theme", user=True)
+    req = d._p.reqs[-1]
+    pl._apply({"ok": True, "seq": req["seq"], "slots": slots, "chapters": pl.chapters, "finished": True, "widened": steps, "theme_used": used})
+    check(pl.theme["crate"]["bpm"] == [100.0, 110.0], "an edited theme is never widened behind your back")
+    # the decks moved while it was planned: the answer is asked again, the widened crate kept for that request
+    d, p, pl = like_night()
+    pl.request("theme", user=True)
+    req = d._p.reqs[-1]
+    pl._apply({"ok": True, "seq": req["seq"], "slots": [{"id": 4, "fixed": True}, {"id": 8}], "chapters": pl.chapters, "finished": True,
+               "widened": steps, "theme_used": _j.loads(_j.dumps(used))})
+    check(pl.theme["crate"] == used["crate"] and pl.want, f"a stale answer: asked again, the widened crate kept ({pl.want})")
+
+
 def gap_passes():
     print("GAP PASSES")
     from lib.dj.recordplay import RecordPlayer
@@ -818,7 +880,7 @@ def main():
     except Exception:
         pass
     for fn in (eject_race, eject_loading, eject_mount, eject_plan, probe_ejected, probes_spent, stale_label, decode_fail, dead_end, backoff,
-               skipped, gap_passes, brain_precheck, cut_landing, placed_here_landed, gap_takes_later_slot):
+               skipped, gap_passes, brain_precheck, cut_landing, placed_here_landed, gap_takes_later_slot, widened_adopted):
         try:
             fn()
         except Exception as e:  # noqa: BLE001

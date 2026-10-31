@@ -87,6 +87,22 @@ from projects.fan.shaders.club_rain import shader_club_rain
 from projects.fan.shaders.club_voronoi_sphere import shader_club_voronoi_sphere
 from projects.fan.shaders.club_audio_curve import shader_club_audio_curve
 from projects.fan.shaders.audio_balls import shader_audio_balls
+# Added 2026-10-30 (club pattern proposals; shared base _club_quad.py).
+from projects.fan.shaders.club_aurora import shader_club_aurora
+from projects.fan.shaders.club_pinwheel import shader_club_pinwheel
+from projects.fan.shaders.club_datastream import shader_club_datastream
+from projects.fan.shaders.club_jellies import shader_club_jellies
+from projects.fan.shaders.club_clockwork import shader_club_clockwork
+from projects.fan.shaders.club_tide import shader_club_tide
+from projects.fan.shaders.club_sunflower import shader_club_sunflower
+from projects.fan.shaders.club_neural import shader_club_neural
+from projects.fan.shaders.club_honeycomb import shader_club_honeycomb
+from projects.fan.shaders.club_spectrum_rings import shader_club_spectrum_rings
+from projects.fan.shaders.club_magma import shader_club_magma
+from projects.fan.shaders.club_orrery import shader_club_orrery
+from projects.fan.shaders.club_pulse_line import shader_club_pulse_line
+from projects.fan.shaders.club_wisps import shader_club_wisps
+from projects.fan.shaders.club_bokeh import shader_club_bokeh
 
 WRAPPERS = [
     ("horizon_glow", shader_club_horizon_glow, {}),
@@ -135,6 +151,21 @@ WRAPPERS = [
     ("club_rain", shader_club_rain, {}),
     ("voronoi_sphere", shader_club_voronoi_sphere, {}),
     ("audio_curve", shader_club_audio_curve, {}),
+    ("aurora", shader_club_aurora, {}),
+    ("pinwheel", shader_club_pinwheel, {}),
+    ("datastream", shader_club_datastream, {}),
+    ("jellies", shader_club_jellies, {}),
+    ("clockwork", shader_club_clockwork, {}),
+    ("tide", shader_club_tide, {}),
+    ("sunflower", shader_club_sunflower, {}),
+    ("neural", shader_club_neural, {}),
+    ("honeycomb", shader_club_honeycomb, {}),
+    ("spectrum_rings", shader_club_spectrum_rings, {}),
+    ("magma", shader_club_magma, {}),
+    ("orrery", shader_club_orrery, {}),
+    ("pulse_line", shader_club_pulse_line, {}),
+    ("wisps", shader_club_wisps, {}),
+    ("bokeh", shader_club_bokeh, {}),
 ]
 
 
